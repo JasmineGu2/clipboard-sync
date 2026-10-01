@@ -40,6 +40,8 @@ public struct PushResponse: Codable, Sendable {
 
 /// GET /v1/ops?after=<seq>&limit=<n>&wait=<seconds>
 /// With wait > 0 and nothing new, the server holds the request up to `wait` seconds (long-poll).
+/// Cursor rule: after applying a page, move the cursor to the LAST envelope's `seq`, not `latestSeq`.
+/// `latestSeq` is the newest seq in the whole log; when `hasMore` is true they differ.
 public struct PullResponse: Codable, Sendable {
     public var envelopes: [Envelope]   // ordered by seq ascending
     public var latestSeq: Int64
@@ -51,7 +53,7 @@ public struct PullResponse: Codable, Sendable {
     }
 }
 
-/// PUT /v1/pairing/<pairingID>   (one blob per ID, expires after 10 minutes)
+/// PUT /v1/pairing/<pairingID>   (one blob per ID, expires after 10 minutes; 204 on success)
 /// GET /v1/pairing/<pairingID>   (returns once, then deletes; 404 if missing or expired)
 public struct PairingBlob: Codable, Sendable {
     public var blob: Data
@@ -68,6 +70,11 @@ public enum WireHeaders {
 public enum WireLimits {
     public static let maxEnvelopesPerPush = 500
     public static let maxCiphertextBytes = 256 * 1024
+    /// Whole push body cap. Clients split pushes to stay under it; blobs (M4) go through a separate chunk API.
+    public static let maxPushBodyBytes = 4 * 1024 * 1024
+    public static let defaultPullLimit = 500
     public static let maxPullLimit = 1000
+    public static let maxPairingBlobBytes = 64 * 1024
+    public static let maxIDBytes = 128
     public static let maxWaitSeconds = 30
 }

@@ -4,9 +4,10 @@ Encrypted clipboard history synced across iPhone, Mac and Windows over Tailscale
 PRD: @docs/prd.md · Board: @docs/board.md · Next: @NEXT.md
 
 ## Commands
+- Windows shell setup first: `. scripts/swiftenv.sh` (puts Swift 6.4 on PATH, sets SDKROOT)
 - `swift build` / `swift test`: root package (Windows, Linux, macOS)
 - `swift run ConvergenceHarness --seeds 500`: randomized convergence check
-- `swift run ClipServer`: relay (deploys to the Linux VM)
+- `Server/`: relay package (`ClipRelay`); Linux only, tested in WSL Ubuntu: see Server/README.md
 - `swift run clipctl`: command-line client (Windows fallback)
 - `apps/Apple`: built with xcodebuild on the MacBook only
 

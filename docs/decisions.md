@@ -68,3 +68,8 @@
 - **Decision:** `OpCipher.seal(_:device:nonce:)` is an internal overload that only the known-answer test calls; the public `seal` always uses a fresh random nonce. The expected bytes come from `scripts/kat/opcipher_kat.py` (Python `cryptography`), not from Swift.
 - **Why:** A random nonce means no test pinned the exact wire bytes, so a silent change to the AAD string, byte layout or op JSON would only show up as old devices failing to decrypt. Computing the vector outside Swift makes it an independent check.
 - **Alternatives:** `#if DEBUG` around the overload (tests build in debug anyway, but release test runs would lose it); an injectable nonce source on the public API (puts nonce reuse one parameter away from production callers).
+
+## 2026-10-01: CI fixes from the first GitHub run
+- **Decision:** clipctl flushes with `fflush(nil)` instead of touching the C `stdout` global; `ClipboardPollerTests` methods are `async`; the Windows CI job installs Swift 6.4.0 from swift.org itself instead of using compnerd/gha-setup-swift.
+- **Why:** Swift 6 rejects glibc's `stdout` as shared mutable state, so Linux never built. Linux XCTest discovery crashes on synchronous `@MainActor` test methods (a failed cast to `() -> ()`), so Linux tests never ran. The setup action installed Swift but left it off PATH. All three were invisible on the Windows dev machine; the first CI run found them.
+- **Alternatives:** A C shim for `setvbuf(stdout)` (more code for the same effect); `nonisolated` sync tests with `MainActor.assumeIsolated` (noisier than `async`); pinning an older action version (still a third-party dependency for a 10-line install).

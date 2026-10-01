@@ -94,7 +94,7 @@ func defaultDeviceName() -> String {
 }
 
 func warn(_ message: String) {
-    fflush(stdout)  // keep stdout and stderr in order when both go to one console or file
+    fflush(nil)  // keep stdout and stderr in order when both go to one console or file
     FileHandle.standardError.write(Data("warning: \(message)\n".utf8))
 }
 

@@ -44,9 +44,11 @@ final class CaptureFilterTests: XCTestCase {
     }
 }
 
+// Tests here are async on purpose: Linux XCTest discovery crashes casting a synchronous
+// @MainActor test method to () -> () ("Could not cast value of type ...").
 @MainActor
 final class ClipboardPollerTests: XCTestCase {
-    func testCapturesOnlyNewAllowedChanges() {
+    func testCapturesOnlyNewAllowedChanges() async {
         let pasteboard = FakePasteboard()
         pasteboard.set(types: ["public.utf8-plain-text"], text: "before launch")
         let poller = ClipboardPoller(reader: pasteboard)
@@ -64,7 +66,7 @@ final class ClipboardPollerTests: XCTestCase {
         XCTAssertNil(poller.poll(), "own writes aren't recaptured")
     }
 
-    func testPauseDropsChangesMadeWhilePaused() {
+    func testPauseDropsChangesMadeWhilePaused() async {
         let pasteboard = FakePasteboard()
         let poller = ClipboardPoller(reader: pasteboard, isPaused: true)
         pasteboard.set(types: ["public.utf8-plain-text"], text: "during pause")

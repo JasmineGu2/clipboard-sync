@@ -10,7 +10,14 @@ public struct RelayRequestBuilder: Sendable {
     public let token: String?
     /// Extra seconds on top of the long-poll wait, so the client never times out before the server answers.
     public static let longPollGrace: TimeInterval = 10
-    public static let defaultTimeout: TimeInterval = 30
+    /// For every request that the relay answers at once: push, pairing, and pulls with wait=0. Short, so an
+    /// unreachable relay (offline, or Tailscale down) shows as offline in seconds rather than after 30.
+    public static let shortTimeout: TimeInterval = 5
+
+    /// The request timeout for a pull: short for wait=0, the wait plus `longPollGrace` for a long-poll.
+    public static func pullTimeout(wait: Int) -> TimeInterval {
+        wait > 0 ? TimeInterval(wait) + longPollGrace : shortTimeout
+    }
 
     public init(baseURL: URL, token: String?) {
         self.baseURL = baseURL
@@ -22,7 +29,7 @@ public struct RelayRequestBuilder: Sendable {
         request.httpMethod = "POST"
         request.httpBody = try JSONEncoder().encode(body)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = Self.defaultTimeout
+        request.timeoutInterval = Self.shortTimeout
         authorize(&request)
         return request
     }
@@ -35,7 +42,7 @@ public struct RelayRequestBuilder: Sendable {
         ]
         var request = URLRequest(url: url("v1/ops", query: query))
         request.httpMethod = "GET"
-        request.timeoutInterval = TimeInterval(max(0, wait)) + Self.longPollGrace
+        request.timeoutInterval = Self.pullTimeout(wait: wait)
         authorize(&request)
         return request
     }
@@ -46,7 +53,7 @@ public struct RelayRequestBuilder: Sendable {
         request.httpMethod = "PUT"
         request.httpBody = try JSONEncoder().encode(PairingBlob(blob: blob))
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = Self.defaultTimeout
+        request.timeoutInterval = Self.shortTimeout
         authorize(&request)
         return request
     }
@@ -55,7 +62,7 @@ public struct RelayRequestBuilder: Sendable {
     public func takePairing(id: String) -> URLRequest {
         var request = URLRequest(url: url("v1/pairing/\(id)"))
         request.httpMethod = "GET"
-        request.timeoutInterval = Self.defaultTimeout
+        request.timeoutInterval = Self.shortTimeout
         return request
     }
 
@@ -109,7 +116,9 @@ public struct HTTPTransport: SyncTransport {
         self.builder = RelayRequestBuilder(baseURL: baseURL, token: token)
         self.session = session ?? {
             let configuration = URLSessionConfiguration.ephemeral
-            // Above the longest long-poll, so the per-request timeout is the one that applies.
+            // Every request sets its own timeout (short, or a long-poll's wait plus grace). The session value is
+            // only a ceiling at the longest long-poll: on Windows the per-request value wins either way (measured),
+            // and a 5 s session value could cut long-polls short on platforms that use the smaller of the two.
             configuration.timeoutIntervalForRequest =
                 TimeInterval(WireLimits.maxWaitSeconds) + RelayRequestBuilder.longPollGrace
             return URLSession(configuration: configuration)

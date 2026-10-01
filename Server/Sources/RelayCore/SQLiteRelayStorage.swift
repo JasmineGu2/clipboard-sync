@@ -10,6 +10,9 @@ public actor SQLiteRelayStorage: RelayStorage {
     static let authTokenKey = "auth_token_sha256"
     /// The last operator pin applied (see `seedAuthTokenHash`).
     static let authSeedKey = "auth_token_seed_sha256"
+    static let epochKey = "relay_epoch"
+    /// Read (or made) once at open; it never changes for the life of the database file.
+    private let relayEpoch: String
 
     /// Opens (creating if needed) the database at `path`. Use ":memory:" for tests.
     public init(path: String) throws {
@@ -43,11 +46,27 @@ public actor SQLiteRelayStorage: RelayStorage {
                     value TEXT NOT NULL
                 );
                 """)
+            self.relayEpoch = try Self.loadOrCreateEpoch(handle)
         } catch {
             sqlite3_close_v2(handle)
             throw error
         }
         self.db = handle
+    }
+
+    /// Stores a fresh random epoch the first time the database is opened (INSERT OR IGNORE keeps an existing
+    /// one), then reads back whichever is stored.
+    private static func loadOrCreateEpoch(_ handle: OpaquePointer) throws -> String {
+        let insert = try Statement(handle, "INSERT OR IGNORE INTO meta(key, value) VALUES(?, ?)")
+        try insert.bind(1, epochKey)
+        try insert.bind(2, UUID().uuidString.lowercased())
+        _ = try insert.step()
+        let select = try Statement(handle, "SELECT value FROM meta WHERE key = ?")
+        try select.bind(1, epochKey)
+        guard try select.step() else {
+            throw StorageError(code: SQLITE_ERROR, message: "relay epoch missing after insert")
+        }
+        return select.text(0)
     }
 
     public static func inMemory() throws -> SQLiteRelayStorage {
@@ -114,6 +133,10 @@ public actor SQLiteRelayStorage: RelayStorage {
         let query = try Statement(db, "SELECT COALESCE(MAX(seq), 0) FROM envelopes")
         _ = try query.step()
         return query.int64(0)
+    }
+
+    public func epoch() throws -> String {
+        relayEpoch
     }
 
     // MARK: Pairing

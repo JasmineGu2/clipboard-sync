@@ -105,8 +105,10 @@ let app = Application(
     logger: logger
 )
 
+let epoch = try await storage.epoch()
 logger.info("ClipRelay starting", metadata: [
     "host": "\(options.host)", "port": "\(options.port)", "db": "\(options.dbPath)",
+    "epoch": "\(epoch)",
     "auth": "\(options.tokenSHA256 == nil ? "trust on first use" : "pinned token hash")",
 ])
 if options.host == "0.0.0.0" || options.host == "::" {

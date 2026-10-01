@@ -49,9 +49,21 @@ public actor SyncEngine {
     private var syncTask: Task<Void, Error>?
     private var longPollTask: Task<PullResponse, Error>?
     private var wakePending = false
+    /// How the current sync already recovered from a relay reset, if it did. At most one recovery per sync.
+    private var resetInSync: ResetInSync = .none
+
+    private enum ResetInSync {
+        case none
+        /// After `cursorAhead`: the next epoch seen is the relay this sync recovered against.
+        case byCursorAhead
+        /// After an epoch change: a second change in the same sync waits for the next sync.
+        case byEpoch
+    }
 
     static let clockKey = "hlc_high_water"
     static let undecryptableKey = "undecryptable"
+    /// The last relay epoch this device saw (see `PullResponse.epoch`).
+    static let relayEpochKey = "relay_epoch"
     static let maxUndecryptableRecorded = 1000
     static let longPollWait = 25
 
@@ -150,20 +162,26 @@ public actor SyncEngine {
 
     private func performSync() async throws {
         status = .syncing
+        resetInSync = .none
         do {
             try await pushPending()
-            var didResetCursor = false
             while true {
                 try Task.checkCancellation()
                 let page: PullResponse
                 do {
                     page = try await transport.pull(
                         after: try db.syncCursor(), limit: WireLimits.defaultPullLimit, wait: 0)
-                } catch TransportError.cursorAhead(let latestSeq) where !didResetCursor {
-                    // Once per sync: a second cursorAhead right after resetting to 0 would mean a broken relay,
-                    // so it is thrown instead of looping.
-                    try recoverFromRelayReset(relayLatestSeq: latestSeq)
-                    didResetCursor = true
+                } catch TransportError.cursorAhead(let latestSeq) where resetInSync == .none {
+                    // Second line of defense, for a relay that sends no epoch or was restored from a backup (which
+                    // keeps its epoch). Once per sync: a second cursorAhead right after resetting to 0 would mean
+                    // a broken relay, so it is thrown instead of looping.
+                    try recoverFromCursorAhead(relayLatestSeq: latestSeq)
+                    resetInSync = .byCursorAhead
+                    try await pushPending()
+                    continue
+                }
+                if try handleEpochInSync(page.epoch) {
+                    // This page came from a relay that lost ops; skip it, push everything, pull again from 0.
                     try await pushPending()
                     continue
                 }
@@ -184,11 +202,17 @@ public actor SyncEngine {
             let pending = try db.pendingOutbound(limit: WireLimits.maxEnvelopesPerPush)
             if pending.isEmpty { return }
             let envelopes = try pending.map { try cipher.seal($0, device: device) }
+            var relayWasReset = false
             for batch in try Self.batches(envelopes) {
-                _ = try await transport.push(PushRequest(envelopes: batch))
+                let response = try await transport.push(PushRequest(envelopes: batch))
                 try db.markSent(batch.compactMap { UUID(uuidString: $0.opID).map(OpID.init) })
+                if try handleEpochInSync(response.epoch) {
+                    // Everything is queued again; go back and push it all to the new relay.
+                    relayWasReset = true
+                    break
+                }
             }
-            if pending.count < WireLimits.maxEnvelopesPerPush { return }
+            if !relayWasReset, pending.count < WireLimits.maxEnvelopesPerPush { return }
         }
     }
 
@@ -249,14 +273,61 @@ public actor SyncEngine {
         if !inserted.isEmpty { changesContinuation.yield() }
     }
 
-    /// The relay's log ends before our cursor, so it lost data (reset, or restored from an old backup).
-    /// Queue every stored op for push again and start pulling from 0, in one transaction. Ops that lived only on
-    /// the old relay come back this way: every device re-pushes what it holds, and the relay dedupes by opID.
-    /// Re-pulling is safe because applying an op this device already has is a no-op (merge is idempotent).
-    private func recoverFromRelayReset(relayLatestSeq: Int64) throws {
+    // MARK: Relay reset
+    //
+    // When the relay loses its log (database deleted, replaced, or restored from an old backup), ops that lived
+    // only there are gone. Recovery: queue every stored op for push again and reset the cursor to 0, in one
+    // transaction (`markAllOutbound`), then push and pull. Every device re-pushes what it holds and the relay
+    // dedupes by opID; re-pulling is safe because applying an op this device already has is a no-op.
+    //
+    // Detection: mainly the relay epoch. A response with a different epoch than the stored one means a new
+    // relay database, even when other devices already refilled it past this device's cursor. `cursorAhead`
+    // stays as a second line of defense.
+
+    /// The relay's log ends before our cursor, so it lost data.
+    private func recoverFromCursorAhead(relayLatestSeq: Int64) throws {
         let cursor = try db.syncCursor()
         log("relay log ends at seq \(relayLatestSeq), before our cursor \(cursor); re-pushing all ops, re-pulling from 0")
         try db.markAllOutbound()
+    }
+
+    /// Checks a response's epoch during a sync. Returns true when it revealed a relay reset that was just
+    /// recovered from (everything queued, cursor at 0); the caller then pushes and pulls again.
+    private func handleEpochInSync(_ epoch: String?) throws -> Bool {
+        guard let epoch, let stored = try changedEpoch(epoch) else { return false }
+        switch resetInSync {
+        case .none:
+            try recoverFromEpochChange(from: stored, to: epoch)
+            resetInSync = .byEpoch
+            return true
+        case .byCursorAhead:
+            // This sync already re-pushed everything after cursorAhead, to this relay: just remember it.
+            try db.setMeta(Self.relayEpochKey, epoch)
+            return false
+        case .byEpoch:
+            // A second reset within one sync. Leave the stored epoch alone, so the next sync (or long-poll)
+            // sees the change and recovers; no loop within this one.
+            log("relay epoch changed again during one sync (now \(epoch)); recovering on the next sync")
+            return false
+        }
+    }
+
+    /// Compares a response's epoch with the stored one and returns the stored one when they differ.
+    /// On first contact (nothing stored yet) it stores the epoch and returns nil.
+    private func changedEpoch(_ epoch: String) throws -> String? {
+        guard let stored = try db.meta(Self.relayEpochKey) else {
+            try db.setMeta(Self.relayEpochKey, epoch)
+            return nil
+        }
+        return stored == epoch ? nil : stored
+    }
+
+    /// Queues everything for push again (cursor to 0), then stores the new epoch. In that order: a crash in
+    /// between only means the next sync recovers once more, which is harmless.
+    private func recoverFromEpochChange(from stored: String, to epoch: String) throws {
+        log("relay epoch changed from \(stored) to \(epoch), so it lost its log; re-pushing all ops, re-pulling from 0")
+        try db.markAllOutbound()
+        try db.setMeta(Self.relayEpochKey, epoch)
     }
 
     private func recordUndecryptable(_ opIDs: [String]) throws {
@@ -322,12 +393,17 @@ public actor SyncEngine {
             }
         } catch TransportError.cursorAhead(let latestSeq) {
             // Not a failure: the next syncOnce re-pushes everything and pulls from 0.
-            try recoverFromRelayReset(relayLatestSeq: latestSeq)
+            try recoverFromCursorAhead(relayLatestSeq: latestSeq)
             return
         } catch {
             // Cut short by a local op: not a failure, go push it.
             if wakePending, !Task.isCancelled { return }
             throw error
+        }
+        if let epoch = page.epoch, let stored = try changedEpoch(epoch) {
+            // Same as cursorAhead: queue everything; the next syncOnce pushes it and pulls from 0.
+            try recoverFromEpochChange(from: stored, to: epoch)
+            return
         }
         try apply(page)
         lastSyncedAt = now()

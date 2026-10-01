@@ -56,8 +56,8 @@ All bodies are JSON and `Data` fields are base64. The types live in `Sources/Cli
 | Route | Auth | What it does |
 | --- | --- | --- |
 | `GET /healthz` | no | `ok` |
-| `POST /v1/ops` | yes | body `PushRequest`, returns `PushResponse`. Duplicate `opID`s are ignored, so retries are safe. A body over 4 MiB (`WireLimits.maxPushBodyBytes`) gets 413 before anything is decoded; too many envelopes or a ciphertext over its cap also give 413. Bad envelopes give 400, including IDs that are empty, over 128 bytes, or contain NUL or other control characters. |
-| `GET /v1/ops?after=&limit=&wait=` | yes | returns `PullResponse` with `seq > after`, ascending. `limit` defaults to 500 and is capped at 500. With nothing new and `wait > 0` (max 30), it holds the request until a push lands or the wait runs out. If `after` is past the newest seq, returns 409 with `CursorAheadResponse { latestSeq }` (see below). |
+| `POST /v1/ops` | yes | body `PushRequest`, returns `PushResponse { latestSeq, epoch }`. Duplicate `opID`s are ignored, so retries are safe. A body over 4 MiB (`WireLimits.maxPushBodyBytes`) gets 413 before anything is decoded; too many envelopes or a ciphertext over its cap also give 413. Bad envelopes give 400, including IDs that are empty, over 128 bytes, or contain NUL or other control characters. |
+| `GET /v1/ops?after=&limit=&wait=` | yes | returns `PullResponse { envelopes, latestSeq, hasMore, epoch }` with `seq > after`, ascending. `limit` defaults to 500 and is capped at 500. With nothing new and `wait > 0` (max 30), it holds the request until a push lands or the wait runs out. If `after` is past the newest seq, returns 409 with `CursorAheadResponse { latestSeq }` (see below). |
 | `PUT /v1/pairing/{id}` | yes | body `PairingBlob`, returns 204. `id` is 32 lowercase hex chars. Body capped at 100 KiB before decoding, blob at 64 KiB (413). Expires after 10 minutes. Never overwrites: an ID that's already live gets 409. At most 100 live blobs (expired ones are purged first); beyond that, 429. |
 | `GET /v1/pairing/{id}` | no | returns the `PairingBlob` once, then deletes it. 404 if missing or expired. No token, because the new device doesn't have one yet; the unguessable ID is the capability. |
 | `POST /v1/auth/rotate` | yes | body `RotateTokenRequest { newTokenSHA256 }` (64 hex chars), returns 204. Replaces the stored token hash; the old token gets 401 from then on. |
@@ -82,12 +82,28 @@ database to authenticate. Where that hash comes from:
 To reset auth by hand (say, after losing every device), stop the relay and run
 `sqlite3 relay.sqlite3 "DELETE FROM meta WHERE key LIKE 'auth_token_%'"`.
 
+### Epoch
+
+When the relay creates its database, it makes a random epoch ID (a UUID string) and stores it in the `meta`
+table under `relay_epoch`. It never changes for the life of that database file, and it's logged at startup.
+Every `PushResponse` and `PullResponse` carries it as `epoch`.
+
+A device stores the last epoch it saw. A different one means the relay lost its log: the database was deleted,
+replaced, or the relay moved to a new VM. The device then queues every op it holds for push again, resets its
+cursor to 0, pushes, and pulls everything. Ops that lived only on the old relay come back this way, because
+every device re-pushes what it holds and the relay dedupes by `opID`. The epoch catches a reset even when other
+devices have already refilled the new log past this device's cursor, which the 409 below can't.
+
+Restoring the database from a backup keeps the old epoch, so only the 409 can catch that case.
+
 ### Cursor ahead of the log
 
 A client's cursor can be past the end of the relay's log if the relay was reset, replaced, or restored from an
 old backup. Long-polling that cursor would hang, and new ops would reuse seqs the client thinks it has seen. So
 the relay answers 409 with `{"latestSeq": n}`. ClipSync maps it to `TransportError.cursorAhead(latestSeq:)`, and
-`SyncEngine` resets its cursor to 0 and pulls again. That's safe because applying an op twice is a no-op.
+`SyncEngine` recovers the same way as for a new epoch: it re-pushes every op and pulls again from 0. That's safe
+because the relay dedupes by `opID` and applying an op twice is a no-op. With epochs this is the second line of
+defense.
 
 ## Deploy to the Linux VM
 

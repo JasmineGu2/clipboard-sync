@@ -26,11 +26,16 @@ struct Relay {
     let storage: SQLiteRelayStorage
     let notifier = PushNotifier()
     let clock = TestClock()
+    var pinnedHash: String?
 
-    init() throws { storage = try .inMemory() }
+    init(pinnedHash: String? = nil) throws {
+        storage = try .inMemory()
+        self.pinnedHash = pinnedHash
+    }
 
     func run(_ body: @Sendable (any TestClientProtocol) async throws -> Void) async throws {
         var config = RelayConfig()
+        config.authTokenSHA256 = pinnedHash
         let clock = self.clock
         config.now = { clock.now }
         let app = Application(router: buildRelayRouter(storage: storage, notifier: notifier, config: config))
@@ -81,7 +86,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
 
 @Suite struct OpsTests {
     @Test func healthz() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
             let response = try await client.execute(uri: "/healthz", method: .get) { $0 }
             #expect(response.status == .ok)
             #expect(String(buffer: response.body) == "ok")
@@ -89,7 +94,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
     }
 
     @Test func pushPullRoundTrip() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
             let sent = (1...3).map { envelope($0) }
             let pushed = try await client.push(sent)
             #expect(pushed.status == .ok)
@@ -113,7 +118,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
     }
 
     @Test func duplicateOpIDIsIgnored() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
             #expect(try decode(PushResponse.self, try await client.push([envelope(1)])).latestSeq == 1)
             // A retry of the same op, plus a duplicate inside one push.
             var retry = envelope(1)
@@ -128,7 +133,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
     }
 
     @Test func paginationAndHasMore() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
             _ = try await client.push((1...7).map { envelope($0) })
 
             var cursor: Int64 = 0
@@ -153,7 +158,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
     }
 
     @Test func pullLimitIsClamped() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
             _ = try await client.push((1...400).map { envelope($0, bytes: 8) })
             _ = try await client.push((401...650).map { envelope($0, bytes: 8) })
 
@@ -167,8 +172,23 @@ func waitUntil(_ condition: () async -> Bool) async throws {
         }
     }
 
+    @Test func cursorAheadOfLogIs409() async throws {
+        try await Relay().run { client async throws in
+            // Empty log: any positive cursor is ahead.
+            let empty = try await client.pull("?after=1")
+            #expect(empty.status == .conflict)
+            #expect(try decode(CursorAheadResponse.self, empty) == CursorAheadResponse(latestSeq: 0))
+
+            _ = try await client.push([envelope(1), envelope(2)])
+            #expect(try await client.pull("?after=2").status == .ok)  // caught up is fine
+            let ahead = try await client.pull("?after=5&wait=20")     // answers at once, no long-poll
+            #expect(ahead.status == .conflict)
+            #expect(try decode(CursorAheadResponse.self, ahead).latestSeq == 2)
+        }
+    }
+
     @Test func badQueryIs400() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
             #expect(try await client.pull("?after=abc").status == .badRequest)
             #expect(try await client.pull("?after=-1").status == .badRequest)
             #expect(try await client.pull("?wait=soon").status == .badRequest)
@@ -182,7 +202,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
     @Test func longPollReturnsWhenPushArrives() async throws {
         let relay = try Relay()
         let notifier = relay.notifier
-        try await relay.run { client in
+        try await relay.run { client async throws in
             let started = ContinuousClock.now
             async let waiting = client.pull("?after=0&wait=20")
 
@@ -202,7 +222,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
     @Test func longPollTimesOutEmpty() async throws {
         let relay = try Relay()
         let notifier = relay.notifier
-        try await relay.run { client in
+        try await relay.run { client async throws in
             let started = ContinuousClock.now
             let page = try decode(PullResponse.self, try await client.pull("?after=0&wait=1"))
             let elapsed = ContinuousClock.now - started
@@ -263,7 +283,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
 
 @Suite struct AuthTests {
     @Test func firstTokenIsAdoptedAndOthersRejected() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
             #expect(try await client.push([envelope(1)]).status == .ok)  // adopts `token`
             #expect(try await client.pull().status == .ok)
             #expect(try await client.pull(token: "wrong-token").status == .unauthorized)
@@ -275,7 +295,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
     }
 
     @Test func missingOrMalformedHeaderIs401() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
             let none = try await client.execute(uri: "/v1/ops", method: .get) { $0 }
             #expect(none.status == .unauthorized)
             let basic = try await client.execute(uri: "/v1/ops", method: .get,
@@ -287,7 +307,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
         }
         // A rejected header never adopts a token.
         let relay = try Relay()
-        try await relay.run { client in
+        try await relay.run { client async throws in
             _ = try await client.execute(uri: "/v1/ops", method: .get, headers: [.authorization: "Bearer "]) { $0 }
             #expect(try await client.pull(token: "second").status == .ok)
             #expect(try await client.pull(token: token).status == .unauthorized)
@@ -296,11 +316,53 @@ func waitUntil(_ condition: () async -> Bool) async throws {
 
     @Test func storesOnlyTheHash() async throws {
         let relay = try Relay()
-        try await relay.run { client in _ = try await client.pull() }
+        try await relay.run { client async throws in _ = try await client.pull() }
         let stored = try await relay.storage.adoptAuthTokenHash("ignored")
         #expect(stored == TokenAuthenticator.sha256Hex(token))
         #expect(stored != token)
         #expect(stored.count == 64)
+    }
+
+    @Test func pinnedHashDisablesTrustOnFirstUse() async throws {
+        try await Relay(pinnedHash: TokenAuthenticator.sha256Hex(token).uppercased()).run { client async throws in
+            // A stranger arriving first is not adopted.
+            #expect(try await client.pull(token: "stranger").status == .unauthorized)
+            #expect(try await client.pull().status == .ok)
+            #expect(try await client.pull(token: "stranger").status == .unauthorized)
+        }
+    }
+
+    @Test func rotateReplacesTheToken() async throws {
+        let relay = try Relay()
+        let newToken = "new-token-after-revocation"
+        let newHash = TokenAuthenticator.sha256Hex(newToken)
+        try await relay.run { client async throws in
+            #expect(try await client.pull().status == .ok)  // adopts `token`
+            func rotate(_ hash: String, with value: String) async throws -> TestResponse {
+                try await client.execute(uri: "/v1/auth/rotate", method: .post, headers: authHeaders(value),
+                                         body: try json(RotateTokenRequest(newTokenSHA256: hash))) { $0 }
+            }
+            #expect(try await rotate(newHash, with: "wrong").status == .unauthorized)
+            #expect(try await rotate("not-hex", with: token).status == .badRequest)
+            #expect(try await rotate(newHash, with: token).status == .noContent)
+            #expect(try await client.pull().status == .unauthorized)
+            #expect(try await client.pull(token: newToken).status == .ok)
+            // Rotating needs the current token, so the old one can't rotate back.
+            #expect(try await rotate(TokenAuthenticator.sha256Hex(token), with: token).status == .unauthorized)
+        }
+        #expect(try await relay.storage.authTokenHash() == newHash)
+    }
+
+    @Test func adoptedHashIsCached() async throws {
+        let relay = try Relay()
+        let storage = relay.storage
+        try await relay.run { client async throws in
+            #expect(try await client.pull().status == .ok)
+            // Changing the row behind the authenticator's back shows requests no longer read storage.
+            try await storage.setAuthTokenHash(TokenAuthenticator.sha256Hex("other"))
+            #expect(try await client.pull().status == .ok)
+            #expect(try await client.pull(token: "other").status == .unauthorized)
+        }
     }
 
     @Test func helpers() {
@@ -319,10 +381,11 @@ func waitUntil(_ condition: () async -> Bool) async throws {
 // MARK: - Pairing
 
 @Suite struct PairingTests {
-    func put(_ client: any TestClientProtocol, _ id: String, _ blob: Data) async throws -> TestResponse {
-        try await client.execute(uri: "/v1/pairing/\(id)", method: .put,
-                                 headers: [.contentType: "application/json"],
-                                 body: try json(PairingBlob(blob: blob))) { $0 }
+    func put(_ client: any TestClientProtocol, _ id: String, _ blob: Data,
+             token value: String? = token) async throws -> TestResponse {
+        let headers: HTTPFields = value.map(authHeaders) ?? [.contentType: "application/json"]
+        return try await client.execute(uri: "/v1/pairing/\(id)", method: .put, headers: headers,
+                                        body: try json(PairingBlob(blob: blob))) { $0 }
     }
 
     func get(_ client: any TestClientProtocol, _ id: String) async throws -> TestResponse {
@@ -330,7 +393,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
     }
 
     @Test func putThenGetOnce() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
             let blob = Data((0..<60).map { UInt8($0) })
             #expect(try await put(client, pairingID, blob).status == .noContent)
             let first = try await get(client, pairingID)
@@ -340,17 +403,40 @@ func waitUntil(_ condition: () async -> Bool) async throws {
         }
     }
 
-    @Test func overwriteAllowed() async throws {
-        try await Relay().run { client in
-            _ = try await put(client, pairingID, Data([1]))
-            #expect(try await put(client, pairingID, Data([2])).status == .noContent)
-            #expect(try decode(PairingBlob.self, try await get(client, pairingID)).blob == Data([2]))
+    @Test func liveIDCannotBeOverwritten() async throws {
+        let relay = try Relay()
+        try await relay.run { client async throws in
+            #expect(try await put(client, pairingID, Data([1])).status == .noContent)
+            #expect(try await put(client, pairingID, Data([2])).status == .conflict)
+            #expect(try decode(PairingBlob.self, try await get(client, pairingID)).blob == Data([1]))
+            // Once taken, or once expired, the ID is free again.
+            #expect(try await put(client, pairingID, Data([3])).status == .noContent)
+            relay.clock.advance(by: 10 * 60)
+            #expect(try await put(client, pairingID, Data([4])).status == .noContent)
+        }
+    }
+
+    @Test func tableIsCappedAt100Live() async throws {
+        let relay = try Relay()
+        try await relay.run { client async throws in
+            for n in 0..<WireLimits.maxLivePairings {
+                #expect(try await put(client, String(format: "%032x", n), Data([1])).status == .noContent)
+            }
+            let extra = String(repeating: "f", count: 32)
+            #expect(try await put(client, extra, Data([1])).status == .tooManyRequests)
+            // Taking one frees a slot.
+            #expect(try await get(client, String(format: "%032x", 0)).status == .ok)
+            #expect(try await put(client, extra, Data([1])).status == .noContent)
+            #expect(try await put(client, String(repeating: "e", count: 32), Data([1])).status == .tooManyRequests)
+            // Expired rows are purged before counting.
+            relay.clock.advance(by: 10 * 60)
+            #expect(try await put(client, String(repeating: "e", count: 32), Data([1])).status == .noContent)
         }
     }
 
     @Test func expiresAfterTenMinutes() async throws {
         let relay = try Relay()
-        try await relay.run { client in
+        try await relay.run { client async throws in
             _ = try await put(client, pairingID, Data([1]))
             relay.clock.advance(by: 9 * 60)
             #expect(try await get(client, pairingID).status == .ok)
@@ -362,7 +448,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
     }
 
     @Test func badIDIs400() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
             for id in ["0123456789ABCDEF0123456789ABCDEF", "0123456789abcdef", "0123456789abcdef0123456789abcdeg",
                        "0123456789abcdef0123456789abcdef0"] {
                 #expect(try await put(client, id, Data([1])).status == .badRequest)
@@ -371,11 +457,13 @@ func waitUntil(_ condition: () async -> Bool) async throws {
         }
     }
 
-    @Test func needsNoToken() async throws {
-        // Pairing must not adopt or require a token.
-        try await Relay().run { client in
-            _ = try await put(client, pairingID, Data([1]))
-            #expect(try await client.pull(token: "later-token").status == .ok)
+    @Test func putNeedsTokenGetDoesNot() async throws {
+        try await Relay().run { client async throws in
+            #expect(try await put(client, pairingID, Data([1]), token: nil).status == .unauthorized)
+            #expect(try await put(client, pairingID, Data([1]), token: token).status == .noContent)  // adopts
+            #expect(try await put(client, pairingID, Data([1]), token: "wrong").status == .unauthorized)
+            // The new device has no token yet.
+            #expect(try await get(client, pairingID).status == .ok)
         }
     }
 }
@@ -384,7 +472,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
 
 @Suite struct LimitTests {
     @Test func tooManyEnvelopesIs413() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
             let response = try await client.push((0...WireLimits.maxEnvelopesPerPush).map { envelope($0, bytes: 4) })
             #expect(response.status == .contentTooLarge)
             #expect(try await client.push((1...WireLimits.maxEnvelopesPerPush).map { envelope($0, bytes: 4) }).status == .ok)
@@ -392,7 +480,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
     }
 
     @Test func oversizedCiphertextIs413() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
             let big = envelope(1, bytes: WireLimits.maxCiphertextBytes + 1)
             #expect(try await client.push([big]).status == .contentTooLarge)
             let max = envelope(2, bytes: WireLimits.maxCiphertextBytes)
@@ -403,7 +491,7 @@ func waitUntil(_ condition: () async -> Bool) async throws {
     }
 
     @Test func invalidEnvelopesAre400() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
             var noOp = envelope(1); noOp.opID = ""
             #expect(try await client.push([noOp]).status == .badRequest)
             var empty = envelope(2); empty.ciphertext = Data()
@@ -413,15 +501,54 @@ func waitUntil(_ condition: () async -> Bool) async throws {
             let garbage = try await client.execute(uri: "/v1/ops", method: .post, headers: authHeaders(),
                                                    body: ByteBuffer(string: "{not json")) { $0 }
             #expect(garbage.status == .badRequest)
+            for bad in ["op\u{0}4", "op\n4", "op\u{1b}4", "op\u{85}4"] {
+                var control = envelope(4); control.opID = bad
+                #expect(try await client.push([control]).status == .badRequest)
+            }
+            #expect(try decode(PullResponse.self, try await client.pull()).envelopes.isEmpty)
+        }
+    }
+
+    @Test func pushBodyOverFourMiBIs413BeforeDecoding() async throws {
+        try await Relay().run { client async throws in
+            // Each envelope is within its own caps, but together they're ~7 MB of JSON.
+            let big = (1...20).map { envelope($0, bytes: WireLimits.maxCiphertextBytes) }
+            #expect(try await client.push(big).status == .contentTooLarge)
+            // Not JSON at all, but over the cap: 413, not 400, so the cap applies before decoding.
+            let junk = ByteBuffer(repeating: UInt8(ascii: "x"), count: WireLimits.maxPushBodyBytes + 1)
+            let response = try await client.execute(uri: "/v1/ops", method: .post, headers: authHeaders(),
+                                                    body: junk) { $0 }
+            #expect(response.status == .contentTooLarge)
+            // ~3.5 MB is fine.
+            let fits = (1...10).map { envelope($0, bytes: WireLimits.maxCiphertextBytes) }
+            #expect(try await client.push(fits).status == .ok)
+        }
+    }
+
+    @Test func idsRoundTripByteForByte() async throws {
+        try await Relay().run { client async throws in
+            var unicode = envelope(1)
+            unicode.opID = "op-é-日本-🙂"
+            unicode.itemID = "item-ü"
+            #expect(try await client.push([unicode]).status == .ok)
+            let page = try decode(PullResponse.self, try await client.pull())
+            #expect(page.envelopes.map(\.opID) == ["op-é-日本-🙂"])
+            #expect(page.envelopes.map(\.itemID) == ["item-ü"])
         }
     }
 
     @Test func oversizedPairingBlobIs413() async throws {
-        try await Relay().run { client in
+        try await Relay().run { client async throws in
+            // Body under the 100 KB cap, blob over 64 KiB.
             let response = try await client.execute(
-                uri: "/v1/pairing/\(pairingID)", method: .put, headers: [.contentType: "application/json"],
+                uri: "/v1/pairing/\(pairingID)", method: .put, headers: authHeaders(),
                 body: try json(PairingBlob(blob: Data(count: 64 * 1024 + 1)))) { $0 }
             #expect(response.status == .contentTooLarge)
+            // Body over the cap, and not even JSON: refused before decoding.
+            let junk = ByteBuffer(repeating: UInt8(ascii: "x"), count: WireLimits.maxPairingBodyBytes + 1)
+            let raw = try await client.execute(uri: "/v1/pairing/\(pairingID)", method: .put,
+                                               headers: authHeaders(), body: junk) { $0 }
+            #expect(raw.status == .contentTooLarge)
         }
     }
 }
@@ -444,6 +571,18 @@ func waitUntil(_ condition: () async -> Bool) async throws {
         #expect(try await reopened.latestSeq() == 2)
         // seq keeps growing after reopen.
         #expect(try await reopened.append([envelope(3)]).latestSeq == 3)
+    }
+
+    @Test func pinnedHashSurvivesRestartWithoutUndoingRotation() async throws {
+        let storage = try SQLiteRelayStorage.inMemory()
+        #expect(try await storage.authTokenHash() == nil)
+        #expect(try await storage.seedAuthTokenHash("pin-1") == "pin-1")
+        try await storage.setAuthTokenHash("rotated")
+        // Same pin on the next start: the rotation stands.
+        #expect(try await storage.seedAuthTokenHash("pin-1") == "rotated")
+        // A new pin value wins.
+        #expect(try await storage.seedAuthTokenHash("pin-2") == "pin-2")
+        #expect(try await storage.authTokenHash() == "pin-2")
     }
 
     @Test func emptyAppendReportsLatestSeq() async throws {

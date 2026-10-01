@@ -32,6 +32,7 @@ let package = Package(
         ]),
         .executableTarget(name: "ClipRelay", dependencies: [
             "RelayCore",
+            .product(name: "ClipWire", package: "ClipSync"),
             .product(name: "Hummingbird", package: "hummingbird"),
             .product(name: "Logging", package: "swift-log"),
         ]),

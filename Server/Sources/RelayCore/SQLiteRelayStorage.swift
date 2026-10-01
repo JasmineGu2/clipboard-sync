@@ -4,8 +4,12 @@ import RelaySQLite
 
 /// SQLite-backed storage. The actor serializes all access to the one connection.
 public actor SQLiteRelayStorage: RelayStorage {
-    private let db: OpaquePointer
+    /// `nonisolated(unsafe)` only so `deinit` (which is nonisolated) can close it. Every other use is on the actor,
+    /// and deinit runs when no other reference, and so no other access, can exist.
+    private nonisolated(unsafe) let db: OpaquePointer
     static let authTokenKey = "auth_token_sha256"
+    /// The last operator pin applied (see `seedAuthTokenHash`).
+    static let authSeedKey = "auth_token_seed_sha256"
 
     /// Opens (creating if needed) the database at `path`. Use ":memory:" for tests.
     public init(path: String) throws {
@@ -60,17 +64,23 @@ public actor SQLiteRelayStorage: RelayStorage {
         var inserted = 0
         if !envelopes.isEmpty {
             try transaction {
+                // Skip known opIDs before inserting rather than relying on INSERT OR IGNORE: an ignored insert
+                // still uses up an AUTOINCREMENT value, which would leave gaps in seq.
+                let exists = try Statement(db, "SELECT 1 FROM envelopes WHERE op_id = ?")
                 let insert = try Statement(db, """
-                    INSERT OR IGNORE INTO envelopes(op_id, item_id, device_id, ciphertext) VALUES(?, ?, ?, ?)
+                    INSERT INTO envelopes(op_id, item_id, device_id, ciphertext) VALUES(?, ?, ?, ?)
                     """)
                 for envelope in envelopes {
+                    try exists.reset()
+                    try exists.bind(1, envelope.opID)
+                    if try exists.step() { continue }
                     try insert.reset()
                     try insert.bind(1, envelope.opID)
                     try insert.bind(2, envelope.itemID)
                     try insert.bind(3, envelope.deviceID)
                     try insert.bind(4, envelope.ciphertext)
                     _ = try insert.step()
-                    inserted += Int(sqlite3_changes(db))
+                    inserted += 1
                 }
             }
         }
@@ -108,15 +118,32 @@ public actor SQLiteRelayStorage: RelayStorage {
 
     // MARK: Pairing
 
-    public func putPairing(id: String, blob: Data, expiresAt: Int64, now: Int64) throws {
+    public func putPairing(
+        id: String, blob: Data, expiresAt: Int64, now: Int64, maxLive: Int
+    ) throws -> PairingPutResult {
+        var result = PairingPutResult.stored
         try transaction {
             try purgeExpiredPairings(now: now)
-            let put = try Statement(db, "INSERT OR REPLACE INTO pairing(id, blob, expires_at) VALUES(?, ?, ?)")
+            // After the purge every remaining row is live, so these checks need no expiry filter.
+            let exists = try Statement(db, "SELECT 1 FROM pairing WHERE id = ?")
+            try exists.bind(1, id)
+            if try exists.step() {
+                result = .idTaken
+                return
+            }
+            let count = try Statement(db, "SELECT COUNT(*) FROM pairing")
+            _ = try count.step()
+            if count.int64(0) >= Int64(maxLive) {
+                result = .full
+                return
+            }
+            let put = try Statement(db, "INSERT INTO pairing(id, blob, expires_at) VALUES(?, ?, ?)")
             try put.bind(1, id)
             try put.bind(2, blob)
             try put.bind(3, expiresAt)
             _ = try put.step()
         }
+        return result
     }
 
     public func takePairing(id: String, now: Int64) throws -> Data? {
@@ -144,17 +171,50 @@ public actor SQLiteRelayStorage: RelayStorage {
 
     // MARK: Auth
 
+    public func authTokenHash() throws -> String? {
+        try readMeta(Self.authTokenKey)
+    }
+
     public func adoptAuthTokenHash(_ hash: String) throws -> String {
         let insert = try Statement(db, "INSERT OR IGNORE INTO meta(key, value) VALUES(?, ?)")
         try insert.bind(1, Self.authTokenKey)
         try insert.bind(2, hash)
         _ = try insert.step()
-        let select = try Statement(db, "SELECT value FROM meta WHERE key = ?")
-        try select.bind(1, Self.authTokenKey)
-        guard try select.step() else {
+        guard let stored = try readMeta(Self.authTokenKey) else {
             throw StorageError(code: SQLITE_ERROR, message: "auth token hash missing after insert")
         }
+        return stored
+    }
+
+    public func setAuthTokenHash(_ hash: String) throws {
+        try writeMeta(Self.authTokenKey, hash)
+    }
+
+    public func seedAuthTokenHash(_ hash: String) throws -> String {
+        var current = hash
+        try transaction {
+            if try readMeta(Self.authSeedKey) == hash, let stored = try readMeta(Self.authTokenKey) {
+                current = stored  // same pin as last time: keep any rotation made since
+                return
+            }
+            try writeMeta(Self.authTokenKey, hash)
+            try writeMeta(Self.authSeedKey, hash)
+        }
+        return current
+    }
+
+    private func readMeta(_ key: String) throws -> String? {
+        let select = try Statement(db, "SELECT value FROM meta WHERE key = ?")
+        try select.bind(1, key)
+        guard try select.step() else { return nil }
         return select.text(0)
+    }
+
+    private func writeMeta(_ key: String, _ value: String) throws {
+        let upsert = try Statement(db, "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)")
+        try upsert.bind(1, key)
+        try upsert.bind(2, value)
+        _ = try upsert.step()
     }
 
     // MARK: Diagnostics
@@ -219,8 +279,21 @@ private final class Statement {
         try check(sqlite3_clear_bindings(handle))
     }
 
+    /// Binds the string's exact UTF-8 bytes. Passing the real length (never -1) means SQLite doesn't scan for
+    /// a NUL terminator, so the stored text is exactly what was validated.
     func bind(_ index: Int32, _ value: String) throws {
-        try check(sqlite3_bind_text(handle, index, value, -1, Self.transient))
+        var value = value
+        let handle = self.handle
+        let rc = value.withUTF8 { bytes -> Int32 in
+            guard let base = bytes.baseAddress, !bytes.isEmpty else {
+                // A nil pointer would bind NULL; bind empty text instead.
+                return sqlite3_bind_text(handle, index, "", 0, Self.transient)
+            }
+            return base.withMemoryRebound(to: CChar.self, capacity: bytes.count) {
+                sqlite3_bind_text(handle, index, $0, Int32(bytes.count), Self.transient)
+            }
+        }
+        try check(rc)
     }
 
     func bind(_ index: Int32, _ value: Int64) throws {
@@ -252,9 +325,11 @@ private final class Statement {
         sqlite3_column_int64(handle, column)
     }
 
+    /// Reads the column's exact byte length rather than stopping at the first NUL.
     func text(_ column: Int32) -> String {
         guard let pointer = sqlite3_column_text(handle, column) else { return "" }
-        return String(cString: pointer)
+        let count = Int(sqlite3_column_bytes(handle, column))
+        return String(decoding: UnsafeBufferPointer(start: pointer, count: count), as: UTF8.self)
     }
 
     func blob(_ column: Int32) -> Data {

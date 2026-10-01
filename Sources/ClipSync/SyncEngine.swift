@@ -152,10 +152,19 @@ public actor SyncEngine {
         status = .syncing
         do {
             try await pushPending()
+            var didResetCursor = false
             while true {
                 try Task.checkCancellation()
-                let page = try await transport.pull(
-                    after: try db.syncCursor(), limit: WireLimits.defaultPullLimit, wait: 0)
+                let page: PullResponse
+                do {
+                    page = try await transport.pull(
+                        after: try db.syncCursor(), limit: WireLimits.defaultPullLimit, wait: 0)
+                } catch TransportError.cursorAhead(let latestSeq) where !didResetCursor {
+                    // Once per sync: a second cursorAhead right after resetting to 0 would mean a broken relay.
+                    try resetCursor(relayLatestSeq: latestSeq)
+                    didResetCursor = true
+                    continue
+                }
                 try apply(page)
                 if !page.hasMore || page.envelopes.isEmpty { break }
             }
@@ -238,6 +247,15 @@ public actor SyncEngine {
         if !inserted.isEmpty { changesContinuation.yield() }
     }
 
+    /// The relay's log ends before our cursor, so it lost data (reset, or restored from an old backup).
+    /// Start over from 0. Safe because applying an op this device already has is a no-op (merge is idempotent);
+    /// the only cost is re-downloading what the relay still holds.
+    private func resetCursor(relayLatestSeq: Int64) throws {
+        let cursor = try db.syncCursor()
+        log("relay log ends at seq \(relayLatestSeq), before our cursor \(cursor); re-pulling from 0")
+        try db.setSyncCursor(0)
+    }
+
     private func recordUndecryptable(_ opIDs: [String]) throws {
         let existing = try db.meta(Self.undecryptableKey)
             .flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) } ?? []
@@ -299,6 +317,10 @@ public actor SyncEngine {
             } onCancel: {
                 task.cancel()
             }
+        } catch TransportError.cursorAhead(let latestSeq) {
+            // Not a failure: the next syncOnce pulls from 0.
+            try resetCursor(relayLatestSeq: latestSeq)
+            return
         } catch {
             // Cut short by a local op: not a failure, go push it.
             if wakePending, !Task.isCancelled { return }

@@ -51,12 +51,12 @@ final class HTTPTransportTests: XCTestCase {
         XCTAssertNil(anonymous.pull(after: 0, limit: 1, wait: 0).value(forHTTPHeaderField: "Authorization"))
     }
 
-    func testPairingRequestsCarryNoToken() throws {
+    func testPairingPutCarriesTokenAndTakeDoesNot() throws {
         let builder = try makeBuilder()
         let put = try builder.putPairing(id: "0123456789abcdef0123456789abcdef", blob: Data([9]))
         XCTAssertEqual(put.httpMethod, "PUT")
         XCTAssertEqual(put.url?.absoluteString, "http://relay.tailnet:8080/v1/pairing/0123456789abcdef0123456789abcdef")
-        XCTAssertNil(put.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertEqual(put.value(forHTTPHeaderField: "Authorization"), "Bearer abc123")
         let blob = try JSONDecoder().decode(PairingBlob.self, from: try XCTUnwrap(put.httpBody))
         XCTAssertEqual(blob.blob, Data([9]))
 
@@ -79,9 +79,28 @@ final class HTTPTransportTests: XCTestCase {
         XCTAssertEqual(error(401), .unauthorized)
         XCTAssertEqual(error(403), .unauthorized)
         XCTAssertEqual(error(404), .notFound)
+        XCTAssertEqual(error(409), .conflict)
         XCTAssertEqual(error(413), .payloadTooLarge)
+        XCTAssertEqual(error(429), .rateLimited)
         XCTAssertEqual(error(400, "bad after"), .badRequest("bad after"))
         XCTAssertEqual(error(500), .server(500))
         XCTAssertEqual(error(302), .server(302))
+    }
+
+    func testPullConflictMapsToCursorAhead() throws {
+        func pullError(_ status: Int, _ body: Data) -> TransportError? {
+            do {
+                try RelayRequestBuilder.checkPull(status: status, body: body)
+                return nil
+            } catch {
+                return error as? TransportError
+            }
+        }
+        let body = try JSONEncoder().encode(CursorAheadResponse(latestSeq: 7))
+        XCTAssertEqual(String(decoding: body, as: UTF8.self), #"{"latestSeq":7}"#)
+        XCTAssertEqual(pullError(409, body), .cursorAhead(latestSeq: 7))
+        XCTAssertEqual(pullError(409, Data("nope".utf8)), .decoding)
+        XCTAssertNil(pullError(200, Data()))
+        XCTAssertEqual(pullError(401, Data()), .unauthorized)
     }
 }

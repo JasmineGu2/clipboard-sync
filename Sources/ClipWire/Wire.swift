@@ -42,6 +42,7 @@ public struct PushResponse: Codable, Sendable {
 /// With wait > 0 and nothing new, the server holds the request up to `wait` seconds (long-poll).
 /// Cursor rule: after applying a page, move the cursor to the LAST envelope's `seq`, not `latestSeq`.
 /// `latestSeq` is the newest seq in the whole log; when `hasMore` is true they differ.
+/// If `after` is greater than the relay's `latestSeq`, the relay answers 409 with `CursorAheadResponse`.
 public struct PullResponse: Codable, Sendable {
     public var envelopes: [Envelope]   // ordered by seq ascending
     public var latestSeq: Int64
@@ -53,17 +54,39 @@ public struct PullResponse: Codable, Sendable {
     }
 }
 
-/// PUT /v1/pairing/<pairingID>   (one blob per ID, expires after 10 minutes; 204 on success)
-/// GET /v1/pairing/<pairingID>   (returns once, then deletes; 404 if missing or expired)
+/// 409 body for GET /v1/ops when `after` is past the end of the log. It means the relay lost its log
+/// (reset, restored from an old backup, or replaced). The client resets its cursor to 0 and pulls again;
+/// that's safe because applying an op twice is a no-op.
+public struct CursorAheadResponse: Codable, Sendable, Equatable {
+    /// Highest seq the relay has (0 when its log is empty).
+    public var latestSeq: Int64
+    public init(latestSeq: Int64) { self.latestSeq = latestSeq }
+}
+
+/// PUT /v1/pairing/<pairingID>   (bearer token required: only a device already in the vault can park a key.
+///                                One blob per ID, expires after 10 minutes. 204 on success, 409 if the ID
+///                                is already taken and not expired, 429 when the relay holds too many.)
+/// GET /v1/pairing/<pairingID>   (no token: the new device has none yet. Returns once, then deletes;
+///                                404 if missing or expired.)
 public struct PairingBlob: Codable, Sendable {
     public var blob: Data
     public init(blob: Data) { self.blob = blob }
 }
 
+/// POST /v1/auth/rotate   (bearer token required: the CURRENT token; 204 on success)
+/// Replaces the relay's stored token hash. Used for revocation (design §3): after making a new vault key,
+/// a remaining device sends SHA-256(new token) here, and the old token stops working at once.
+public struct RotateTokenRequest: Codable, Sendable, Equatable {
+    /// SHA-256 of the new bearer token, 64 hex characters. The token itself never leaves the device.
+    public var newTokenSHA256: String
+    public init(newTokenSHA256: String) { self.newTokenSHA256 = newTokenSHA256 }
+}
+
 public enum WireHeaders {
     /// `Authorization: Bearer <token>`. Token = HKDF(vaultKey, "clip.auth.v1"), hex.
-    /// The server stores SHA-256(token) on first use (trust on first use) and rejects any other token.
-    /// Pairing endpoints need no token; the pairing ID itself is unguessable.
+    /// The server stores only SHA-256(token). It's either pinned by the operator (`--token-sha256`) or
+    /// adopted from the first request it sees (trust on first use), and can be replaced via /v1/auth/rotate.
+    /// Every route needs it except `GET /healthz` and `GET /v1/pairing/<id>`.
     public static let authorization = "Authorization"
 }
 
@@ -75,6 +98,33 @@ public enum WireLimits {
     public static let defaultPullLimit = 500
     public static let maxPullLimit = 1000
     public static let maxPairingBlobBytes = 64 * 1024
+    /// Whole pairing PUT body cap, checked before decoding (64 KiB of blob is ~87 KiB as base64 JSON).
+    public static let maxPairingBodyBytes = 100 * 1024
+    /// Most unexpired pairing blobs the relay holds at once; beyond it a PUT gets 429.
+    public static let maxLivePairings = 100
+    /// opID, itemID and deviceID: 1...128 UTF-8 bytes, no NUL or other control characters.
     public static let maxIDBytes = 128
     public static let maxWaitSeconds = 30
+}
+
+extension WireLimits {
+    /// True for a valid opID, itemID or deviceID: 1...maxIDBytes UTF-8 bytes with no C0 or C1 control
+    /// characters (which includes NUL). The relay answers 400 for anything else.
+    public static func isValidID(_ id: String) -> Bool {
+        let count = id.utf8.count
+        guard count > 0, count <= maxIDBytes else { return false }
+        return !id.unicodeScalars.contains { $0.value < 0x20 || (0x7f...0x9f).contains($0.value) }
+    }
+
+    /// Pairing IDs are exactly 32 lowercase hex characters (design §3).
+    public static func isValidPairingID(_ id: String) -> Bool {
+        id.utf8.count == 32 && id.utf8.allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }
+    }
+
+    /// A SHA-256 digest as 64 hex characters (either case).
+    public static func isValidSHA256Hex(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy {
+            (0x30...0x39).contains($0) || (0x61...0x66).contains($0) || (0x41...0x46).contains($0)
+        }
+    }
 }

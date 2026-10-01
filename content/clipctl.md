@@ -67,6 +67,12 @@ When you `clipctl copy` an item, clipctl marks the clipboard the same way passwo
 
 On macOS and Linux, `watch` only syncs.
 
+## Locking the relay to your vault
+
+`clipctl status` shows a **Relay pin**: a hash of your vault's relay token. Start the relay with it
+(`CLIP_RELAY_TOKEN_SHA256=<pin>`, see Server/README.md) and it only ever accepts your vault. The pin is safe to
+copy around; it can't be used to log in.
+
 ## Where things live
 
 The home folder is `%APPDATA%\ClipSync` on Windows and `~/.config/clipsync` elsewhere. `--home <dir>` points at a different folder, and that's how you run two separate clients on one PC.

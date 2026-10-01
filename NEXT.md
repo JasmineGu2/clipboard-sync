@@ -10,7 +10,7 @@
 
 ## Needs Jazz
 1. Mac: build apps/Apple, then measure N3 (launch) and N4 (energy).
-2. VM: deploy the relay (Server/README.md), pin the token hash, rerun N1 across real devices over Tailscale.
+2. VM (Hetzner account ready, no server yet): create the server, deploy the relay (Server/README.md), pin it with the "Relay pin" from `clipctl status`, rerun N1 across real devices over Tailscale.
 3. Cleanup: 17 merged worktree folders (Desktop/swift-t02 to swift-t25). OK to `git worktree remove` them?
 
 ## Next build tasks (no hardware needed)

@@ -71,6 +71,12 @@ final class KnownAnswerTests: XCTestCase {
         XCTAssertEqual(reference.okm.hexString, expected)
     }
 
+    /// Must match the relay's TokenAuthenticator.sha256Hex. Expected value from Python's hashlib.
+    func testAuthTokenSHA256KnownAnswer() throws {
+        let key = try VaultKey(rawBytes: fixedKeyBytes)
+        XCTAssertEqual(key.authTokenSHA256, "2f6bdcf1d0816cda116b9aaeb204a2693921b765387e9dee14909bdbae2a5d18")
+    }
+
     func testDataKeyKnownAnswer() throws {
         let key = try VaultKey(rawBytes: fixedKeyBytes)
         let expected = "9465a96eb24eb872e7e5cb56ca56db2315114376732c30cd5078e7607708deb7"

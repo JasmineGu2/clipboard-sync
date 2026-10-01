@@ -334,6 +334,7 @@ struct Status: AsyncParsableCommand {
             ("Cursor", String(try db.syncCursor())),
             ("Last sync", try db.meta(Client.lastSyncKey) ?? "never"),
             ("Last error", try db.meta(Client.lastErrorKey) ?? "none"),
+            ("Relay pin", client.key.authTokenSHA256),
             ("Capture", client.home.isPaused ? "paused (\(client.home.pausedURL.path) exists)" : "on"),
         ]
         for (label, value) in rows {

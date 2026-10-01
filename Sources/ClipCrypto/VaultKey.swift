@@ -38,6 +38,12 @@ public struct VaultKey: Sendable {
         derive(info: "clip.auth.v1").withUnsafeBytes { $0.hexString }
     }
 
+    /// hex(SHA-256(UTF-8 of `authToken`)): what the relay stores, and what `--token-sha256` pins.
+    /// Safe to show: it identifies the vault to the relay but can't be used as a token.
+    public var authTokenSHA256: String {
+        SHA256.hash(data: Data(authToken.utf8)).hexString
+    }
+
     /// Encrypts ops: HKDF-SHA256(vault, salt "clip.v1", info "clip.data.v1", 32 bytes).
     var dataKey: SymmetricKey {
         derive(info: "clip.data.v1")

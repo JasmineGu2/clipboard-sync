@@ -68,7 +68,9 @@ Every route except `GET /healthz` and `GET /v1/pairing/{id}` needs `Authorizatio
 stores only SHA-256 of the token, and keeps it in memory after the first lookup, so a request doesn't touch the
 database to authenticate. Where that hash comes from:
 
-- **Pinned (recommended).** Start the relay with `--token-sha256 <hex>` or `CLIP_RELAY_TOKEN_SHA256`. Trust on
+- **Pinned (recommended).** Start the relay with `--token-sha256 <hex>` or `CLIP_RELAY_TOKEN_SHA256`. Get the
+  value from the "Relay pin" row of `clipctl status` on any device in the vault. With Docker, recreate the
+  container with `-e CLIP_RELAY_TOKEN_SHA256=<pin>`; the volume keeps the log. Trust on
   first use is off, so a stranger who reaches the relay first can't claim it. Each distinct pin is written to
   the database once. Restarting with the same pin keeps any rotation made since then, so a restart doesn't
   undo a revocation. Changing the pin replaces the stored hash.

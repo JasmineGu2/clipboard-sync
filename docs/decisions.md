@@ -48,3 +48,8 @@
 - **Why:** Resetting the cursor alone never brought back ops that lived only on the lost relay. The relay dedupes by opID, so many devices re-pushing is safe. VACUUM can renumber implicit rowids.
 - **Limit:** A reset is only detected when a device's cursor is past the new relay's latest seq. To be closed by a relay epoch ID (T22).
 - **Alternatives:** Re-push only this device's own ops (loses ops from devices that never return).
+
+## 2026-10-01: App logic lives in a cross-platform ClipAppCore; SwiftUI stays thin
+- **Decision:** `HistoryModel` (@Observable), onboarding, capture filtering and the one-shot send live in ClipAppCore, which builds and tests on Windows. apps/Apple holds only SwiftUI views and platform adapters (Keychain, NSPasteboard/UIPasteboard).
+- **Why:** There's no Mac on hand. This puts about 90% of the app's behavior under test now; only the thin UI waits for Xcode.
+- **Also:** `Strings` mirrors content/app.md and a test keeps them in sync (SwiftUI needs compile-time strings). The share extension and Shortcut use a one-shot send against the App Group database.

@@ -578,3 +578,102 @@ Files changed:
 I worked directly in the worktree without subagents or skills, because the task covered only these four files.</result>
 <usage><subagent_tokens>105396</subagent_tokens><tool_uses>23</tool_uses><duration_ms>531835</duration_ms></usage>
 </task-notification>
+
+## 2026-10-01 06:42
+<task-notification>
+<task-id>a07852607ea37f57b</task-id>
+<tool-use-id>toolu_01DT25rjPsbSsJ6KbXgXJbtM</tool-use-id>
+<output-file>C:\Users\JASMIN~1\AppData\Local\Temp\claude\C--Users-Jasmine-Gu-desktop-swift\14a38c1b-a71c-4b5c-b11e-9c1df7b67d79\tasks\a07852607ea37f57b.output</output-file>
+<status>completed</status>
+<summary>Agent "T20 GitHub Actions CI" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I added both workflows and committed them on `t20` as `da9eb15`, touching only `.github/`. I couldn't run Actions here, so none of it has run. Both files pass a YAML syntax check with PyYAML.
+
+**`.github/workflows/ci.yml`** (runs on push and pull_request)
+- `linux`: the `swift:6.3` container on ubuntu-24.04, running `swift build`, `swift test`, then `swift run -c release ConvergenceHarness --seeds 2000`.
+- `windows`: windows-latest with `compnerd/gha-setup-swift`, `branch: swift-6.3-release` and `tag: 6.3-RELEASE`, then `swift build` and `swift test`. A comment notes the argument-parser pin.
+- `macos`: macos-15, `swift build` and `swift test` on the root package.
+- `relay`: the `swift:6.3` container, `apt-get install -y libsqlite3-dev`, then `swift test` in `Server/`.
+- Each job caches its `.build` directory, keyed on `Package.resolved`. The relay key also includes `Server/Package.resolved` and `Server/Package.swift`.
+- I also added a concurrency group that cancels superseded runs, and `contents: read` permissions.
+
+**`.github/workflows/nightly.yml`** (daily at 06:00 UTC, plus manual dispatch)
+- It runs `swift run -c release ConvergenceHarness --seeds 20000 --start ${{ github.run_number }}000000`.
+- The output is piped through `tee harness-output.txt`, and the log includes the harness's `repro:` line.
+- The file uploads as the `harness-output-&lt;run_number&gt;` artifact even when the run fails.
+
+Choices I wasn't sure about:
+- **Windows action version:** I used `compnerd/gha-setup-swift@main` because I couldn't check its current release tag offline. Pin it to a release tag once you've confirmed one.
+- **Toolchain tag:** `6.3-RELEASE` is a guess at the naming convention. If the Windows job fails at setup, check the branch and tag spelling first.
+- **macOS toolchain:** I didn't pin an Xcode version, so it uses the runner's default. Both packages use `swift-tools-version:6.0`, so that should be enough.
+- **Relay on macOS:** it only runs on Linux, as you specified.
+- **Nightly harness build:** it builds the whole root package before running the harness.
+
+The Windows job, the `swift:6.3` image tag and the nightly artifact upload are the likeliest places to need a fix after the first real run.</result>
+<usage><subagent_tokens>48932</subagent_tokens><tool_uses>2</tool_uses><duration_ms>28883</duration_ms></usage>
+</task-notification>
+
+## 2026-10-01 06:48
+<task-notification>
+<task-id>a9371efcbc3cc1222</task-id>
+<tool-use-id>toolu_013kM9aGqsCtcSQankA68W2X</tool-use-id>
+<output-file>C:\Users\JASMIN~1\AppData\Local\Temp\claude\C--Users-Jasmine-Gu-desktop-swift\14a38c1b-a71c-4b5c-b11e-9c1df7b67d79\tasks\a9371efcbc3cc1222.output</output-file>
+<status>completed</status>
+<summary>Agent "T10-T14 Apple apps" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>The shared app model (ClipAppCore) is built and fully tested on Windows. The Mac and iPhone apps are written but haven't been compiled yet, since that needs Xcode on your MacBook. Everything is committed on `t10` as `2e5653d`.
+
+## What's verified on Windows
+- **`swift build`** passes.
+- **`swift test`** passes: 152 tests, 0 failures, across 6 test bundles. The 36 new ClipAppCore tests also passed 6 extra runs in a row with no flaky failures.
+- **Convergence harness**: 500/500 seeds converged.
+- **`@Observable` (the Observation framework) builds on Windows**, so I didn't need the fallback design.
+
+## What the new tests cover
+- Sending text and seeing it arrive on a second device.
+- Search waits until you stop typing: three quick keystrokes run one query.
+- Pinned items get their own section, and paging works (first page, load more, end of list).
+- The history refreshes by itself when another device makes a change.
+- Rename, tags and delete.
+- Setup: create a vault, quit, relaunch straight into the history.
+- Joining with a code from another device pulls the history over. A wrong or already-used code shows a message.
+- A bad server URL or a dead server leaves the app in setup and saves nothing.
+- The one-shot send used by the share extension and Shortcuts: success, saved-for-later on a timeout, and "finish setup first".
+- The clipboard filter, the poller and pause, and every error mapping to a message.
+- `Strings` matching `content/app.md`, and the Shortcuts action's text matching `Strings`.
+
+## Changes you might not expect
+- **Big copies are skipped quietly on the Mac.** The clipboard filter allows up to 1 MB as you asked, but the relay only accepts about 256 KB per item. So a 300 KB copy is skipped without an alert, while an explicit Send does show "too large".
+- **The Shortcuts action's text appears twice.** Xcode's App Intents tool only reads literal text, so those four strings are written out again in `SendClipboardIntent.swift`. A test fails if they drift from `Strings`.
+- **`Package.swift` edit** is two adjacent target lines plus one product line, so the merge with the clipctl branch should be easy.
+- **Placeholder port is 8787**, matching the relay's default from `Server/README.md`, not 8080.
+
+## Not verified
+None of `apps/Apple` has been compiled. I reviewed it by hand against the iOS 17 and macOS 14 APIs.
+
+## Check these first on the Mac
+1. **App Groups with a free Apple ID.** I'm not sure a free account can use App Groups. If it can't, the iPhone app still works, but the share extension and Shortcuts action will say "finish setup first".
+2. **`$(AppIdentifierPrefix)` in Info.plist.** The iOS keychain group name relies on this expanding to your team ID. If it doesn't, the extension can't find the key.
+3. **Mac keychain.** The key store uses the iOS-style keychain on the Mac, which needs a provisioning profile. Error -34018 means it's missing. I added a Mac keychain group so Xcode creates one.
+4. **App Intent syntax.** `description` and `openAppWhenRun` are written as `static let`. If Xcode complains, change them to `static var`.
+5. **Older compiler.** I tested with Swift 6.4. Xcode 16's older compiler should be fine but hasn't been tried.
+6. **Concurrency warnings in the UI code.** It builds in Swift 5 mode with full checking, so expect warnings, not errors.
+7. **SwiftUI details to eyeball:** text fields and alerts inside the menu bar window, and how the iOS paste button looks in the toolbar.
+8. **Clipboard privacy prompt.** Newer macOS versions may ask before an app reads the clipboard. The watcher only reads the text when the change counter moves, but it will still trigger the prompt.
+9. **Plain HTTP to the relay.** Apple blocks it by default, so I allowed `ts.net` addresses and local networking. A relay URL on some other domain would still be blocked.
+10. **Known limit:** pinned items only show if they're in the loaded page (newest 200 by default). Fixing that properly needs a pinned-items query in ClipStore, which I don't own.
+
+## Housekeeping
+- I didn't touch `docs/decisions.md` or `docs/board.md` because they're outside my files. Decisions worth logging:
+  - Observation (`@Observable`) is used in ClipAppCore.
+  - `Strings` and `content/app.md` are kept in sync by a test.
+  - The share extension and Shortcuts use a separate one-shot send against the shared database.
+- I moved a throwaway Observation test file to my scratchpad folder instead of deleting it. It was never committed.
+
+Key files:
+- `C:\Users\Jasmine Gu\Desktop\swift-t10\Sources\ClipAppCore\` (`HistoryModel.swift`, `ClipApp.swift`, `CaptureFilter.swift`, `Strings.swift`, `AppMessage.swift`, `AppConfig.swift`)
+- `C:\Users\Jasmine Gu\Desktop\swift-t10\Tests\ClipAppCoreTests\`
+- `C:\Users\Jasmine Gu\Desktop\swift-t10\apps\Apple\` (`project.yml`, `README.md` with the MacBook steps, `Shared/`, `macOS/`, `iOS/`, `ShareExtension/`)
+- `C:\Users\Jasmine Gu\Desktop\swift-t10\content\app.md`</result>
+<usage><subagent_tokens>196448</subagent_tokens><tool_uses>61</tool_uses><duration_ms>1141591</duration_ms></usage>
+</task-notification>

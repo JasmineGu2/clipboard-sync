@@ -7,7 +7,7 @@ extension ItemState {
         switch op.kind {
         case .create(let content):
             // First writer (lowest timestamp) wins, so a duplicate or racing create can't change content.
-            if createdBy == nil || op.timestamp < createdBy! {
+            if createdBy.map({ op.timestamp < $0 }) ?? true {
                 self.content = content
                 self.createdBy = op.timestamp
             }
@@ -50,6 +50,9 @@ public struct HybridClock: Sendable {
         let physical = now()
         if physical > last.wall {
             last = (physical, 0)
+        } else if last.counter == .max {
+            // A peer can hand us counter == .max via observe(); `+= 1` would trap. Borrow a millisecond instead.
+            last = (last.wall + 1, 0)
         } else {
             last.counter += 1
         }

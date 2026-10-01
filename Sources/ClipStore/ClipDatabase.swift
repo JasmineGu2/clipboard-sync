@@ -18,7 +18,8 @@ public struct StoreError: Error, CustomStringConvertible, Sendable {
 /// Local op log plus the materialized items and their full-text index. See docs/design.md §4.
 ///
 /// One connection, guarded by a lock, so calls from any thread are serialized.
-/// Every mutation runs in a transaction; with WAL this gives crash safety (PRD N12).
+/// Every mutation runs in a transaction. WAL with `synchronous = FULL` makes each commit durable once the call
+/// returns, so a copied clip or a queued outbound op survives power loss (PRD N12).
 public final class ClipDatabase: @unchecked Sendable {
     private let lock = NSLock()
     private var db: OpaquePointer?
@@ -59,8 +60,9 @@ public final class ClipDatabase: @unchecked Sendable {
         do {
             sqlite3_busy_timeout(handle, 5_000)
             try exec("PRAGMA journal_mode = WAL")
-            try exec("PRAGMA synchronous = NORMAL")
+            try exec("PRAGMA synchronous = FULL")
             try migrate()
+            try createQueryTokenizer()
         } catch {
             close()
             throw error
@@ -68,7 +70,12 @@ public final class ClipDatabase: @unchecked Sendable {
     }
 
     public convenience init(url: URL) throws {
-        let path = url.withUnsafeFileSystemRepresentation { String(cString: $0!) }
+        let path = try url.withUnsafeFileSystemRepresentation { pointer -> String in
+            guard let pointer else {
+                throw StoreError(code: SQLITE_CANTOPEN, message: "no file system path for \(url)")
+            }
+            return String(cString: pointer)
+        }
         try self.init(path: path)
     }
 
@@ -120,15 +127,14 @@ public final class ClipDatabase: @unchecked Sendable {
                 var order: [ItemID] = []
                 try query("SELECT body FROM ops ORDER BY rowid") { stmt in
                     let op = try decoder.decode(Op.self, from: columnData(stmt, 0))
-                    if folded[op.itemID] == nil {
-                        folded[op.itemID] = ItemState(id: op.itemID)
-                        order.append(op.itemID)
-                    }
-                    folded[op.itemID]!.apply(op)
+                    if folded[op.itemID] == nil { order.append(op.itemID) }
+                    folded[op.itemID, default: ItemState(id: op.itemID)].apply(op)
                 }
                 try run("DELETE FROM items_fts")
                 try run("DELETE FROM items")
-                for id in order { try writeState(folded[id]!) }
+                for id in order {
+                    if let state = folded[id] { try writeState(state) }
+                }
             }
         }
     }
@@ -178,20 +184,20 @@ public final class ClipDatabase: @unchecked Sendable {
 
     /// Full-text search over text, title and tags. Each word is a prefix match; all words must match.
     /// Ranked by bm25, then newest first. An empty query returns `items(limit:)`.
+    /// Words the tokenizer reduces to nothing (punctuation, emoji, lone combining marks) are ignored;
+    /// a query made only of such words returns [].
     public func search(_ query: String, limit: Int = 100) throws -> [ItemState] {
-        let tokens = query.split(whereSeparator: { $0.isWhitespace })
-            .filter { word in word.unicodeScalars.contains { $0.properties.isAlphabetic || $0.properties.numericType != nil } }
-        if tokens.isEmpty {
-            if query.allSatisfy(\.isWhitespace) { return try items(limit: limit) }
-            return []  // only punctuation or symbols: nothing the tokenizer indexes
-        }
-        let match = tokens
-            .map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"*" }
-            .joined(separator: " AND ")
+        let words = query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        if words.isEmpty { return try items(limit: limit) }
         return try locked {
-            try states(
+            let searchable = try wordsWithTokens(words)
+            if searchable.isEmpty { return [] }
+            let match = searchable
+                .map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"*" }
+                .joined(separator: " AND ")
+            return try states(
                 """
-                SELECT i.state FROM items_fts f JOIN items i ON i.rowid = f.rowid
+                SELECT i.state FROM items_fts f JOIN items i ON i.id = f.rowid
                 WHERE items_fts MATCH ? AND i.visible = 1
                 ORDER BY bm25(items_fts, 0.0, 1.0, 2.0, 2.0),
                          i.created_wall DESC, i.created_counter DESC, i.created_device DESC
@@ -222,6 +228,31 @@ public final class ClipDatabase: @unchecked Sendable {
         try locked { try readMeta(key) }
     }
 
+    /// The highest timestamp of any stored op (local or remote), or nil when the log is empty.
+    public func maxOpTimestamp() throws -> HLCTimestamp? {
+        try locked {
+            var body: Data?
+            // ts_wall holds the UInt64 bit pattern: values past Int64.max are stored negative, so they sort first.
+            try query(
+                """
+                SELECT body FROM ops
+                ORDER BY ts_wall < 0 DESC, ts_wall DESC, ts_counter DESC, ts_device DESC
+                LIMIT 1
+                """
+            ) { body = columnData($0, 0) }
+            return try body.map { try decoder.decode(Op.self, from: $0).timestamp }
+        }
+    }
+
+    /// Test hook: reads an integer pragma on this connection, e.g. "synchronous".
+    func pragma(_ name: String) throws -> Int64 {
+        try locked {
+            var value: Int64 = 0
+            try query("PRAGMA \(name)") { value = sqlite3_column_int64($0, 0) }
+            return value
+        }
+    }
+
     /// Number of visible items.
     public func count() throws -> Int {
         try locked {
@@ -233,8 +264,17 @@ public final class ClipDatabase: @unchecked Sendable {
 
     // MARK: Schema
 
-    private static let migrations: [String] = [
-        """
+    private static let tokenizer = "unicode61 remove_diacritics 2"
+
+    /// Schema steps: step N takes the database from user_version N to N + 1. Never edit a shipped step.
+    private var migrations: [() throws -> Void] {
+        [
+            { try self.exec(Self.schemaV1) },
+            { try self.exec(Self.schemaV2); try self.reindexAllItems() },
+        ]
+    }
+
+    private static let schemaV1 = """
         CREATE TABLE ops (
             op_id TEXT PRIMARY KEY,
             item_id TEXT NOT NULL,
@@ -267,19 +307,59 @@ public final class ClipDatabase: @unchecked Sendable {
         );
 
         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
-        """,
-    ]
+        """
+
+    /// v2: items gets an INTEGER PRIMARY KEY, so its rowids (and the FTS rowids keyed on them) survive VACUUM.
+    /// The FTS index is then rebuilt from the stored states, which also repairs a v1 index that a VACUUM
+    /// already knocked out of step.
+    private static let schemaV2 = """
+        CREATE TABLE items_v2 (
+            id INTEGER PRIMARY KEY,
+            item_id TEXT UNIQUE NOT NULL,
+            state BLOB NOT NULL, -- JSON-encoded ItemState
+            visible INTEGER,
+            pinned INTEGER,
+            created_wall INTEGER,
+            created_counter INTEGER,
+            created_device TEXT,
+            preview TEXT
+        );
+        INSERT INTO items_v2 (item_id, state, visible, pinned, created_wall, created_counter, created_device, preview)
+            SELECT item_id, state, visible, pinned, created_wall, created_counter, created_device, preview
+            FROM items ORDER BY rowid;
+        DROP TABLE items_fts;
+        DROP TABLE items;
+        ALTER TABLE items_v2 RENAME TO items;
+        CREATE INDEX items_newest ON items(created_wall DESC, created_counter DESC, created_device DESC)
+            WHERE visible = 1;
+
+        -- rowid = items.id
+        CREATE VIRTUAL TABLE items_fts USING fts5(
+            item_id UNINDEXED, text, title, tags,
+            tokenize = '\(tokenizer)'
+        );
+        """
 
     private func migrate() throws {
         var version = 0
         try query("PRAGMA user_version") { version = Int(sqlite3_column_int64($0, 0)) }
-        guard version < Self.migrations.count else { return }
+        let steps = migrations
+        guard version < steps.count else { return }
         try inTransaction {
-            for index in version..<Self.migrations.count {
-                try exec(Self.migrations[index])
-            }
-            try exec("PRAGMA user_version = \(Self.migrations.count)")
+            for step in steps[version...] { try step() }
+            try exec("PRAGMA user_version = \(steps.count)")
         }
+    }
+
+    /// A scratch FTS table with the same tokenizer as items_fts, used to ask which query words produce tokens.
+    /// It lives in the connection's temp schema, so nothing is written to the database file.
+    private func createQueryTokenizer() throws {
+        try exec(
+            """
+            CREATE VIRTUAL TABLE temp.query_words USING fts5(word, tokenize = '\(Self.tokenizer)');
+            CREATE VIRTUAL TABLE temp.query_words_vocab USING fts5vocab(temp, query_words, 'instance');
+            """
+        )
     }
 
     // MARK: Internals (lock held)
@@ -311,7 +391,7 @@ public final class ClipDatabase: @unchecked Sendable {
         for id in order {
             var state = try states("SELECT state FROM items WHERE item_id = ?", [.text(id.description)]).first
                 ?? ItemState(id: id)
-            for op in newOps[id]! { state.apply(op) }
+            for op in newOps[id, default: []] { state.apply(op) }
             try writeState(state)
         }
         return inserted
@@ -319,7 +399,7 @@ public final class ClipDatabase: @unchecked Sendable {
 
     private func writeState(_ state: ItemState) throws {
         let created = state.createdBy
-        var rowid: Int64 = 0
+        var id: Int64 = 0
         try query(
             """
             INSERT INTO items (item_id, state, visible, pinned, created_wall, created_counter, created_device, preview)
@@ -328,7 +408,7 @@ public final class ClipDatabase: @unchecked Sendable {
                 state = excluded.state, visible = excluded.visible, pinned = excluded.pinned,
                 created_wall = excluded.created_wall, created_counter = excluded.created_counter,
                 created_device = excluded.created_device, preview = excluded.preview
-            RETURNING rowid
+            RETURNING id
             """,
             [
                 .text(state.id.description), .blob(encoder.encode(state)),
@@ -338,18 +418,43 @@ public final class ClipDatabase: @unchecked Sendable {
                 created.map { SQLValue.text($0.device.description) } ?? SQLValue.null,
                 state.content.map { SQLValue.text(String($0.text.prefix(200))) } ?? SQLValue.null,
             ]
-        ) { rowid = sqlite3_column_int64($0, 0) }
+        ) { id = sqlite3_column_int64($0, 0) }
 
-        try run("DELETE FROM items_fts WHERE rowid = ?", [.int(rowid)])
-        if state.isVisible, let content = state.content {
-            try run(
-                "INSERT INTO items_fts (rowid, item_id, text, title, tags) VALUES (?, ?, ?, ?, ?)",
-                [
-                    .int(rowid), .text(state.id.description), .text(content.text),
-                    .text(state.title.value ?? ""), .text(state.visibleTags.joined(separator: " ")),
-                ]
-            )
+        try run("DELETE FROM items_fts WHERE rowid = ?", [.int(id)])
+        try indexForSearch(state, id: id)
+    }
+
+    /// Adds a visible item to items_fts under rowid `id` (= items.id). The caller removes any old row first.
+    private func indexForSearch(_ state: ItemState, id: Int64) throws {
+        guard state.isVisible, let content = state.content else { return }
+        try run(
+            "INSERT INTO items_fts (rowid, item_id, text, title, tags) VALUES (?, ?, ?, ?, ?)",
+            [
+                .int(id), .text(state.id.description), .text(content.text),
+                .text(state.title.value ?? ""), .text(state.visibleTags.joined(separator: " ")),
+            ]
+        )
+    }
+
+    /// Rebuilds items_fts from the stored states (migration v2).
+    private func reindexAllItems() throws {
+        var rows: [(id: Int64, state: ItemState)] = []
+        try query("SELECT id, state FROM items") { stmt in
+            rows.append((sqlite3_column_int64(stmt, 0), try decoder.decode(ItemState.self, from: columnData(stmt, 1))))
         }
+        try run("DELETE FROM items_fts")
+        for row in rows { try indexForSearch(row.state, id: row.id) }
+    }
+
+    /// The query words that the search tokenizer turns into at least one token, in their original order.
+    private func wordsWithTokens(_ words: [String]) throws -> [String] {
+        try run("DELETE FROM temp.query_words")
+        for (index, word) in words.enumerated() {
+            try run("INSERT INTO temp.query_words (rowid, word) VALUES (?, ?)", [.int(Int64(index)), .text(word)])
+        }
+        var tokenized = Set<Int64>()
+        try query("SELECT DISTINCT doc FROM temp.query_words_vocab") { tokenized.insert(sqlite3_column_int64($0, 0)) }
+        return words.indices.filter { tokenized.contains(Int64($0)) }.map { words[$0] }
     }
 
     private func readMeta(_ key: String) throws -> String? {

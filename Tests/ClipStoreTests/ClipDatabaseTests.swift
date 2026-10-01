@@ -1,4 +1,5 @@
 import ClipCore
+import CSQLite
 import Foundation
 import XCTest
 @testable import ClipStore
@@ -149,6 +150,29 @@ final class ClipDatabaseTests: XCTestCase {
         XCTAssertEqual(try db.search("🎉", limit: 10), [])
     }
 
+    func testSearchIgnoresWordsTheTokenizerReducesToNothing() throws {
+        let db = try ClipDatabase.inMemory()
+        let fox = create("The quick brown fox", at: ts(1))
+        let cafe = create("Café Zoë", at: ts(2))
+        try db.insert([fox, cafe], outbound: false)
+
+        // Lone combining marks, joiners and format characters: no token survives unicode61.
+        let empties = ["\u{0301}", "\u{0301}\u{0308}", "\u{05B0}", "\u{093C}", "\u{200D}", "\u{200B}", "\u{FE0F}"]
+        for empty in empties {
+            let label = empty.unicodeScalars.map { String($0.value, radix: 16) }.joined(separator: "+")
+            XCTAssertEqual(try db.search(empty, limit: 10), [], "alone: \(label)")
+            XCTAssertEqual(try db.search("fox \(empty)", limit: 10).map(\.id), [fox.itemID], "after a word: \(label)")
+            XCTAssertEqual(try db.search("\(empty) quick  \(empty) bro", limit: 10).map(\.id), [fox.itemID], "mixed: \(label)")
+        }
+        // Tatweel never throws; it matches nothing here (no stored text contains it).
+        for query in ["\u{0640}", "\u{0640}\u{0640}", "fox \u{0640}"] {
+            XCTAssertNoThrow(try db.search(query, limit: 10), "tatweel query")
+        }
+        // A combining mark attached to a real letter is still a real word.
+        XCTAssertEqual(try db.search("cafe\u{0301}", limit: 10).map(\.id), [cafe.itemID])
+        XCTAssertEqual(try db.search("\u{0301}zoe", limit: 10).map(\.id), [cafe.itemID])
+    }
+
     func testDeletedAndUntaggedItemsAreNotSearchable() throws {
         let db = try ClipDatabase.inMemory()
         let a = create("secret token value", at: ts(1))
@@ -245,6 +269,150 @@ final class ClipDatabaseTests: XCTestCase {
         XCTAssertEqual(try db.meta("k"), "v")
     }
 
+    func testFileDatabaseIsDurable() throws {
+        let db = try ClipDatabase(url: try tempDirectory().appendingPathComponent("durable.sqlite"))
+        defer { db.close() }
+        XCTAssertEqual(try db.pragma("synchronous"), 2, "synchronous = FULL: a commit is fsynced before insert returns")
+        XCTAssertEqual(try db.pragma("user_version"), 2)
+    }
+
+    func testV1DatabaseMigratesInPlace() throws {
+        let url = try tempDirectory().appendingPathComponent("v1.sqlite")
+        let fox = create("the quick brown fox", at: ts(1))
+        let hidden = create("deleted secret", at: ts(2))
+        let tagged = create("meeting notes", at: ts(3, 0, deviceB))
+        let titleOnly = op(ItemID(), .setTitle("orphan"), at: ts(4))
+        var states: [ItemID: ItemState] = [:]
+        let allOps = [fox, hidden, tagged, titleOnly,
+                      op(hidden.itemID, .delete, at: ts(5)),
+                      op(tagged.itemID, .setTag("standup", present: true), at: ts(6)),
+                      op(tagged.itemID, .setTitle("Weekly sync"), at: ts(7))]
+        for op in allOps { states[op.itemID, default: ItemState(id: op.itemID)].apply(op) }
+
+        // Build a v1 database by hand, exactly as the v1 code laid it out, with rowid gaps (as after VACUUM
+        // renumbering or manual surgery) so the old rowid pairing can't be relied on by the migration.
+        let raw = try RawSQLite(path: url.path)
+        try raw.exec("""
+            PRAGMA journal_mode = WAL;
+            CREATE TABLE ops (op_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, ts_wall INTEGER, ts_counter INTEGER,
+                ts_device TEXT, body BLOB NOT NULL, outbound_pending INTEGER NOT NULL DEFAULT 0);
+            CREATE INDEX ops_item ON ops(item_id);
+            CREATE INDEX ops_outbound ON ops(outbound_pending) WHERE outbound_pending = 1;
+            CREATE TABLE items (item_id TEXT PRIMARY KEY, state BLOB NOT NULL, visible INTEGER, pinned INTEGER,
+                created_wall INTEGER, created_counter INTEGER, created_device TEXT, preview TEXT);
+            CREATE INDEX items_newest ON items(created_wall DESC, created_counter DESC, created_device DESC)
+                WHERE visible = 1;
+            CREATE VIRTUAL TABLE items_fts USING fts5(item_id UNINDEXED, text, title, tags,
+                tokenize = 'unicode61 remove_diacritics 2');
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO meta VALUES ('sync_cursor', '42');
+            PRAGMA user_version = 1;
+            """)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        for (index, op) in allOps.enumerated() {
+            try raw.exec("""
+                INSERT INTO ops VALUES ('\(op.id)', '\(op.itemID)', \(op.timestamp.wallMillis), \(op.timestamp.counter),
+                    '\(op.timestamp.device)', CAST(\(RawSQLite.quote(try encoder.encode(op))) AS BLOB), \(index % 2))
+                """)
+        }
+        for (index, state) in states.values.sorted(by: { $0.id.description < $1.id.description }).enumerated() {
+            let rowid = (index + 1) * 10
+            let created = state.createdBy
+            try raw.exec("""
+                INSERT INTO items (rowid, item_id, state, visible, pinned, created_wall, created_counter, created_device, preview)
+                VALUES (\(rowid), '\(state.id)', CAST(\(RawSQLite.quote(try encoder.encode(state))) AS BLOB),
+                    \(state.isVisible ? 1 : 0), 0, \(created.map { "\($0.wallMillis)" } ?? "NULL"),
+                    \(created.map { "\($0.counter)" } ?? "NULL"), \(created.map { "'\($0.device)'" } ?? "NULL"), NULL)
+                """)
+            if state.isVisible, let content = state.content {
+                // Deliberately keyed off by one: a v1 index already broken by VACUUM must be repaired.
+                try raw.exec("""
+                    INSERT INTO items_fts (rowid, item_id, text, title, tags) VALUES (\(rowid + 1), '\(state.id)',
+                        '\(content.text)', '\(state.title.value ?? "")', '\(state.visibleTags.joined(separator: " "))')
+                    """)
+            }
+        }
+        raw.close()
+
+        let db = try ClipDatabase(url: url)
+        XCTAssertEqual(try db.pragma("user_version"), 2)
+        XCTAssertEqual(try db.count(), 2)
+        XCTAssertEqual(try db.items().map(\.id), [tagged.itemID, fox.itemID])
+        for (id, state) in states { XCTAssertEqual(try db.item(id), state) }
+        XCTAssertEqual(try db.search("fox", limit: 10).map(\.id), [fox.itemID])
+        XCTAssertEqual(try db.search("standup", limit: 10).map(\.id), [tagged.itemID])
+        XCTAssertEqual(try db.search("weekly", limit: 10).map(\.id), [tagged.itemID])
+        XCTAssertEqual(try db.search("secret", limit: 10), [])
+        XCTAssertEqual(try db.syncCursor(), 42)
+        XCTAssertEqual(try db.pendingOutbound(limit: 10), allOps.enumerated().filter { $0.offset % 2 == 1 }.map(\.element))
+        XCTAssertEqual(try db.maxOpTimestamp(), ts(7))
+
+        // Writes keep working on the migrated table, and a reopen doesn't migrate again.
+        let late = create("late arrival fox", at: ts(8))
+        try db.insert([late], outbound: false)
+        db.close()
+        let reopened = try ClipDatabase(url: url)
+        defer { reopened.close() }
+        XCTAssertEqual(try reopened.search("fox", limit: 10).map(\.id), [late.itemID, fox.itemID])
+        XCTAssertEqual(try reopened.count(), 3)
+    }
+
+    func testSearchStaysCorrectAfterVacuum() throws {
+        let url = try tempDirectory().appendingPathComponent("vacuum.sqlite")
+        let words = ["apple", "banana", "cherry", "damson", "elder", "fig", "grape", "honeydew"]
+        let ops = words.enumerated().map { create("\($1) fruit", at: ts(UInt64($0 + 1))) }
+        do {
+            let db = try ClipDatabase(url: url)
+            try db.insert(ops, outbound: false)
+            db.close()
+        }
+        // Punch rowid gaps (as a future purge would), then VACUUM. Without an INTEGER PRIMARY KEY,
+        // VACUUM is free to renumber items and the FTS join would return the wrong rows.
+        let raw = try RawSQLite(path: url.path)
+        for gone in [ops[0], ops[3], ops[5]] {
+            try raw.exec("DELETE FROM items_fts WHERE item_id = '\(gone.itemID)'; DELETE FROM items WHERE item_id = '\(gone.itemID)';")
+        }
+        let idsBefore = try raw.ints("SELECT id FROM items ORDER BY id")
+        try raw.exec("VACUUM")
+        XCTAssertEqual(try raw.ints("SELECT id FROM items ORDER BY id"), idsBefore, "ids survive VACUUM")
+        raw.close()
+
+        let db = try ClipDatabase(url: url)
+        defer { db.close() }
+        for (index, word) in words.enumerated() where ![0, 3, 5].contains(index) {
+            XCTAssertEqual(try db.search(word, limit: 10).map(\.id), [ops[index].itemID], word)
+        }
+        XCTAssertEqual(try db.search("fruit", limit: 10).count, 5)
+        // Updates after VACUUM still replace the right FTS row.
+        try db.insert([op(ops[1].itemID, .setTag("yellow", present: true), at: ts(20))], outbound: false)
+        XCTAssertEqual(try db.search("yellow", limit: 10).map(\.id), [ops[1].itemID])
+        XCTAssertEqual(try db.search("cherry", limit: 10).map(\.id), [ops[2].itemID])
+    }
+
+    func testMaxOpTimestamp() throws {
+        let db = try ClipDatabase.inMemory()
+        XCTAssertNil(try db.maxOpTimestamp())
+        let item = ItemID()
+        try db.insert([create("a", item: item, at: ts(5, 0, deviceB))], outbound: true)
+        XCTAssertEqual(try db.maxOpTimestamp(), ts(5, 0, deviceB))
+        // Lower wall time loses even with a higher counter; remote ops count too.
+        try db.insertRemote([op(item, .setPinned(true), at: ts(4, 9, deviceB))], newCursor: 1)
+        XCTAssertEqual(try db.maxOpTimestamp(), ts(5, 0, deviceB))
+        // Same wall: counter decides, then device.
+        try db.insert([op(item, .setTitle("x"), at: ts(5, 1, deviceA))], outbound: false)
+        XCTAssertEqual(try db.maxOpTimestamp(), ts(5, 1, deviceA))
+        try db.insert([op(item, .setTitle("y"), at: ts(5, 1, deviceB))], outbound: false)
+        XCTAssertEqual(try db.maxOpTimestamp(), ts(5, 1, deviceB))
+        // Wall times past Int64.max are stored as negative bit patterns but still compare as the largest.
+        let huge = ts(UInt64(Int64.max) + 10)
+        try db.insert([op(item, .setTitle("z"), at: huge), op(item, .setTitle("w"), at: ts(UInt64(Int64.max)))], outbound: false)
+        XCTAssertEqual(try db.maxOpTimestamp(), huge)
+        // It reads the op log, not the dedupe result: a sent op still counts.
+        try db.markSent(try db.pendingOutbound().map(\.id))
+        XCTAssertEqual(try db.maxOpTimestamp(), huge)
+    }
+
     func testRefoldAllEqualsIncrementalAndInMemoryFold() throws {
         var rng = SplitMix64(seed: 42)
         let devices = [deviceA, deviceB, DeviceID()]
@@ -292,17 +460,18 @@ final class ClipDatabaseTests: XCTestCase {
         XCTAssertEqual(incrementalList.count, expected.values.filter(\.isVisible).count)
     }
 
-    func testSearchPerformanceOn10kItems() throws {
-        let db = try ClipDatabase.inMemory()
-        var rng = SplitMix64(seed: 7)
-        let words = """
+    static let perfWords = """
         alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec
         romeo sierra tango uniform victor whiskey xray yankee zulu meeting invoice password recipe address
         flight booking café résumé naïve garçon über straße 東京 kubernetes deploy swift kotlin react figma
         design portfolio interview tracking clipboard sync encrypt tailscale server latency budget quarterly
         """.split(whereSeparator: { $0.isWhitespace }).map(String.init)
 
-        var insertSeconds = 0.0
+    /// 10,000 creates (plus a tag on every tenth) in 20 batches of 500, deterministic.
+    func perfBatches() -> [[Op]] {
+        var rng = SplitMix64(seed: 7)
+        let words = Self.perfWords
+        var batches: [[Op]] = []
         var wall: UInt64 = 1
         for _ in 0..<20 {
             var batch: [Op] = []
@@ -315,6 +484,37 @@ final class ClipDatabaseTests: XCTestCase {
                 if n % 10 == 0 { batch.append(self.op(op.itemID, .setTag(words[Int(rng.next() % 20)], present: true), at: ts(wall + 1))) }
                 wall += 2
             }
+            batches.append(batch)
+        }
+        return batches
+    }
+
+    /// Durability cost: the same 10k inserts against a real file (WAL + synchronous = FULL).
+    func testInsertPerformanceOn10kItemsFileBacked() throws {
+        let url = try tempDirectory().appendingPathComponent("perf.sqlite")
+        let db = try ClipDatabase(url: url)
+        defer { db.close() }
+        let batches = perfBatches()
+        var batchSeconds = 0.0
+        for batch in batches {
+            let start = Date()
+            try db.insert(batch, outbound: true)
+            batchSeconds += Date().timeIntervalSince(start)
+        }
+        // Single-op transactions: one commit (and fsync) per copied clip, the interactive path.
+        let singles = (0..<200).map { create("single \($0)", at: ts(1_000_000 + UInt64($0))) }
+        let start = Date()
+        for op in singles { try db.insert([op], outbound: true) }
+        let singleMillis = Date().timeIntervalSince(start) * 1000 / Double(singles.count)
+        XCTAssertEqual(try db.count(), 10_200)
+        print(String(format: "ClipStore file perf: 10,000 items in 20 batches %.2f s; single-op insert %.2f ms avg (200)",
+                     batchSeconds, singleMillis))
+    }
+
+    func testSearchPerformanceOn10kItems() throws {
+        let db = try ClipDatabase.inMemory()
+        var insertSeconds = 0.0
+        for batch in perfBatches() {
             let start = Date()
             try db.insert(batch, outbound: true)
             insertSeconds += Date().timeIntervalSince(start)
@@ -349,5 +549,45 @@ struct SplitMix64: RandomNumberGenerator {
         z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
         z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
         return z ^ (z >> 31)
+    }
+}
+
+/// A bare SQLite connection for building legacy-shaped databases and running maintenance (VACUUM) in tests.
+final class RawSQLite {
+    private var db: OpaquePointer?
+
+    init(path: String) throws {
+        guard sqlite3_open(path, &db) == SQLITE_OK else { throw StoreError(code: sqlite3_errcode(db), message: "open") }
+    }
+
+    func exec(_ sql: String) throws {
+        var error: UnsafeMutablePointer<CChar>?
+        let rc = sqlite3_exec(db, sql, nil, nil, &error)
+        if rc != SQLITE_OK {
+            let message = error.map { String(cString: $0) } ?? "?"
+            sqlite3_free(error)
+            throw StoreError(code: rc, message: message)
+        }
+    }
+
+    func ints(_ sql: String) throws -> [Int64] {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw StoreError(code: sqlite3_errcode(db), message: String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        var result: [Int64] = []
+        while sqlite3_step(stmt) == SQLITE_ROW { result.append(sqlite3_column_int64(stmt, 0)) }
+        return result
+    }
+
+    func close() {
+        sqlite3_close(db)
+        db = nil
+    }
+
+    /// A SQL string literal for UTF-8 data.
+    static func quote(_ data: Data) -> String {
+        "'" + String(decoding: data, as: UTF8.self).replacingOccurrences(of: "'", with: "''") + "'"
     }
 }

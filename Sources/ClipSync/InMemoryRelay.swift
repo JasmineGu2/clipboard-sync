@@ -2,8 +2,9 @@ import ClipWire
 import Foundation
 
 /// The relay's behavior without HTTP, for tests and the harness. Mirrors RelayRouter: dedupe by opID,
-/// server-assigned seq, paging with `hasMore`, long-poll that wakes on push, one-time pairing blobs,
-/// and the same limits (mapped to `TransportError` the way HTTPTransport maps status codes).
+/// server-assigned seq, paging with `hasMore`, long-poll that wakes on push, `cursorAhead` when a cursor is past
+/// the log, one-time pairing blobs (no overwrite, at most `WireLimits.maxLivePairings`), and the same limits
+/// (mapped to `TransportError` the way HTTPTransport maps status codes). It has no token, so it doesn't model auth.
 public actor InMemoryRelay: SyncTransport {
     public let maxPullLimit: Int
     public let pairingTTL: TimeInterval
@@ -75,6 +76,8 @@ public actor InMemoryRelay: SyncTransport {
         guard after >= 0, limit >= 0, wait >= 0 else {
             throw TransportError.badRequest("after, limit and wait must not be negative")
         }
+        // A fresh relay (or one restored from an old backup) and a client that remembers more.
+        guard after <= latestSeq else { throw TransportError.cursorAhead(latestSeq: latestSeq) }
         let pageSize = max(1, min(limit, maxPullLimit))
         let deadline = ContinuousClock.now + .seconds(min(wait, WireLimits.maxWaitSeconds))
         while true {
@@ -91,7 +94,11 @@ public actor InMemoryRelay: SyncTransport {
         try validatePairingID(id)
         guard !blob.isEmpty else { throw TransportError.badRequest("empty pairing blob") }
         guard blob.count <= WireLimits.maxPairingBlobBytes else { throw TransportError.payloadTooLarge }
-        pairings[id] = (blob, now().addingTimeInterval(pairingTTL))
+        let current = now()
+        pairings = pairings.filter { $0.value.expires > current }
+        guard pairings[id] == nil else { throw TransportError.conflict }
+        guard pairings.count < WireLimits.maxLivePairings else { throw TransportError.rateLimited }
+        pairings[id] = (blob, current.addingTimeInterval(pairingTTL))
     }
 
     public func takePairing(id: String) async throws -> Data? {
@@ -124,20 +131,18 @@ public actor InMemoryRelay: SyncTransport {
         for envelope in request.envelopes {
             guard envelope.ciphertext.count <= WireLimits.maxCiphertextBytes else { throw TransportError.payloadTooLarge }
             guard !envelope.ciphertext.isEmpty else { throw TransportError.badRequest("empty ciphertext") }
-            for field in [envelope.opID, envelope.itemID, envelope.deviceID] {
-                guard !field.isEmpty, field.utf8.count <= WireLimits.maxIDBytes else {
-                    throw TransportError.badRequest("opID, itemID and deviceID must be 1...\(WireLimits.maxIDBytes) bytes")
-                }
+            for field in [envelope.opID, envelope.itemID, envelope.deviceID] where !WireLimits.isValidID(field) {
+                throw TransportError.badRequest(
+                    "opID, itemID and deviceID must be 1...\(WireLimits.maxIDBytes) bytes with no control characters")
             }
         }
-        // The real relay's body cap is larger; enforcing the client-side cap here catches batching bugs.
+        // Same cap the real relay enforces on the raw body.
         let bodyBytes = (try? JSONEncoder().encode(request).count) ?? 0
         guard bodyBytes <= WireLimits.maxPushBodyBytes else { throw TransportError.payloadTooLarge }
     }
 
     private func validatePairingID(_ id: String) throws {
-        let isHex = id.utf8.allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }
-        guard id.utf8.count == 32, isHex else {
+        guard WireLimits.isValidPairingID(id) else {
             throw TransportError.badRequest("pairing id must be 32 lowercase hex characters")
         }
     }

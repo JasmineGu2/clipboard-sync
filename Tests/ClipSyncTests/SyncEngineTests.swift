@@ -393,6 +393,68 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(SyncEngine.backoff(failures: 20, random: bottom), 15)
     }
 
+    // MARK: Relay reset
+
+    func testRelayResetResetsCursorAndRepulls() async throws {
+        let oldRelay = InMemoryRelay()
+        let a = try makePeer("A", relay: oldRelay)
+        let b = try makePeer("B", relay: oldRelay)
+        let early = try await a.engine.addText("before reset")
+        _ = try await a.engine.addText("also before")
+        _ = try await a.engine.addText("and this")
+        try await a.engine.syncOnce()
+        try await b.engine.syncOnce()
+        XCTAssertEqual(try a.db.syncCursor(), 3)
+        XCTAssertEqual(try b.db.syncCursor(), 3)
+
+        // The relay is replaced by an empty one; both devices keep their databases and cursors.
+        let newRelay = InMemoryRelay()
+        do {
+            _ = try await newRelay.pull(after: 3, limit: 10, wait: 0)
+            XCTFail("expected cursorAhead")
+        } catch {
+            XCTAssertEqual(error as? TransportError, .cursorAhead(latestSeq: 0))
+        }
+        let a2 = try SyncEngine(db: a.db, vaultKey: key, transport: newRelay, device: DeviceID(), deviceName: "A",
+                                log: { _ in })
+        let b2 = try SyncEngine(db: b.db, vaultKey: key, transport: newRelay, device: DeviceID(), deviceName: "B",
+                                log: { _ in })
+
+        // Empty relay: A resets to 0 and finds nothing, without failing.
+        try await a2.syncOnce()
+        XCTAssertEqual(try a.db.syncCursor(), 0)
+        let aStatus = await a2.status
+        XCTAssertEqual(aStatus, .idle)
+
+        // B writes to the new relay; its own cursor (3) is ahead of the new log (1) too.
+        let late = try await b2.addText("after reset")
+        try await b2.syncOnce()
+        XCTAssertEqual(try b.db.syncCursor(), 1)
+        try await a2.syncOnce()
+        XCTAssertEqual(try a.db.syncCursor(), 1)
+        XCTAssertEqual(try a.db.item(late)?.content?.text, "after reset")
+        XCTAssertEqual(try a.db.item(early)?.content?.text, "before reset")
+        XCTAssertEqual(try allStates(a.db), try allStates(b.db))
+    }
+
+    func testRelayRejectsControlCharactersInIDs() async throws {
+        let relay = InMemoryRelay()
+        for bad in ["op\u{0}x", "op\nx", "op\u{7f}", "op\u{85}"] {
+            let envelope = Envelope(opID: bad, itemID: "item", deviceID: "dev", ciphertext: Data([1]))
+            do {
+                _ = try await relay.push(PushRequest(envelopes: [envelope]))
+                XCTFail("expected badRequest for \(bad.debugDescription)")
+            } catch {
+                guard case .badRequest = error as? TransportError else {
+                    return XCTFail("expected badRequest, got \(error)")
+                }
+            }
+        }
+        XCTAssertTrue(WireLimits.isValidID("op-1 é"))
+        XCTAssertFalse(WireLimits.isValidID(""))
+        XCTAssertFalse(WireLimits.isValidID(String(repeating: "x", count: WireLimits.maxIDBytes + 1)))
+    }
+
     // MARK: Pairing
 
     func testPairingRoundTrip() async throws {
@@ -425,6 +487,30 @@ final class SyncEngineTests: XCTestCase {
             XCTFail("expected invalidPairingCode")
         } catch {
             XCTAssertEqual(error as? SyncError, .invalidPairingCode)
+        }
+    }
+
+    func testPairingIDCannotBeOverwrittenAndTableIsCapped() async throws {
+        let relay = InMemoryRelay()
+        let id = "0123456789abcdef0123456789abcdef"
+        try await relay.putPairing(id: id, blob: Data([1]))
+        do {
+            try await relay.putPairing(id: id, blob: Data([2]))
+            XCTFail("expected conflict")
+        } catch {
+            XCTAssertEqual(error as? TransportError, .conflict)
+        }
+        let taken = try await relay.takePairing(id: id)
+        XCTAssertEqual(taken, Data([1]))
+
+        for n in 0..<WireLimits.maxLivePairings {
+            try await relay.putPairing(id: String(format: "%032x", n), blob: Data([1]))
+        }
+        do {
+            try await relay.putPairing(id: String(repeating: "f", count: 32), blob: Data([1]))
+            XCTFail("expected rateLimited")
+        } catch {
+            XCTAssertEqual(error as? TransportError, .rateLimited)
         }
     }
 

@@ -40,21 +40,34 @@ public struct RelayRequestBuilder: Sendable {
         return request
     }
 
-    /// Pairing endpoints need no token: the 128-bit pairing ID is the capability.
+    /// Sent by the existing device, which has the token; the relay refuses an unauthenticated PUT.
     public func putPairing(id: String, blob: Data) throws -> URLRequest {
         var request = URLRequest(url: url("v1/pairing/\(id)"))
         request.httpMethod = "PUT"
         request.httpBody = try JSONEncoder().encode(PairingBlob(blob: blob))
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = Self.defaultTimeout
+        authorize(&request)
         return request
     }
 
+    /// Sent by the new device, which has no token yet: the 128-bit pairing ID is the capability.
     public func takePairing(id: String) -> URLRequest {
         var request = URLRequest(url: url("v1/pairing/\(id)"))
         request.httpMethod = "GET"
         request.timeoutInterval = Self.defaultTimeout
         return request
+    }
+
+    /// Maps a pull response's status: 409 carries `CursorAheadResponse` and becomes `.cursorAhead`.
+    public static func checkPull(status: Int, body: Data) throws {
+        if status == 409 {
+            guard let ahead = try? JSONDecoder().decode(CursorAheadResponse.self, from: body) else {
+                throw TransportError.decoding
+            }
+            throw TransportError.cursorAhead(latestSeq: ahead.latestSeq)
+        }
+        try check(status: status, body: body)
     }
 
     /// Maps a non-2xx status to the matching error; returns for 2xx.
@@ -63,7 +76,9 @@ public struct RelayRequestBuilder: Sendable {
         case 200..<300: return
         case 401, 403: throw TransportError.unauthorized
         case 404: throw TransportError.notFound
+        case 409: throw TransportError.conflict
         case 413: throw TransportError.payloadTooLarge
+        case 429: throw TransportError.rateLimited
         case 400..<500: throw TransportError.badRequest(String(decoding: body.prefix(512), as: UTF8.self))
         default: throw TransportError.server(status)
         }
@@ -109,7 +124,7 @@ public struct HTTPTransport: SyncTransport {
 
     public func pull(after: Int64, limit: Int, wait: Int) async throws -> PullResponse {
         let (data, status) = try await send(builder.pull(after: after, limit: limit, wait: wait))
-        try RelayRequestBuilder.check(status: status, body: data)
+        try RelayRequestBuilder.checkPull(status: status, body: data)
         return try decode(PullResponse.self, data)
     }
 

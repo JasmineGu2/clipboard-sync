@@ -19,6 +19,7 @@ swift run ClipRelay --host 127.0.0.1 --port 8787 --db ./relay.sqlite3
 | `--host` | `CLIP_RELAY_HOST` | `127.0.0.1` |
 | `--port` | `CLIP_RELAY_PORT` | `8787` |
 | `--db` | `CLIP_RELAY_DB` | `./relay.sqlite3` |
+| `--token-sha256` | `CLIP_RELAY_TOKEN_SHA256` | none (trust on first use) |
 
 On the VM, bind the Tailscale IP (`tailscale ip -4`). Never bind `0.0.0.0` on the host. The relay has no TLS
 and relies on the tailnet to keep strangers out.
@@ -32,7 +33,16 @@ cd Server
 swift test
 ```
 
-From Windows, run the tests in Docker:
+From Windows, run the tests in WSL (Ubuntu 24.04 with Swift from `scripts/wsl-setup.sh`). Copy the repo to the
+Linux filesystem first, because building on `/mnt/c` is very slow:
+
+```sh
+wsl -d Ubuntu-24.04 -u root -- bash -lc ". /root/.local/share/swiftly/env.sh && rm -rf /root/clip && \
+  cp -r '/mnt/c/path/to/repo' /root/clip && rm -rf /root/clip/.build /root/clip/Server/.build && \
+  cd /root/clip/Server && swift test"
+```
+
+From Git Bash, put `MSYS_NO_PATHCONV=1` in front, or it rewrites the `/mnt/c` path. Or run the tests in Docker:
 
 ```sh
 docker run --rm -v "C:/path/to/repo:/src" -w /src/Server swift:6.3-jammy bash -c \
@@ -46,14 +56,38 @@ All bodies are JSON and `Data` fields are base64. The types live in `Sources/Cli
 | Route | Auth | What it does |
 | --- | --- | --- |
 | `GET /healthz` | no | `ok` |
-| `POST /v1/ops` | yes | body `PushRequest`, returns `PushResponse`. Duplicate `opID`s are ignored, so retries are safe. Over `WireLimits` gives 413, bad envelopes give 400. |
-| `GET /v1/ops?after=&limit=&wait=` | yes | returns `PullResponse` with `seq > after`, ascending. `limit` defaults to 500 and is capped at 500. With nothing new and `wait > 0` (max 30), it holds the request until a push lands or the wait runs out. |
-| `PUT /v1/pairing/{id}` | no | body `PairingBlob`, returns 204. `id` is 32 lowercase hex chars. Expires after 10 minutes. Putting again overwrites. |
-| `GET /v1/pairing/{id}` | no | returns the `PairingBlob` once, then deletes it. 404 if missing or expired. |
+| `POST /v1/ops` | yes | body `PushRequest`, returns `PushResponse`. Duplicate `opID`s are ignored, so retries are safe. A body over 4 MiB (`WireLimits.maxPushBodyBytes`) gets 413 before anything is decoded; too many envelopes or a ciphertext over its cap also give 413. Bad envelopes give 400, including IDs that are empty, over 128 bytes, or contain NUL or other control characters. |
+| `GET /v1/ops?after=&limit=&wait=` | yes | returns `PullResponse` with `seq > after`, ascending. `limit` defaults to 500 and is capped at 500. With nothing new and `wait > 0` (max 30), it holds the request until a push lands or the wait runs out. If `after` is past the newest seq, returns 409 with `CursorAheadResponse { latestSeq }` (see below). |
+| `PUT /v1/pairing/{id}` | yes | body `PairingBlob`, returns 204. `id` is 32 lowercase hex chars. Body capped at 100 KiB before decoding, blob at 64 KiB (413). Expires after 10 minutes. Never overwrites: an ID that's already live gets 409. At most 100 live blobs (expired ones are purged first); beyond that, 429. |
+| `GET /v1/pairing/{id}` | no | returns the `PairingBlob` once, then deletes it. 404 if missing or expired. No token, because the new device doesn't have one yet; the unguessable ID is the capability. |
+| `POST /v1/auth/rotate` | yes | body `RotateTokenRequest { newTokenSHA256 }` (64 hex chars), returns 204. Replaces the stored token hash; the old token gets 401 from then on. |
 
-Auth is `Authorization: Bearer <token>`. The first token the relay sees gets adopted: it stores SHA-256 of
-the token and rejects every other token with 401. To reset it (say, after making a new vault key), stop the
-relay and run `sqlite3 relay.sqlite3 "DELETE FROM meta WHERE key = 'auth_token_sha256'"`.
+### Auth
+
+Every route except `GET /healthz` and `GET /v1/pairing/{id}` needs `Authorization: Bearer <token>`. The relay
+stores only SHA-256 of the token, and keeps it in memory after the first lookup, so a request doesn't touch the
+database to authenticate. Where that hash comes from:
+
+- **Pinned (recommended).** Start the relay with `--token-sha256 <hex>` or `CLIP_RELAY_TOKEN_SHA256`. Trust on
+  first use is off, so a stranger who reaches the relay first can't claim it. Each distinct pin is written to
+  the database once. Restarting with the same pin keeps any rotation made since then, so a restart doesn't
+  undo a revocation. Changing the pin replaces the stored hash.
+- **Trust on first use (fallback).** With no pin, the first token the relay sees gets adopted, and every other
+  token gets 401.
+- **Rotation.** `POST /v1/auth/rotate`, authenticated with the current token, replaces the hash. This is the
+  relay half of revoking a device (design §3): make a new vault key, have a remaining device rotate the
+  relay to the new key's token, then pair the other remaining devices with the new key. The revoked device's
+  token stops working at once.
+
+To reset auth by hand (say, after losing every device), stop the relay and run
+`sqlite3 relay.sqlite3 "DELETE FROM meta WHERE key LIKE 'auth_token_%'"`.
+
+### Cursor ahead of the log
+
+A client's cursor can be past the end of the relay's log if the relay was reset, replaced, or restored from an
+old backup. Long-polling that cursor would hang, and new ops would reuse seqs the client thinks it has seen. So
+the relay answers 409 with `{"latestSeq": n}`. ClipSync maps it to `TransportError.cursorAhead(latestSeq:)`, and
+`SyncEngine` resets its cursor to 0 and pulls again. That's safe because applying an op twice is a no-op.
 
 ## Deploy to the Linux VM
 
@@ -82,6 +116,8 @@ User=clip-relay
 Environment=CLIP_RELAY_HOST=100.64.0.10
 Environment=CLIP_RELAY_PORT=8787
 Environment=CLIP_RELAY_DB=/var/lib/clip-relay/relay.sqlite3
+# SHA-256 of the vault's auth token (hex). Leave it out to adopt the first token instead.
+Environment=CLIP_RELAY_TOKEN_SHA256=<64 hex chars>
 ExecStart=/usr/local/bin/ClipRelay
 Restart=on-failure
 RestartSec=2
@@ -120,7 +156,8 @@ keeps it on the tailnet, so always put the Tailscale IP in front of the port.
 ## Layout
 
 - `Sources/RelayCore`: storage (`RelayStorage` protocol, `SQLiteRelayStorage` actor), `PushNotifier`
-  (long-poll wakeups), `TokenAuthenticator`, and `buildRelayRouter`
+  (long-poll wakeups), `TokenAuthenticator` (actor: pinned hash, trust on first use, cache, rotation), and
+  `buildRelayRouter` (routes and per-route body caps)
 - `Sources/ClipRelay`: `main.swift`, flags and startup
 - `Sources/RelaySQLite`: module map for the system SQLite library
 - `Tests/RelayTests`: route and storage tests using HummingbirdTesting

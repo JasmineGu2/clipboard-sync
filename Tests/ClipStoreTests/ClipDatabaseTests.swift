@@ -62,6 +62,26 @@ final class ClipDatabaseTests: XCTestCase {
         XCTAssertEqual(try db.count(), 5)
     }
 
+    func testPinnedItemsReturnsOldPinnedBeyondAnyPage() throws {
+        let db = try ClipDatabase.inMemory()
+        let old = create("old pinned", at: ts(1))
+        let oldDeleted = create("deleted pinned", at: ts(2))
+        let mid = create("mid pinned", at: ts(3))
+        var ops = [old, oldDeleted, mid,
+                   op(old.itemID, .setPinned(true), at: ts(10)),
+                   op(oldDeleted.itemID, .setPinned(true), at: ts(11)),
+                   op(oldDeleted.itemID, .delete, at: ts(12)),
+                   op(mid.itemID, .setPinned(true), at: ts(13))]
+        for i in 0..<30 { ops.append(create("new \(i)", at: ts(1_000 + UInt64(i)))) }
+        try db.insert(ops, outbound: false)
+
+        XCTAssertFalse(texts(try db.items(limit: 20)).contains("old pinned"))
+        XCTAssertEqual(texts(try db.pinnedItems()), ["mid pinned", "old pinned"])
+
+        try db.insert([op(old.itemID, .setPinned(false), at: ts(20))], outbound: false)
+        XCTAssertEqual(texts(try db.pinnedItems()), ["mid pinned"])
+    }
+
     func testPinTitleTagAndDeleteAreReflected() throws {
         let db = try ClipDatabase.inMemory()
         let id = ItemID()

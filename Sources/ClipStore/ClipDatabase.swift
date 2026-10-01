@@ -178,6 +178,20 @@ public final class ClipDatabase: @unchecked Sendable {
         }
     }
 
+    /// Every visible pinned item, newest first. Not paged: pinned sets are small, and they must show
+    /// however old the items are.
+    public func pinnedItems() throws -> [ItemState] {
+        try locked {
+            try states(
+                """
+                SELECT state FROM items WHERE visible = 1 AND pinned = 1
+                ORDER BY created_wall DESC, created_counter DESC, created_device DESC
+                """,
+                []
+            )
+        }
+    }
+
     /// The stored state of one item, visible or not; nil if no op for it has been seen.
     public func item(_ id: ItemID) throws -> ItemState? {
         try locked {

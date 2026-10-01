@@ -38,5 +38,7 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 - [x] T24 Pinned items query (old pinned items stay visible)
 - [x] T25 Apple review fixes (module names, team ID, device name, alerts, energy)
 - [x] OpCipher fixed-nonce known-answer vector (Python-checked)
+- [x] CI green on GitHub (Linux build/test fixes, Windows Swift install, nightly pipefail)
+- [x] T26 Expiry (F14) as synced deletes; harness `--expiry deleteOps` 2000/2000, `hideLocally` caught; clipctl `expire`
 
 ## Blocked

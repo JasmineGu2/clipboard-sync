@@ -21,9 +21,13 @@ jobs:
           key: nightly-build-${{ hashFiles('Package.resolved') }}
           restore-keys: nightly-build-
       # Start seed changes every run. If a seed fails, the harness prints a "repro:" line in this log.
-      # The default shell is bash -eo pipefail, so a harness failure still fails the step despite tee.
+      # `shell: bash` is what turns on -o pipefail (the unset default is plain bash -e), so a harness
+      # failure still fails the step despite tee.
       - name: Run harness
-        run: swift run -c release ConvergenceHarness --seeds 20000 --start ${{ github.run_number }}000000 2>&1 | tee harness-output.txt
+        shell: bash
+        run: |
+          swift run -c release ConvergenceHarness --seeds 20000 --start ${{ github.run_number }}000000 2>&1 | tee harness-output.txt
+          swift run -c release ConvergenceHarness --seeds 5000 --start ${{ github.run_number }}500000 --expiry deleteOps 2>&1 | tee -a harness-output.txt
       - name: Upload output
         if: always()
         uses: actions/upload-artifact@v4

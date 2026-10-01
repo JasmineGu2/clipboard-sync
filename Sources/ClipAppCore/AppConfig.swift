@@ -8,12 +8,17 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var deviceName: String
     /// F15: the Mac watcher stops capturing while true.
     public var capturePaused: Bool
+    /// F14: unpinned items older than this many days are deleted on every device. nil keeps them forever.
+    public var expiryDays: Int?
 
-    public init(serverURL: URL, deviceID: UUID = UUID(), deviceName: String, capturePaused: Bool = false) {
+    public init(
+        serverURL: URL, deviceID: UUID = UUID(), deviceName: String, capturePaused: Bool = false, expiryDays: Int? = nil
+    ) {
         self.serverURL = serverURL
         self.deviceID = deviceID
         self.deviceName = deviceName
         self.capturePaused = capturePaused
+        self.expiryDays = expiryDays
     }
 
     public init(from decoder: any Decoder) throws {
@@ -22,6 +27,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         deviceID = try container.decode(UUID.self, forKey: .deviceID)
         deviceName = try container.decode(String.self, forKey: .deviceName)
         capturePaused = try container.decodeIfPresent(Bool.self, forKey: .capturePaused) ?? false
+        expiryDays = try container.decodeIfPresent(Int.self, forKey: .expiryDays)
     }
 
     /// nil when the file doesn't exist yet.

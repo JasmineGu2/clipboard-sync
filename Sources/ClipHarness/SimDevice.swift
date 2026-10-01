@@ -22,6 +22,8 @@ struct DeviceDisk {
     var outbox: [Op] = []
     /// Highest timestamp issued or observed, written alongside the outbox and the replica.
     var clockHighWater: HLCTimestamp?
+    /// Items hidden by a local-only expiry sweep (`ExpiryMode.hideLocally`), persisted when hidden.
+    var hidden: Set<ItemID> = []
 }
 
 /// One simulated device: a HybridClock on a skewed fake wall clock, a merge store, an outbox and a cursor.
@@ -41,6 +43,8 @@ struct SimDevice {
     var clockHighWater: HLCTimestamp?
     /// Items learned from the latest applied pull, so actions sometimes target brand-new items.
     var recentItems: [ItemID] = []
+    /// See `DeviceDisk.hidden`. Always empty unless expiry is `.hideLocally`.
+    var hidden: Set<ItemID> = []
 
     var disk: DeviceDisk
 
@@ -72,6 +76,17 @@ struct SimDevice {
         return op
     }
 
+    /// What this device shows: visible items it hasn't hidden locally.
+    var shownItems: Set<ItemID> {
+        Set(store.items.values.filter { $0.isVisible && !hidden.contains($0.id) }.map(\.id))
+    }
+
+    /// Hides an item on this device only, and persists that.
+    mutating func hideLocally(_ item: ItemID) {
+        hidden.insert(item)
+        disk.hidden = hidden
+    }
+
     /// Applies a pulled page and persists replica + cursor atomically.
     mutating func applyPage(_ entries: [SimRelay.Entry]) {
         recentItems = []
@@ -98,6 +113,7 @@ struct SimDevice {
         cursor = disk.cursor
         outbox = disk.outbox
         recentItems = []
+        hidden = disk.hidden
         // Local ops recorded after the last snapshot live only in the outbox; fold them back in.
         for op in outbox { store.apply(op) }
         let wall = self.wall

@@ -177,6 +177,38 @@ final class ClipAppTests: XCTestCase {
         again.stop()
     }
 
+    /// F14. The age check itself is covered by SyncEngineTests; this covers the setting and its persistence.
+    func testExpiryDaysPersistsAndKeepsRecentItems() async throws {
+        let relay = InMemoryRelay()
+        let home = try makeHome()
+        let keyStore = InMemoryKeyStore()
+        let (app, _) = makeApp(home: home, keyStore: keyStore, relay: relay, name: "Mac")
+        await app.createVault(server: server)
+        XCTAssertNil(app.expiryDays, "items are kept forever by default")
+        let history = try XCTUnwrap(app.history)
+        await history.send("today")
+
+        await app.setExpiryDays(30)
+        XCTAssertEqual(app.expiryDays, 30)
+        XCTAssertNil(app.message)
+        await history.refresh()
+        XCTAssertEqual(history.recent.map(\.text), ["today"], "a new item isn't expired")
+        app.stop()
+
+        let (again, _) = makeApp(home: home, keyStore: keyStore, relay: relay, name: "Mac")
+        XCTAssertEqual(again.expiryDays, 30)
+        await again.setExpiryDays(0)
+        XCTAssertNil(again.expiryDays, "0 turns expiry off")
+        again.stop()
+    }
+
+    func testOldConfigWithoutExpiryStillLoads() async throws {
+        let json = #"{"serverURL":"http://relay.test:8080","deviceID":"00000000-0000-0000-0000-000000000001","deviceName":"PC"}"#
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+        XCTAssertNil(config.expiryDays)
+        XCTAssertFalse(config.capturePaused)
+    }
+
     func testAutoSyncRunLoopDeliversRemoteItems() async throws {
         let relay = InMemoryRelay()
         let macKeys = InMemoryKeyStore()

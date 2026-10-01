@@ -192,6 +192,25 @@ public final class ClipDatabase: @unchecked Sendable {
         }
     }
 
+    /// Visible, unpinned items whose create op is older than `cutoffMillis` (F14), oldest first.
+    /// Uses the create op's HLC wall time, the same column the history is ordered by.
+    public func expiredItemIDs(createdBeforeMillis cutoffMillis: UInt64, limit: Int = 500) throws -> [ItemID] {
+        try locked {
+            var ids: [ItemID] = []
+            try query(
+                """
+                SELECT item_id FROM items WHERE visible = 1 AND pinned = 0 AND created_wall < ?
+                ORDER BY created_wall, created_counter, created_device
+                LIMIT ?
+                """,
+                [.int(Int64(clamping: cutoffMillis)), .int(Int64(limit))]
+            ) { stmt in
+                if let text = columnText(stmt, 0), let uuid = UUID(uuidString: text) { ids.append(ItemID(uuid)) }
+            }
+            return ids
+        }
+    }
+
     /// The stored state of one item, visible or not; nil if no op for it has been seen.
     public func item(_ id: ItemID) throws -> ItemState? {
         try locked {

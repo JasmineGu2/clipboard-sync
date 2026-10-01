@@ -14,7 +14,7 @@ struct ClipCtl: AsyncParsableCommand {
         discussion: "Full guide: content/clipctl.md",
         subcommands: [
             Init.self, Pair.self, Add.self, List.self, Search.self, Copy.self,
-            Pin.self, Unpin.self, Rename.self, Tag.self, Untag.self, Delete.self,
+            Pin.self, Unpin.self, Rename.self, Tag.self, Untag.self, Delete.self, Expire.self,
             Sync.self, Status.self, Watch.self,
         ]
     )
@@ -272,6 +272,30 @@ struct Delete: ItemCommand {
     func change(_ item: ItemState, _ engine: SyncEngine) async throws -> String {
         try await engine.delete(item.id)
         return "deleted \(shortID(item.id))"
+    }
+}
+
+struct Expire: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Delete unpinned items older than --days, on every device, then sync.")
+    @OptionGroup var global: GlobalOptions
+    @Option(help: "Age in days. Items created longer ago than this, and not pinned, are deleted.") var days: Int
+
+    func validate() throws {
+        guard (1...SyncEngine.maxExpiryDays).contains(days) else {
+            throw ValidationError("--days must be between 1 and \(SyncEngine.maxExpiryDays).")
+        }
+    }
+
+    func run() async throws {
+        let client = try Client.open(global)
+        let count = try await client.engine.expireItems(olderThan: .seconds(days * 86_400))
+        print("expired \(count) item(s) older than \(days) days")
+        do {
+            try await client.sync(timeout: Client.syncTimeout)
+        } catch {
+            warn("not synced yet (\(describe(error))); the deletes go out on the next sync")
+        }
     }
 }
 

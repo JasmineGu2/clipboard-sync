@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "ClipCrypto", targets: ["ClipCrypto"]),
         .library(name: "ClipStore", targets: ["ClipStore"]),
         .library(name: "ClipSync", targets: ["ClipSync"]),
+        .library(name: "ClipAppCore", targets: ["ClipAppCore"]),
         .executable(name: "clipctl", targets: ["clipctl"]),
         .executable(name: "ConvergenceHarness", targets: ["ConvergenceHarness"]),
     ],
@@ -51,5 +52,8 @@ let package = Package(
         .testTarget(name: "ClipStoreTests", dependencies: ["ClipStore"]),
         .testTarget(name: "ClipSyncTests", dependencies: ["ClipSync"]),
         .testTarget(name: "ClipHarnessTests", dependencies: ["ClipHarness", "ClipCore"]),
+        // Shared app model for the Apple apps (apps/Apple). No UI frameworks, so it builds and tests on Windows.
+        .target(name: "ClipAppCore", dependencies: ["ClipSync", "ClipStore", "ClipCrypto", "ClipCore"]),
+        .testTarget(name: "ClipAppCoreTests", dependencies: ["ClipAppCore", "ClipSync", "ClipStore", "ClipCrypto", "ClipCore", "ClipWire"]),
     ]
 )

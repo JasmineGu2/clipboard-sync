@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 import XCTest
 @testable import ClipCrypto
@@ -21,7 +22,7 @@ final class VaultKeyTests: XCTestCase {
     func testWrongLengthRejected() {
         for count in [0, 16, 31, 33, 64] {
             XCTAssertThrowsError(try VaultKey(rawBytes: Data(repeating: 7, count: count))) {
-                XCTAssertEqual($0 as? CryptoError, .invalidKeyLength)
+                XCTAssertEqual($0 as? ClipCrypto.CryptoError, .invalidKeyLength)
             }
         }
     }
@@ -112,7 +113,7 @@ final class PairingCodeTests: XCTestCase {
     func testWrongCodeFailsToUnwrap() throws {
         let blob = try PairingCode.generate().wrap(.generate())
         XCTAssertThrowsError(try PairingCode.generate().unwrap(blob)) {
-            XCTAssertEqual($0 as? CryptoError, .decryptionFailed)
+            XCTAssertEqual($0 as? ClipCrypto.CryptoError, .decryptionFailed)
         }
     }
 
@@ -121,13 +122,50 @@ final class PairingCodeTests: XCTestCase {
         var bytes = [UInt8](try code.wrap(.generate()))
         bytes[bytes.count - 1] ^= 0x80
         XCTAssertThrowsError(try code.unwrap(Data(bytes))) {
-            XCTAssertEqual($0 as? CryptoError, .decryptionFailed)
+            XCTAssertEqual($0 as? ClipCrypto.CryptoError, .decryptionFailed)
         }
     }
 
     func testDescriptionRedactsCode() {
         let code = PairingCode.generate()
         XCTAssertFalse(String(describing: code).contains(code.canonical))
+    }
+
+    func testDumpAndDebugOutputRedactCode() throws {
+        let code = try XCTUnwrap(PairingCode(string: knownCode))
+        var dumped = ""
+        dump(code, to: &dumped)
+        let texts = [dumped, code.debugDescription, String(reflecting: code), "\(code)"]
+        for text in texts {
+            XCTAssertFalse(text.contains(code.canonical), text)
+            XCTAssertFalse(text.contains(code.display), text)
+            XCTAssertFalse(text.contains("000G"), text)
+        }
+        XCTAssertTrue(Mirror(reflecting: code).children.isEmpty)
+    }
+
+    func testUnwrapFailsWhenWrappedUnderDifferentPairingIDAAD() throws {
+        let code = PairingCode.generate()
+        let key = VaultKey.generate()
+        let otherAAD = Data(PairingCode.generate().pairingID.utf8)
+        let box = try AES.GCM.seal(key.rawBytes, using: code.wrapKey, authenticating: otherAAD)
+        let blob = try XCTUnwrap(box.combined)
+        XCTAssertThrowsError(try code.unwrap(blob)) {
+            XCTAssertEqual($0 as? ClipCrypto.CryptoError, .decryptionFailed)
+        }
+        // Sanity: the same manual seal with the right AAD does unwrap.
+        let good = try AES.GCM.seal(key.rawBytes, using: code.wrapKey, authenticating: Data(code.pairingID.utf8))
+        XCTAssertEqual(try code.unwrap(try XCTUnwrap(good.combined)), key)
+    }
+
+    func testGenerateProducesDistinctCodesThatReparse() throws {
+        let codes = (0..<100).map { _ in PairingCode.generate() }
+        XCTAssertEqual(Set(codes.map(\.canonical)).count, 100)
+        for code in codes {
+            let parsed = try XCTUnwrap(PairingCode(string: code.display))
+            XCTAssertEqual(parsed.canonical, code.canonical)
+            XCTAssertEqual(parsed, code)
+        }
     }
 }
 

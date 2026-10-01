@@ -132,7 +132,9 @@ public struct PairingCode: Sendable, Equatable {
     }
 }
 
-extension PairingCode: CustomStringConvertible, CustomDebugStringConvertible {
+extension PairingCode: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public var description: String { "PairingCode(<redacted>)" }
     public var debugDescription: String { description }
+    /// No children, so `dump` and debugger views never show the bytes or the canonical string.
+    public var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
 }

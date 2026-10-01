@@ -59,3 +59,7 @@
 - **Why:** cursorAhead missed a reset once other devices refilled the new relay past a device's cursor (closes the limit in the relay-reset entry). On Windows a refused connection only fails when the timeout expires: 30 s before, 5.0 s now (measured).
 - **Limit:** A relay restored from a backup keeps its old epoch; only cursorAhead catches that.
 - **Alternatives:** A 5 s session-wide timeout (could cut long-polls short on platforms that take the smaller value); racing each request against a sleep (not needed).
+
+## 2026-10-01: Apple signing team comes from CLIPSYNC_TEAM_ID
+- **Decision:** project.yml reads `DEVELOPMENT_TEAM` from the `CLIPSYNC_TEAM_ID` env var; KeychainKeyStore refuses an access group without a 10-character team prefix. The Mac menu's status refresh runs only while its window is key.
+- **Why:** Without a team, the keychain group expands wrong and fails at runtime with -34018. A clear error early beats a vague one later. The refresh rule keeps idle energy "Low" (N4).

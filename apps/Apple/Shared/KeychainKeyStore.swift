@@ -43,7 +43,11 @@ struct KeychainKeyStore: KeyStore {
 
     private func checkAccessGroup() throws {
         guard let accessGroup else { return }
-        if accessGroup.hasPrefix(".") || accessGroup.contains("$(") {
+        // A real group starts with the 10-character team ID ("ABCDE12345.dev.jazz..."). An unset team leaves
+        // ".dev.jazz...", "$(AppIdentifierPrefix)dev.jazz..." or no prefix at all.
+        let prefix = accessGroup.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        let hasTeamPrefix = prefix.count == 10 && prefix.allSatisfy { $0.isASCII && ($0.isUppercase || $0.isNumber) }
+        if !hasTeamPrefix || accessGroup.contains("$(") {
             throw MissingTeamPrefix(accessGroup: accessGroup)
         }
     }

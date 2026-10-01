@@ -789,3 +789,50 @@ Key files:
   - `C:\Users\Jasmine Gu\Desktop\swift-t22\docs\design.md`</result>
 <usage><subagent_tokens>152931</subagent_tokens><tool_uses>61</tool_uses><duration_ms>797342</duration_ms></usage>
 </task-notification>
+
+## 2026-10-01 06:58
+<task-notification>
+<task-id>ac290a3b51b8244a6</task-id>
+<tool-use-id>toolu_01YEijDCDYpbCciczU8KYW6X</tool-use-id>
+<output-file>C:\Users\JASMIN~1\AppData\Local\Temp\claude\C--Users-Jasmine-Gu-desktop-swift\14a38c1b-a71c-4b5c-b11e-9c1df7b67d79\tasks\ac290a3b51b8244a6.output</output-file>
+<status>completed</status>
+<summary>Agent "T25 fix Apple review findings" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All 11 review findings are fixed and committed on `t25` as `8dfccea` ("T25: fix Apple review findings"). `swift build` and `swift test` pass on Windows: 163 tests, 0 failures, 39 of them in ClipAppCore. The app code itself still hasn't been compiled, because that needs a Mac. I re-read it once for compile errors and found none.
+
+**Project file (`apps/Apple/project.yml`)**
+1. The three targets now have their own Swift module names: `ClipSyncMac`, `ClipSynciOS` and `ClipShareExtension`. The product name is still "ClipSync".
+2. All three targets now link `ClipCrypto` explicitly. I searched every import in the app code: only `ClipAppCore` and `ClipCrypto` are used, so nothing else was needed.
+3. `DEVELOPMENT_TEAM: ${CLIPSYNC_TEAM_ID}` is set, and the README now says to run `export CLIPSYNC_TEAM_ID=...` before `xcodegen`. If the variable is unset, I believe XcodeGen leaves the text as is and Xcode signing then fails, but I haven't run XcodeGen to confirm that.
+
+**Keychain:** `KeychainKeyStore` now throws a clear `MissingTeamPrefix` error, naming `CLIPSYNC_TEAM_ID`, when the access group starts with "." or still contains `$(`. Users still see the generic "Couldn't access the Keychain"; the detailed error is for logs. One doubt: an empty `$(AppIdentifierPrefix)` may leave `dev.jazz...` with no leading dot, which this check won't catch. I checked for "." as the finding specified.
+
+**Device name:** onboarding has a Device name field, prefilled "iPhone" on iOS and the Mac's own name on the Mac. It's saved in the config, so it survives relaunch, and a blank field falls back to the default.
+
+**Copy confirmation:** the "Copied" checkmark now clears after 1.5 s, and a new copy restarts the timer. iOS haptics now follow a copy counter, so copying the same item twice buzzes twice.
+
+**Smaller fixes**
+- **Alerts:** rename and tag alerts now use `.alert(_:isPresented:presenting:)` on both iOS and Mac, so the Save button gets the item even after the alert clears it.
+- **Mac menu refresh:** the status refresh now follows whether the menu window is open, using the window's "became key" and "resigned key" notifications, so it costs nothing while the menu is closed.
+- **Server hint:** onboarding now says to use the MagicDNS name, such as `http://relay.tailnet-name.ts.net:8787`, not a raw 100.x IP.
+- **Shortcuts:** the Text parameter now asks "What text do you want to send?" when it's missing. The existing test that keeps the shortcut text in sync now covers this line too.
+- **Paste button:** removed the `.labelStyle(.iconOnly)` that did nothing.
+- **Mac clipboard marker:** ClipSync's marker on the clipboard is now one byte instead of empty data.
+
+**Copy:** the new text (`serverHint`, `deviceNameLabel`, `deviceNameHint`, `intentTextPrompt`) is in both `content/app.md` and `Strings.swift`. I made the Mac onboarding window taller (520 to 640) to fit the new field.
+
+**New tests:** one for the device name (prefill, saved name, blank fallback on join), one for the confirmation clearing and the timer restarting, and one for the copy counter.
+
+Not done: `docs/decisions.md` is outside the files I'm allowed to touch. The two choices worth logging there are the environment variable for the team ID and following the window's key status for the Mac refresh.
+
+Files changed:
+- `C:\Users\Jasmine Gu\Desktop\swift-t25\apps\Apple\project.yml`
+- `C:\Users\Jasmine Gu\Desktop\swift-t25\apps\Apple\README.md`
+- `C:\Users\Jasmine Gu\Desktop\swift-t25\apps\Apple\Shared\` (KeychainKeyStore, SendClipboardIntent, SharedViews)
+- `C:\Users\Jasmine Gu\Desktop\swift-t25\apps\Apple\iOS\` (ClipSynciOSApp, HistoryView)
+- `C:\Users\Jasmine Gu\Desktop\swift-t25\apps\Apple\macOS\` (MacPasteboard, MenuContentView)
+- `C:\Users\Jasmine Gu\Desktop\swift-t25\Sources\ClipAppCore\` (ClipApp, HistoryModel, Strings)
+- `C:\Users\Jasmine Gu\Desktop\swift-t25\Tests\ClipAppCoreTests\` (ClipAppTests, HistoryModelTests, StringsTests)
+- `C:\Users\Jasmine Gu\Desktop\swift-t25\content\app.md`</result>
+<usage><subagent_tokens>141025</subagent_tokens><tool_uses>27</tool_uses><duration_ms>340497</duration_ms></usage>
+</task-notification>

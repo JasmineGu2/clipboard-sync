@@ -1,29 +1,35 @@
 # Board
 
-Milestone 1: Walking skeleton. Milestone 2: Apple apps (detailed). M3–M5 are in docs/vision.md.
+Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.md.
 
 ## Backlog
-- [ ] T06 Convergence harness: N replicas, random ops, reorder/duplicate/drop, seeded · owns: Sources/ConvergenceHarness, Tests/ConvergenceHarnessTests · check: `swift run ConvergenceHarness --seeds 500` reports 500/500 converged · deps: T02 · build: general-purpose · verify: code-reviewer
-- [ ] T07 ClipSync engine: outbox, push/pull with cursor, long-poll, apply, retry/backoff · owns: Sources/ClipSync, Tests/ClipSyncTests · check: `swift test --filter ClipSyncTests` passes (in-memory transport, two replicas converge) · deps: T02,T03,T04 · build: general-purpose · verify: code-reviewer
-- [ ] T08 clipctl: pair, add, list, search, copy, pin/tag/rename/delete, watch (Win32 clipboard, skips concealed formats) · owns: Sources/clipctl · check: `swift build --product clipctl` and `clipctl add hi && clipctl list` shows the item · deps: T07 · build: general-purpose · verify: code-reviewer
-- [ ] T09 End-to-end: server + two clipctl homes sync, scripted · owns: scripts/e2e.* · check: script exits 0, item added in A appears in B within 3 s · deps: T05,T08 · build: general-purpose · verify: debugger
-- [ ] T10 Apple shared app model: HistoryViewModel over ClipStore+ClipSync, KeychainKeyStore · owns: apps/Apple/Shared · check: code-reviewer pass; xcodebuild on the Mac (deferred) · deps: T07 · build: general-purpose · verify: code-reviewer
-- [ ] T11 macOS menu-bar app: NSPasteboard changeCount watcher (concealed/transient types skipped), history window · owns: apps/Apple/macOS · deps: T10 · build: general-purpose · verify: code-reviewer
-- [ ] T12 iOS app: history list, search, PasteButton send, pairing screen · owns: apps/Apple/iOS · deps: T10 · build: general-purpose · verify: code-reviewer
-- [ ] T13 iOS share extension + App Intent "Send Clipboard" · owns: apps/Apple/ShareExtension, apps/Apple/Intents · deps: T10 · build: general-purpose · verify: code-reviewer
-- [ ] T14 XcodeGen project.yml for all Apple targets + README build steps · owns: apps/Apple/project.yml, apps/Apple/README.md · deps: T11,T12,T13 · build: general-purpose · verify: code-reviewer
+- [ ] T09 End-to-end: relay in WSL + two clipctl homes on Windows sync, scripted · owns: scripts/e2e.* · check: script exits 0; an item added in A appears in B within 3 s · deps: T08 · build: general-purpose · verify: debugger
+- [ ] T17 Relay-reset recovery: after cursorAhead, re-push all local ops (mark everything outbound) so ops that lived only on the old relay come back · owns: Sources/ClipStore, Sources/ClipSync · check: test with a relay reset where B never saw A's ops · deps: none
+- [ ] T18 ops table stable ordering: `seq INTEGER PRIMARY KEY` (v3 migration) so pendingOutbound/refoldAll order survives VACUUM · owns: Sources/ClipStore · deps: none
+- [ ] T19 Pairing hardening: customMirror on PairingCode; known-answer test for wrap; test unwrap with a different pairingID (crypto review) · owns: Sources/ClipCrypto, Tests/ClipCryptoTests
+- [ ] T20 CI: GitHub Actions running swift test on Windows + Linux, the relay tests on Linux, and a nightly 20k-seed harness · owns: .github/
+- [ ] T21 Docs: README (what, how to run, measured N1–N6, the harness-found bugs), threat model · owns: README.md, docs/threat-model.md
+- [ ] M2 Mac-side: build apps/Apple on the MacBook with xcodegen; fix compile errors · needs: Mac
 
 ## Ready
 
 ## In progress
-- [ ] T02 ClipCore: op application + LWW/HLC merge, tombstones, tags · owns: Sources/ClipCore, Tests/ClipCoreTests · check: `swift test --filter ClipCoreTests` � deps: T01 � build: general-purpose (worktree) � verify: code-reviewer
-- [ ] T03 ClipCrypto: vault key, AES-256-GCM seal/open with AAD(itemID,opID), pairing-code key wrap, known vectors · owns: Sources/ClipCrypto, Tests/ClipCryptoTests · check: `swift test --filter ClipCryptoTests` · verify: crypto-reviewer � deps: T01 � build: general-purpose (worktree) � verify: crypto-reviewer
-- [ ] T04 ClipStore: bundled SQLite (FTS5), WAL, ops/items/cursor tables, search · owns: Sources/CSQLite, Sources/ClipStore, Tests/ClipStoreTests · check: `swift test --filter ClipStoreTests`, including a 10k-item search under 50 ms � deps: T01 � build: general-purpose (worktree) � verify: code-reviewer
-- [ ] T05 ClipServer: separate package Server/ (Hummingbird), append-only ciphertext log, long-poll, pairing mailbox · owns: Server/ · check: `cd Server && swift test` � deps: T01 � build: general-purpose (worktree) � verify: code-reviewer
+- [ ] T08 clipctl CLI with DPAPI keys and a Windows clipboard watcher · branch t08
+- [ ] T10–T14 ClipAppCore (cross-platform, tested on Windows) + Apple apps (iOS, macOS menu bar, share extension, App Intent; unbuilt) · branch t10
 
 ## Review
 
 ## Done
-- [x] T01 Contracts: Package.swift, module stubs, public types (HLC, ItemID, Op, Envelope, wire API), docs/design.md · owns: Package.swift, Sources/*/Contracts.swift, docs/design.md · check: `swift build` passes · deps: none · build: main · verify: code-reviewer
+- [x] T01 Contracts, design doc
+- [x] T02 ClipCore replica + merge tests (22)
+- [x] T03 ClipCrypto (30 tests, known-answer vectors)
+- [x] T04 ClipStore on bundled SQLite 3.53.4 with FTS5 (10k search median ~14 ms)
+- [x] T05 Relay server (Hummingbird)
+- [x] T06 Convergence harness: 500/500 seeds, 4 mutations caught; found the clock-restart bug (seed 488)
+- [x] T07 ClipSync engine, transports, pairing (27 tests)
+- [x] T15 Relay hardening: body caps, pairing auth, token pin/rotate, cursor-ahead reset; 34/34 tests on Linux (WSL)
+- [x] T16 ClipStore durability (synchronous=FULL), stable FTS rowids (v2 migration), query robustness
+- [x] Clock resumes from a persisted high water; far-future clamp (harness-found)
+- [x] Dates as integer ms in shared ClipCoding (intermittent replica mismatch)
 
 ## Blocked

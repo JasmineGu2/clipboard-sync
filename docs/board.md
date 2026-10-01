@@ -3,10 +3,8 @@
 Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.md.
 
 ## Backlog
-- [ ] T09 End-to-end: relay in WSL + two clipctl homes on Windows sync, scripted · owns: scripts/e2e.* · check: script exits 0; an item added in A appears in B within 3 s · deps: T08 · build: general-purpose · verify: debugger
-- [ ] T17 Relay-reset recovery: after cursorAhead, re-push all local ops (mark everything outbound) so ops that lived only on the old relay come back · owns: Sources/ClipStore, Sources/ClipSync · check: test with a relay reset where B never saw A's ops · deps: none
-- [ ] T18 ops table stable ordering: `seq INTEGER PRIMARY KEY` (v3 migration) so pendingOutbound/refoldAll order survives VACUUM · owns: Sources/ClipStore · deps: none
-- [ ] T19 Pairing hardening: customMirror on PairingCode; known-answer test for wrap; test unwrap with a different pairingID (crypto review) · owns: Sources/ClipCrypto, Tests/ClipCryptoTests
+- [ ] T22 Relay epoch ID in PullResponse; a device treats an epoch change as a reset (closes the T17 limit) · owns: ClipWire, Server, ClipSync
+- [ ] T23 HTTPTransport: short connect timeout so an offline relay fails in ~3 s, not 30 s (Foundation on Windows) · owns: Sources/ClipSync
 - [ ] T20 CI: GitHub Actions running swift test on Windows + Linux, the relay tests on Linux, and a nightly 20k-seed harness · owns: .github/
 - [ ] T21 Docs: README (what, how to run, measured N1–N6, the harness-found bugs), threat model · owns: README.md, docs/threat-model.md
 - [ ] M2 Mac-side: build apps/Apple on the MacBook with xcodegen; fix compile errors · needs: Mac
@@ -14,7 +12,6 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 ## Ready
 
 ## In progress
-- [ ] T08 clipctl CLI with DPAPI keys and a Windows clipboard watcher · branch t08
 - [ ] T10–T14 ClipAppCore (cross-platform, tested on Windows) + Apple apps (iOS, macOS menu bar, share extension, App Intent; unbuilt) · branch t10
 
 ## Review
@@ -31,5 +28,10 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 - [x] T16 ClipStore durability (synchronous=FULL), stable FTS rowids (v2 migration), query robustness
 - [x] Clock resumes from a persisted high water; far-future clamp (harness-found)
 - [x] Dates as integer ms in shared ClipCoding (intermittent replica mismatch)
+
+- [x] T08 clipctl: all commands, DPAPI key, clipboard watcher skipping concealed content; smoke test 20/20
+- [x] T09 End-to-end (scripts/e2e.ps1): relay in WSL + two clipctl devices; pairing, live sync, edits, delete, convergence; A→B p50 ≈ 100 ms on localhost
+- [x] T17/T18 Relay-reset re-push; ops `seq` (v3 migration)
+- [x] T19 Pairing redaction + known-answer tests
 
 ## Blocked

@@ -80,6 +80,19 @@ final class KnownAnswerTests: XCTestCase {
         XCTAssertEqual(reference.okm.hexString, expected)
     }
 
+    func testPairingWrapKeyKnownAnswer() throws {
+        let code = try XCTUnwrap(PairingCode(string: "000G40R40M30E209185GR38E1W8124GK"))
+        XCTAssertEqual(code.bytes, Data((0..<20).map { UInt8($0) }))
+        // Computed independently with Python hmac/hashlib (RFC 5869).
+        let expected = "13bbafa857fa86c8d62e92ad96fb666ca8e7d30b0c46fc83990e1fc0745df457"
+        XCTAssertEqual(code.wrapKey.withUnsafeBytes { $0.hexString }, expected)
+
+        let reference = referenceHKDF(
+            ikm: Array(code.bytes), salt: Array("clip.v1".utf8), info: Array("clip.pair.wrap.v1".utf8), length: 32
+        )
+        XCTAssertEqual(reference.okm.hexString, expected)
+    }
+
     // MARK: - AES-256-GCM: McGrew & Viega, "The Galois/Counter Mode of Operation", Test Case 16
 
     func testAESGCMTestCase16() throws {

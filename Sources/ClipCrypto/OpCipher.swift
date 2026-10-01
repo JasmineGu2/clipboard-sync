@@ -71,30 +71,7 @@ public struct OpCipher: Sendable {
 
     // MARK: - Op encoding
 
-    // ISO-8601 with fractional seconds. Plain `.iso8601` truncates to whole seconds, so a decoded op's
-    // `createdAt` would differ from the copy its author stored.
-    private static let dateStyle = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
-    private static let plainDateStyle = Date.ISO8601FormatStyle()
-
-    /// Sorted keys, ISO-8601 dates.
-    static func makeEncoder() -> JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        encoder.dateEncodingStrategy = .custom { date, encoder in
-            var container = encoder.singleValueContainer()
-            try container.encode(dateStyle.format(date))
-        }
-        return encoder
-    }
-
-    static func makeDecoder() -> JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .custom { decoder in
-            let container = try decoder.singleValueContainer()
-            let string = try container.decode(String.self)
-            if let date = try? dateStyle.parse(string) { return date }
-            return try plainDateStyle.parse(string)
-        }
-        return decoder
-    }
+    // One shared encoding with ClipStore; see ClipCoding for why dates are integer milliseconds.
+    static func makeEncoder() -> JSONEncoder { ClipCoding.makeEncoder() }
+    static func makeDecoder() -> JSONDecoder { ClipCoding.makeDecoder() }
 }

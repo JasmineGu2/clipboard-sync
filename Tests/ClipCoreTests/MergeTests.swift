@@ -460,3 +460,23 @@ final class ClockSafetyTests: XCTestCase {
         XCTAssertGreaterThan(clock.tick(), remote)
     }
 }
+
+final class ClipCodingTests: XCTestCase {
+    /// Decode → encode must be a fixed point, or replicas that re-store an op drift by a millisecond.
+    func testDateRoundTripIsStableAcrossManyValues() throws {
+        var rng = SystemRandomNumberGenerator()
+        let encoder = ClipCoding.makeEncoder(), decoder = ClipCoding.makeDecoder()
+        for _ in 0..<5_000 {
+            let date = Date(timeIntervalSince1970: Double.random(in: 1.6e9...1.9e9, using: &rng))
+            let once = try encoder.encode([date])
+            let twice = try encoder.encode(try decoder.decode([Date].self, from: once))
+            XCTAssertEqual(once, twice)
+        }
+    }
+
+    func testLegacyISODatesStillDecode() throws {
+        let json = Data(#"["2026-10-01T10:25:31.806Z","2026-10-01T10:25:31Z"]"#.utf8)
+        let dates = try ClipCoding.makeDecoder().decode([Date].self, from: json)
+        XCTAssertEqual(dates.count, 2)
+    }
+}

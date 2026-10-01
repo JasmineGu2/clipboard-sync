@@ -62,7 +62,7 @@ public struct ItemContent: Hashable, Codable, Sendable {
         self.text = text
         self.sourceDevice = sourceDevice
         self.sourceDeviceName = sourceDeviceName
-        self.createdAt = createdAt
+        self.createdAt = ClipCoding.normalized(createdAt)
     }
 }
 

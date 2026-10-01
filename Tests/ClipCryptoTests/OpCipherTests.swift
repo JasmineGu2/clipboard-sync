@@ -137,9 +137,9 @@ final class OpCipherTests: XCTestCase {
         XCTAssertEqual(try cipher.open(first), try cipher.open(second))
     }
 
-    func testEncodingSortsKeysAndUsesISO8601Dates() throws {
+    func testEncodingSortsKeysAndUsesIntegerMillisecondDates() throws {
         let json = try XCTUnwrap(String(data: OpCipher.makeEncoder().encode(makeOp()), encoding: .utf8))
-        XCTAssertTrue(json.contains("\"createdAt\":\"2023-11-14T22:13:20.500Z\""), json)
+        XCTAssertTrue(json.contains("\"createdAt\":1700000000500"), json)
         let id = try XCTUnwrap(json.range(of: "\"id\""))
         let itemID = try XCTUnwrap(json.range(of: "\"itemID\""))
         let timestamp = try XCTUnwrap(json.range(of: "\"timestamp\""))

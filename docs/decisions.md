@@ -37,3 +37,8 @@
 - **Decision:** Local databases use WAL with synchronous=FULL.
 - **Why:** With NORMAL, a clip the user just copied could vanish on power loss (code review). FULL costs about 0.3 ms per single-clip insert (0.58 → 0.87 ms) and almost nothing for batches.
 - **Alternatives:** NORMAL plus a checkpoint after local inserts (more moving parts for the same guarantee).
+
+## 2026-10-01: Dates encode as integer milliseconds, in one shared ClipCoding
+- **Decision:** Ops and item state encode dates as Int64 milliseconds through `ClipCoding` (ClipCore), used by both ClipCrypto and ClipStore. ItemContent normalizes `createdAt` to the millisecond. Old ISO strings still decode.
+- **Why:** ISO text with fractional seconds round-trips through Double, so re-encoding a decoded date could drift by 1 ms. A device that stored a synced op once and one that stored it twice ended with different `createdAt`, breaking N11. It showed up as an intermittent failure in `testRelayResetResetsCursorAndRepulls`; a 5,000-date round-trip test now pins it.
+- **Alternatives:** Keep ISO but truncate rather than round (still two encoders to keep in sync).

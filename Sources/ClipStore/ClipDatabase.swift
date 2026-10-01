@@ -33,18 +33,9 @@ public final class ClipDatabase: @unchecked Sendable {
     private static let cursorKey = "sync_cursor"
 
     public init(path: String) throws {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .custom { date, encoder in
-            var container = encoder.singleValueContainer()
-            try container.encode(date.formatted(Self.isoWithFraction))
-        }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .custom { decoder in
-            let string = try decoder.singleValueContainer().decode(String.self)
-            if let date = try? Self.isoWithFraction.parse(string) { return date }
-            if let date = try? Date.ISO8601FormatStyle().parse(string) { return date }
-            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "bad ISO-8601 date \(string)"))
-        }
+        // Shared with ClipCrypto so stored and synced copies encode identically (see ClipCoding).
+        let encoder = ClipCoding.makeEncoder()
+        let decoder = ClipCoding.makeDecoder()
         self.encoder = encoder
         self.decoder = decoder
 
@@ -493,7 +484,6 @@ public final class ClipDatabase: @unchecked Sendable {
 
     /// SQLITE_TRANSIENT: SQLite copies bound text and blobs before the bind call returns.
     private static var transient: sqlite3_destructor_type { unsafeBitCast(-1, to: sqlite3_destructor_type.self) }
-    private static let isoWithFraction = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
 
     private func locked<T>(_ body: () throws -> T) throws -> T {
         lock.lock()

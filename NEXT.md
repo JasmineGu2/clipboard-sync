@@ -16,7 +16,7 @@
 ## Next build tasks (no hardware needed)
 - M3 Windows tray app around ClipAppCore (clipctl watch covers capture today).
 - M4 images/files (F11/F12, N5/N6), revoke (F13), expiry (F14).
-- OpCipher fixed-nonce test vector (open item from the crypto review).
+
 
 ## Open questions
 - When is the MacBook available?

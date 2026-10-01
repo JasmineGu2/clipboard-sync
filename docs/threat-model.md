@@ -69,7 +69,7 @@ A crypto-review agent read ClipCrypto and the relay's auth and pairing code. It 
 | Anyone could upload a pairing blob, and an upload replaced a live one. | Low | Fixed: upload needs the token, a live ID gets 409, and at most 100 can be live. |
 | `dump()` of a `PairingCode` printed its bytes. | Low | Fixed (T19), with a test. |
 | `Envelope.deviceID` isn't in the authenticated data. | Info | Accepted. Clients ignore it (see Known gaps). |
-| Missing test vectors: the pairing wrap key, and unwrap under a different pairing ID. | Low | Fixed (T19). There's still no fixed-nonce vector for `OpCipher`, because `seal` doesn't take a nonce. AES-GCM itself is checked against Test Case 16 from the GCM paper. |
+| Missing test vectors: the pairing wrap key, and unwrap under a different pairing ID. | Low | Fixed (T19). `OpCipher` got a fixed-nonce vector on 2026-10-01: an internal `seal(_:device:nonce:)` that only tests use, checked byte for byte against `scripts/kat/opcipher_kat.py` (Python `cryptography`). AES-GCM itself is checked against Test Case 16 from the GCM paper. |
 | Push bodies were capped at about 175 MB, not 4 MiB, and pairing bodies were decoded before the size check (code review). | Warning | Fixed (T15): 4 MiB for pushes and 100 KiB for pairing, checked before decoding. |
 
 The review also confirmed: only swift-crypto primitives, a fresh random nonce on every seal, no key logging, redacted `VaultKey` output, and known-answer tests for HKDF (RFC 5869), the derived token and data key, and the pairing code and ID.

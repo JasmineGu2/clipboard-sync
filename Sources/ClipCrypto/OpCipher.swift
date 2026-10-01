@@ -15,6 +15,12 @@ public struct OpCipher: Sendable {
     }
 
     public func seal(_ op: Op, device: DeviceID) throws -> Envelope {
+        try seal(op, device: device, nonce: AES.GCM.Nonce())
+    }
+
+    /// Fixed-nonce seal, for the known-answer test only. Reusing a nonce under one key breaks GCM,
+    /// so this stays internal and production code always goes through the random-nonce `seal`.
+    func seal(_ op: Op, device: DeviceID, nonce: AES.GCM.Nonce) throws -> Envelope {
         let opID = op.id.rawValue.uuidString
         let itemID = op.itemID.rawValue.uuidString
         let dataKey = vaultKey.dataKey
@@ -29,7 +35,7 @@ public struct OpCipher: Sendable {
             let box = try AES.GCM.seal(
                 plaintext,
                 using: dataKey,
-                nonce: AES.GCM.Nonce(),
+                nonce: nonce,
                 authenticating: Self.aad(itemID: itemID, opID: opID)
             )
             guard let bytes = box.combined else { throw CryptoError.encodingFailed }

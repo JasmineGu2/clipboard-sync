@@ -63,3 +63,8 @@
 ## 2026-10-01: Apple signing team comes from CLIPSYNC_TEAM_ID
 - **Decision:** project.yml reads `DEVELOPMENT_TEAM` from the `CLIPSYNC_TEAM_ID` env var; KeychainKeyStore refuses an access group without a 10-character team prefix. The Mac menu's status refresh runs only while its window is key.
 - **Why:** Without a team, the keychain group expands wrong and fails at runtime with -34018. A clear error early beats a vague one later. The refresh rule keeps idle energy "Low" (N4).
+
+## 2026-10-01: OpCipher fixed-nonce known-answer vector
+- **Decision:** `OpCipher.seal(_:device:nonce:)` is an internal overload that only the known-answer test calls; the public `seal` always uses a fresh random nonce. The expected bytes come from `scripts/kat/opcipher_kat.py` (Python `cryptography`), not from Swift.
+- **Why:** A random nonce means no test pinned the exact wire bytes, so a silent change to the AAD string, byte layout or op JSON would only show up as old devices failing to decrypt. Computing the vector outside Swift makes it an independent check.
+- **Alternatives:** `#if DEBUG` around the overload (tests build in debug anyway, but release test runs would lose it); an injectable nonce source on the public API (puts nonce reuse one parameter away from production callers).

@@ -1,0 +1,32 @@
+name: Nightly harness
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    runs-on: ubuntu-24.04
+    container: swift:6.3
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: nightly-build-${{ hashFiles('Package.resolved') }}
+          restore-keys: nightly-build-
+      # Start seed changes every run. If a seed fails, the harness prints a "repro:" line in this log.
+      # The default shell is bash -eo pipefail, so a harness failure still fails the step despite tee.
+      - name: Run harness
+        run: swift run -c release ConvergenceHarness --seeds 20000 --start ${{ github.run_number }}000000 2>&1 | tee harness-output.txt
+      - name: Upload output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-output-${{ github.run_number }}
+          path: harness-output.txt

@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    container: swift:6.3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: linux-build-${{ hashFiles('Package.resolved') }}
+          restore-keys: linux-build-
+      - run: swift build
+      - run: swift test
+      - run: swift run -c release ConvergenceHarness --seeds 2000
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # compnerd/gha-setup-swift installs a toolchain by branch + tag. Bump both together for newer Swift.
+      - uses: compnerd/gha-setup-swift@main
+        with:
+          branch: swift-6.3-release
+          tag: 6.3-RELEASE
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: windows-build-${{ hashFiles('Package.resolved') }}
+          restore-keys: windows-build-
+      # swift-argument-parser is pinned below 1.8 in Package.swift: 1.8 ships symlinks Windows can't check out.
+      - run: swift build
+      - run: swift test
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: macos-build-${{ hashFiles('Package.resolved') }}
+          restore-keys: macos-build-
+      - run: swift --version
+      - run: swift build
+      - run: swift test
+
+  relay:
+    runs-on: ubuntu-24.04
+    container: swift:6.3
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y libsqlite3-dev
+      - uses: actions/cache@v4
+        with:
+          path: Server/.build
+          key: relay-build-${{ hashFiles('Package.resolved', 'Server/Package.resolved', 'Server/Package.swift') }}
+          restore-keys: relay-build-
+      - run: swift test
+        working-directory: Server

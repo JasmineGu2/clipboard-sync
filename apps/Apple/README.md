@@ -126,3 +126,12 @@ The parts most likely to need a fix on the first build, roughly in order:
 6. **Concurrency warnings** in the UI layer (it builds in Swift 5 mode with complete checking).
 7. **Clipboard privacy prompts on newer macOS.** If macOS asks the user before an app reads the clipboard,
    the watcher's reads will trigger it. Allow ClipSync in System Settings > Privacy & Security.
+
+## First-build checklist (risks noted before anything was compiled)
+1. **App Groups on a free Apple ID** may not be allowed. If not, the iPhone app still works, but the share extension and Shortcut say "finish setup first".
+2. **Mac keychain** uses the data-protection keychain, which needs a provisioning profile. Error -34018 means the profile or team is missing.
+3. **App Intent:** if Xcode rejects `static let description` / `openAppWhenRun`, change them to `static var`.
+4. **Compiler:** the shared code was tested with Swift 6.4; Xcode 16's compiler hasn't been tried.
+5. **Concurrency:** expect warnings, not errors, in the UI code (Swift 5 mode with complete checking).
+6. **Eyeball:** text fields and alerts inside the menu bar window; how the iOS PasteButton looks in the toolbar.
+7. **Clipboard privacy prompt:** newer macOS may ask before the app reads the pasteboard, even though it only reads when the change count moves.

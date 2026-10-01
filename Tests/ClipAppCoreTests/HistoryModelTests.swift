@@ -173,6 +173,25 @@ final class HistoryModelTests: XCTestCase {
         f.model.stop()
     }
 
+    func testOldPinnedItemStaysInPinnedSectionBeyondTheFirstPage() async throws {
+        let f = try makeFixture(pageSize: 200)
+        await f.model.capture("ancient")
+        await f.model.refresh()
+        let ancient = try XCTUnwrap(f.model.recent.first { $0.text == "ancient" })
+        await f.model.togglePin(ancient)
+        for i in 0..<205 { await f.model.capture("clip \(i)") }
+        await f.model.refresh()
+
+        XCTAssertEqual(f.model.pinned.map(\.text), ["ancient"])
+        XCTAssertFalse(f.model.recent.contains { $0.text == "ancient" })
+        XCTAssertEqual(f.model.recent.count, 200)
+
+        await f.model.togglePin(try XCTUnwrap(f.model.pinned.first))
+        XCTAssertTrue(f.model.pinned.isEmpty)
+        await f.model.loadMore()
+        XCTAssertEqual(f.model.recent.last?.text, "ancient")
+    }
+
     func testPaging() async throws {
         let f = try makeFixture(pageSize: 10)
         for i in 0..<25 { await f.model.capture("clip \(i)") }

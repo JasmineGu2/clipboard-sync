@@ -168,11 +168,16 @@ public final class HistoryModel {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !query.isEmpty { searchQueryCount += 1 }
         switch await Self.fetch(db: db, query: query, limit: limit) {
-        case .success(let states):
-            let items = states.compactMap(ClipItem.init)
-            pinned = items.filter(\.isPinned)
+        case .success(let result):
+            let items = result.page.compactMap(ClipItem.init)
+            if let pinnedStates = result.pinned {
+                // Browsing: the pinned section comes from its own query, so an old pinned item still shows.
+                pinned = pinnedStates.compactMap(ClipItem.init)
+            } else {
+                pinned = items.filter(\.isPinned)
+            }
             recent = items.filter { !$0.isPinned }
-            canLoadMore = states.count >= limit
+            canLoadMore = result.page.count >= limit
         case .failure(let error):
             message = AppMessage(error)
         }
@@ -206,9 +211,15 @@ public final class HistoryModel {
     }
 
     /// Runs the query off the main actor. The database serializes its own calls.
-    nonisolated private static func fetch(db: ClipDatabase, query: String, limit: Int) async -> Result<[ItemState], any Error> {
+    /// `pinned` is nil for searches, which keep splitting their own results.
+    nonisolated private static func fetch(
+        db: ClipDatabase, query: String, limit: Int
+    ) async -> Result<(page: [ItemState], pinned: [ItemState]?), any Error> {
         Result {
-            query.isEmpty ? try db.items(limit: limit) : try db.search(query, limit: limit)
+            if query.isEmpty {
+                return (try db.items(limit: limit), try db.pinnedItems())
+            }
+            return (try db.search(query, limit: limit), nil)
         }
     }
 

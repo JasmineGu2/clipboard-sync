@@ -48,6 +48,38 @@ final class ClipAppTests: XCTestCase {
         again.stop()
     }
 
+    func testOnboardingSavesTheChosenDeviceName() async throws {
+        let relay = InMemoryRelay()
+        let home = try makeHome()
+        let keyStore = InMemoryKeyStore()
+        let (app, _) = makeApp(home: home, keyStore: keyStore, relay: relay, name: "iPhone")
+        XCTAssertEqual(app.deviceName, "iPhone", "the platform default is the prefill")
+
+        await app.createVault(server: server, deviceName: "  Jazz's iPhone ")
+        XCTAssertEqual(app.state, .ready)
+        XCTAssertEqual(app.deviceName, "Jazz's iPhone")
+        let config = try XCTUnwrap(try AppConfig.load(from: home.appendingPathComponent(ClipApp.configFileName)))
+        XCTAssertEqual(config.deviceName, "Jazz's iPhone")
+        let history = try XCTUnwrap(app.history)
+        await history.send("named")
+        XCTAssertEqual(history.recent.first?.sourceDeviceName, "Jazz's iPhone")
+        app.stop()
+
+        // Relaunch: the saved name wins over the platform default.
+        let (again, _) = makeApp(home: home, keyStore: keyStore, relay: relay, name: "iPhone")
+        XCTAssertEqual(again.deviceName, "Jazz's iPhone")
+        again.stop()
+
+        // Blank falls back to the default, on join too.
+        let maybeCode = await again.startPairing()
+        let code = try XCTUnwrap(maybeCode)
+        let (other, _) = makeApp(home: try makeHome(), keyStore: InMemoryKeyStore(), relay: relay, name: "Mac")
+        await other.joinVault(server: server, code: code, deviceName: "   ")
+        XCTAssertEqual(other.state, .ready)
+        XCTAssertEqual(other.deviceName, "Mac")
+        other.stop()
+    }
+
     func testCreateVaultWithBadURLOrDeadServerStaysInSetup() async throws {
         let keyStore = InMemoryKeyStore()
         let (app, _) = makeApp(home: try makeHome(), keyStore: keyStore, relay: OfflineTransport(), name: "Mac")

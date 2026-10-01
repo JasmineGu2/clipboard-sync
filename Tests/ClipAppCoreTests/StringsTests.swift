@@ -38,7 +38,11 @@ final class StringsTests: XCTestCase {
     func testIntentLiteralsMatchStrings() throws {
         let source = try String(
             contentsOf: repoRoot.appendingPathComponent("apps/Apple/Shared/SendClipboardIntent.swift"), encoding: .utf8)
-        for value in [Strings.intentTitle, Strings.intentDescription, Strings.intentTextParameter, Strings.intentShortTitle] {
+        let literals = [
+            Strings.intentTitle, Strings.intentDescription, Strings.intentTextParameter, Strings.intentTextPrompt,
+            Strings.intentShortTitle,
+        ]
+        for value in literals {
             XCTAssertTrue(source.contains("\"\(value)\""), "SendClipboardIntent.swift should contain \"\(value)\"")
         }
     }

@@ -22,7 +22,7 @@ struct MenuContentView: View {
                     QuitButton()
                         .padding(8)
                 }
-                .frame(height: 520)
+                .frame(height: 640)
             case .ready:
                 if showingPair {
                     PairView(app: controller.app) { showingPair = false }
@@ -87,19 +87,25 @@ struct MacHistoryView: View {
             footer
                 .padding(8)
         }
-        .onAppear { history.setVisible(true) }
+        // A MenuBarExtra window is created once and then only hidden, so onAppear/onDisappear don't track
+        // whether the menu is open. The window is key exactly while it's showing; follow that instead (N4).
+        .background(WindowKeyObserver { history.setVisible($0) })
         .onDisappear { history.setVisible(false) }
-        .alert(Strings.renameTitle, isPresented: isPresented($renaming)) {
+        // `presenting:` hands the item to the buttons. Reading `renaming` there instead would see nil:
+        // the alert clears the binding before the button action runs.
+        .alert(Strings.renameTitle, isPresented: isPresented($renaming), presenting: renaming) { item in
             TextField(Strings.renamePlaceholder, text: $renameText)
             Button(Strings.save) {
-                if let item = renaming { Task { await history.rename(item, to: renameText) } }
+                let title = renameText
+                Task { await history.rename(item, to: title) }
             }
             Button(Strings.cancel, role: .cancel) {}
         }
-        .alert(Strings.tagTitle, isPresented: isPresented($tagging)) {
+        .alert(Strings.tagTitle, isPresented: isPresented($tagging), presenting: tagging) { item in
             TextField(Strings.tagPlaceholder, text: $tagText)
             Button(Strings.save) {
-                if let item = tagging { Task { await history.addTag(item, tagText) } }
+                let tag = tagText
+                Task { await history.addTag(item, tag) }
             }
             Button(Strings.cancel, role: .cancel) {}
         }
@@ -184,6 +190,50 @@ struct MacHistoryView: View {
 
     private func isPresented(_ item: Binding<ClipItem?>) -> Binding<Bool> {
         Binding(get: { item.wrappedValue != nil }, set: { if !$0 { item.wrappedValue = nil } })
+    }
+}
+
+/// Reports whether the hosting window is the key window, from NSWindow's key notifications.
+/// The menu bar window becomes key when it opens and resigns key when it closes.
+struct WindowKeyObserver: NSViewRepresentable {
+    let onChange: (Bool) -> Void
+
+    func makeNSView(context: Context) -> KeyObservingView {
+        let view = KeyObservingView()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateNSView(_ view: KeyObservingView, context: Context) {
+        view.onChange = onChange
+    }
+
+    final class KeyObservingView: NSView {
+        var onChange: ((Bool) -> Void)?
+        private var observers: [NSObjectProtocol] = []
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            for observer in observers { NotificationCenter.default.removeObserver(observer) }
+            observers = []
+            guard let window else {
+                onChange?(false)
+                return
+            }
+            let names: [(Notification.Name, Bool)] = [
+                (NSWindow.didBecomeKeyNotification, true),
+                (NSWindow.didResignKeyNotification, false),
+            ]
+            for (name, isKey) in names {
+                let observer = NotificationCenter.default.addObserver(
+                    forName: name, object: window, queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.onChange?(isKey) }
+                }
+                observers.append(observer)
+            }
+            onChange?(window.isKeyWindow)
+        }
     }
 }
 

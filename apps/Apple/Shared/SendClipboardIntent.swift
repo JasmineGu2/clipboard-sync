@@ -6,14 +6,15 @@ import Foundation
 /// so the app never reads the pasteboard itself (no paste prompt).
 ///
 /// The App Intents compiler reads titles from literals only, so the strings below repeat
-/// `Strings.intentTitle`, `.intentDescription`, `.intentTextParameter` and `.intentShortTitle`
+/// `Strings.intentTitle`, `.intentDescription`, `.intentTextParameter`, `.intentTextPrompt` and `.intentShortTitle`
 /// (content/app.md). `StringsTests.testIntentLiteralsMatchStrings` fails if they drift.
 struct SendClipboardIntent: AppIntent {
     static let title: LocalizedStringResource = "Send Clipboard to ClipSync"
     static let description = IntentDescription("Adds text to your ClipSync history and syncs it to your other devices.")
     static let openAppWhenRun = false
 
-    @Parameter(title: "Text")
+    // requestValueDialog: Shortcuts asks for the text when the action runs without it.
+    @Parameter(title: "Text", requestValueDialog: IntentDialog("What text do you want to send?"))
     var text: String
 
     init() {}

@@ -30,6 +30,24 @@ struct KeychainKeyStore: KeyStore {
         }
     }
 
+    /// The access group still has an unexpanded team prefix: `$(AppIdentifierPrefix)` came out empty, which
+    /// happens when the project was generated without a team (`CLIPSYNC_TEAM_ID`). Without this check the
+    /// Keychain fails later with the opaque -34018 (errSecMissingEntitlement).
+    struct MissingTeamPrefix: Error, CustomStringConvertible {
+        let accessGroup: String
+        var description: String {
+            "Keychain access group \"\(accessGroup)\" has no team ID prefix. "
+                + "Set CLIPSYNC_TEAM_ID, run xcodegen again, and rebuild (see apps/Apple/README.md)."
+        }
+    }
+
+    private func checkAccessGroup() throws {
+        guard let accessGroup else { return }
+        if accessGroup.hasPrefix(".") || accessGroup.contains("$(") {
+            throw MissingTeamPrefix(accessGroup: accessGroup)
+        }
+    }
+
     private var baseQuery: [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -46,6 +64,7 @@ struct KeychainKeyStore: KeyStore {
     }
 
     func loadVaultKey() throws -> VaultKey? {
+        try checkAccessGroup()
         var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -63,6 +82,7 @@ struct KeychainKeyStore: KeyStore {
     }
 
     func saveVaultKey(_ key: VaultKey) throws {
+        try checkAccessGroup()
         let attributes: [String: Any] = [
             kSecValueData as String: key.rawBytes,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
@@ -81,6 +101,7 @@ struct KeychainKeyStore: KeyStore {
     }
 
     func deleteVaultKey() throws {
+        try checkAccessGroup()
         let status = SecItemDelete(baseQuery as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError(status: status) }
     }

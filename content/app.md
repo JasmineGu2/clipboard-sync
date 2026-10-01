@@ -2,7 +2,7 @@
 
 Every user-facing string in the Apple apps (macOS menu bar app, iOS app, share extension, Shortcuts action).
 
-The code reads these from the `Strings` enum in `Sources/ClipAppCore/Strings.swift`. Change a line here and the same line there; `swift test` fails until both match (`StringsTests`). The four `intent*` strings are also repeated as literals in `apps/Apple/Shared/SendClipboardIntent.swift`, because the App Intents compiler only reads literals; the same test checks them.
+The code reads these from the `Strings` enum in `Sources/ClipAppCore/Strings.swift`. Change a line here and the same line there; `swift test` fails until both match (`StringsTests`). The five `intent*` strings are also repeated as literals in `apps/Apple/Shared/SendClipboardIntent.swift`, because the App Intents compiler only reads literals; the same test checks them.
 
 `{name}` marks a placeholder the app fills in.
 
@@ -64,6 +64,9 @@ The code reads these from the `Strings` enum in `Sources/ClipAppCore/Strings.swi
 - `onboardingIntro`: Your history is encrypted on this device. The server only stores ciphertext.
 - `serverLabel`: Server URL
 - `serverPlaceholder`: http://relay.your-tailnet.ts.net:8787
+- `serverHint`: Use the relay's MagicDNS name, like http://relay.tailnet-name.ts.net:8787, not a 100.x address. iOS blocks plain HTTP to raw IP addresses.
+- `deviceNameLabel`: Device name
+- `deviceNameHint`: Your other devices show this next to what you copy here.
 - `createVault`: Create a new vault
 - `createVaultHint`: Start here on your first device.
 - `joinVault`: Join with a pairing code
@@ -86,6 +89,7 @@ The code reads these from the `Strings` enum in `Sources/ClipAppCore/Strings.swi
 - `intentTitle`: Send Clipboard to ClipSync
 - `intentDescription`: Adds text to your ClipSync history and syncs it to your other devices.
 - `intentTextParameter`: Text
+- `intentTextPrompt`: What text do you want to send?
 - `intentShortTitle`: Send Clipboard
 
 ## Errors (see AppMessage)

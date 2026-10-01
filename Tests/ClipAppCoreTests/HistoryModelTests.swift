@@ -19,13 +19,15 @@ final class HistoryModelTests: XCTestCase {
 
     func makeFixture(
         _ transport: any SyncTransport = InMemoryRelay(), name: String = "Mac", pageSize: Int = 200,
-        debounce: Duration = .milliseconds(50)
+        debounce: Duration = .milliseconds(50), copiedDuration: Duration = .milliseconds(1500)
     ) throws -> Fixture {
         let db = try ClipDatabase.inMemory()
         let engine = try SyncEngine(
             db: db, vaultKey: key, transport: transport, device: DeviceID(), deviceName: name, log: { _ in })
         let pasteboard = FakePasteboard()
-        let model = HistoryModel(engine: engine, db: db, pasteboard: pasteboard, pageSize: pageSize, debounce: debounce)
+        let model = HistoryModel(
+            engine: engine, db: db, pasteboard: pasteboard, pageSize: pageSize, debounce: debounce,
+            copiedDuration: copiedDuration)
         return Fixture(model: model, engine: engine, db: db, pasteboard: pasteboard)
     }
 
@@ -135,6 +137,40 @@ final class HistoryModelTests: XCTestCase {
         f.model.copy(item)
         XCTAssertEqual(f.pasteboard.written, ["copy me"])
         XCTAssertEqual(f.model.lastCopied, item.id)
+    }
+
+    func testCopiedConfirmationClearsAndANewCopyRestartsTheClock() async throws {
+        let f = try makeFixture(copiedDuration: .milliseconds(400))
+        await f.model.send("first")
+        await f.model.send("second")
+        let second = try XCTUnwrap(f.model.recent.first)
+        let first = try XCTUnwrap(f.model.recent.last)
+
+        let start = ContinuousClock.now
+        f.model.copy(first)
+        XCTAssertEqual(f.model.lastCopied, first.id)
+        try await Task.sleep(for: .milliseconds(250))
+        f.model.copy(second)
+        // Past the first copy's deadline (400 ms), before the second's (650 ms).
+        try await Task.sleep(until: start + .milliseconds(500))
+        XCTAssertEqual(f.model.lastCopied, second.id, "the second copy restarted the clock")
+
+        await f.model.waitForCopiedReset()
+        XCTAssertNil(f.model.lastCopied)
+        XCTAssertGreaterThanOrEqual(ContinuousClock.now - start, .milliseconds(650))
+    }
+
+    func testCopyCountBumpsOnEveryCopyOfTheSameItem() async throws {
+        let f = try makeFixture()
+        await f.model.send("again")
+        let item = try XCTUnwrap(f.model.recent.first)
+        XCTAssertEqual(f.model.copyCount, 0)
+
+        f.model.copy(item)
+        f.model.copy(item)
+        XCTAssertEqual(f.model.copyCount, 2, "repeat copies still change the haptics trigger")
+        XCTAssertEqual(f.model.lastCopied, item.id)
+        f.model.stop()
     }
 
     func testPaging() async throws {

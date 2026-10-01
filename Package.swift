@@ -15,6 +15,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
+        // Below 1.8: 1.8.x checks out git symlinks, which fail on Windows without Developer Mode.
+        .package(url: "https://github.com/apple/swift-argument-parser", "1.5.0"..<"1.8.0"),
     ],
     targets: [
         // Wire format shared with the relay server (Server/ package). No dependencies.
@@ -37,7 +39,10 @@ let package = Package(
         ),
         .target(name: "ClipStore", dependencies: ["ClipCore", "CSQLite"]),
         .target(name: "ClipSync", dependencies: ["ClipCore", "ClipCrypto", "ClipStore", "ClipWire"]),
-        .executableTarget(name: "clipctl", dependencies: ["ClipSync"]),
+        .executableTarget(name: "clipctl", dependencies: [
+            "ClipSync",
+            .product(name: "ArgumentParser", package: "swift-argument-parser"),
+        ]),
         // Randomized convergence simulation; the executable is a thin CLI over it.
         .target(name: "ClipHarness", dependencies: ["ClipCore"]),
         .executableTarget(name: "ConvergenceHarness", dependencies: ["ClipHarness"]),

@@ -1,0 +1,104 @@
+# Design
+
+How clipboard sync works, and why. Read with docs/prd.md and docs/decisions.md.
+
+## 1. The shape
+
+```
+ iPhone app ─┐                          ┌─ Mac app
+             │   HTTPS-less HTTP,       │
+ clipctl /   ├──  tailnet only  ──► Relay (Linux VM)
+ Windows app ┘   ciphertext ops         append-only log of Envelopes
+```
+
+Every device holds a full local copy (SQLite). The relay is a dumb, append-only mailbox of encrypted ops with
+a server-assigned sequence number. Devices push their new ops and pull everything after their cursor.
+Since the server can't read ops, all merging happens on devices, and must give the same answer everywhere.
+
+## 2. Data model: an op-based CRDT
+
+An item is never edited in place. Every change is an `Op` (ClipCore/Contracts.swift) for one item:
+`create`, `setPinned`, `setTitle`, `setTag`, `delete`. An item's state is the fold of all its ops.
+
+Merge rules (ClipCore/Merge.swift):
+
+| Field | Rule | Why it converges |
+| --- | --- | --- |
+| content | set once by `create`; a second create with a higher timestamp is ignored | first-writer by timestamp (min), order-independent |
+| pinned, title | last-writer-wins register keyed by `HLCTimestamp` | max is commutative, associative, idempotent |
+| tags | one LWW<Bool> register per tag name | same, per key |
+| deleted | sticky flag (logical OR) | OR is a join; delete beats concurrent edits |
+
+Because each field update is a max/OR, applying the same set of ops in **any order, with duplicates**, gives the
+same state (PRD N11, N13). Drops are handled by the transport: the server log is complete and devices pull from a
+cursor, so a dropped op is only delayed, never lost.
+
+**Hybrid logical clock.** `HLCTimestamp(wallMillis, counter, device)`. `tick()` uses max(physical, last) and
+bumps the counter on ties; `observe(remote)` pulls the clock forward past anything seen. This keeps LWW close
+to real time while staying correct when device clocks disagree. The device ID breaks ties, so no two
+timestamps are equal.
+
+**Ordering in the UI:** newest first by the create timestamp, pinned items in their own section.
+
+## 3. Crypto (ClipCrypto)
+
+Only swift-crypto primitives (same API as CryptoKit).
+
+- **Vault key**: 256 random bits, made on the first device. It never leaves a device unencrypted.
+- **Derived keys** (HKDF-SHA256, salt "clip.v1"):
+  - data key = HKDF(vault, info "clip.data.v1"): encrypts ops
+  - auth token = HKDF(vault, info "clip.auth.v1"), hex: bearer token for the relay
+- **Op encryption**: `AES.GCM.seal(JSONEncoder(op), key: dataKey, nonce: random, authenticating: aad)`
+  where `aad = "clip.op.v1|" + itemID + "|" + opID`. Opening checks the decoded op's IDs match the envelope.
+  This binds every ciphertext to its item and op (PRD N8): the server can't swap payloads between envelopes.
+- **Pairing (F10)**: the existing device generates a pairing code: 20 random bytes as 32 Crockford base32
+  chars, shown in groups of 4. Both sides derive:
+  - pairingID = hex(SHA256("clip.pair.id|" + code))[0..<32]
+  - wrapKey  = HKDF(code bytes, info "clip.pair.wrap.v1")
+  The existing device PUTs `AES.GCM.seal(vaultKeyBytes, wrapKey, aad: pairingID)` to /v1/pairing/<pairingID>;
+  the new device GETs it once. 160 bits of code entropy make offline guessing useless, so no PAKE is needed.
+- **Keys at rest (N9)**: the `KeyStore` protocol. Keychain on Apple (apps/Apple), DPAPI on Windows (clipctl),
+  `InMemoryKeyStore` for tests. No plain-file key store ships.
+- **Revocation (F13, M4)**: make a new vault key, re-encrypt-forward, and hand it to the remaining devices by pairing.
+
+## 4. Module APIs (the contract parallel tasks build against)
+
+**ClipCore**
+- `HybridClock(device:now:)`: `mutating tick() -> HLCTimestamp`, `mutating observe(_:)`
+- `ItemState.apply(_ op: Op)`: the merge rules above
+- `Replica`: `items`, `apply(_:) -> Bool` (false if the op was already seen), `visibleItems` (newest first)
+
+**ClipCrypto**
+- `VaultKey.generate()`, `VaultKey(rawBytes:)`, `.rawBytes`, `.authToken`
+- `OpCipher(vaultKey:)`: `seal(_ op: Op, device: DeviceID) throws -> Envelope`, `open(_ e: Envelope) throws -> Op`
+- `PairingCode.generate()`, `PairingCode(string:)` (tolerates spaces, dashes, lower case, I/L/O confusion),
+  `.display`, `.pairingID`, `wrap(_ key: VaultKey) throws -> Data`, `unwrap(_ blob: Data) throws -> VaultKey`
+- `protocol KeyStore`, `InMemoryKeyStore`, `enum CryptoError`
+
+**ClipStore**: `ClipDatabase` (SQLite, WAL, one serial queue)
+- `init(path:)`, `static inMemory()`
+- `insert(_ ops: [Op], outbound: Bool) throws -> [Op]`: in one transaction: insert unseen ops, re-fold the
+  touched items with `ItemState.apply`, update the items table and FTS index; returns the newly inserted ops.
+- `items(limit:offset:) -> [ItemState]` (visible, newest first), `item(_:)`, `search(_:limit:) -> [ItemState]`
+- `pendingOutbound(limit:) -> [Op]`, `markSent(_ ids: [OpID])`
+- `syncCursor() -> Int64`, `setSyncCursor(_:)`, `meta(_:)`, `setMeta(_:_:)`
+- Crash safety (N12): WAL + every mutation in a transaction; the cursor moves in the same transaction as the
+  ops it covers.
+
+**ClipSync**
+- `protocol SyncTransport`: `push`, `pull(after:limit:wait:)`, `putPairing(id:blob:)`, `takePairing(id:)`
+- `HTTPTransport(baseURL:token:)` (URLSession/FoundationNetworking), `InMemoryRelay` (tests and harness)
+- `actor SyncEngine(db:cipher:transport:device:deviceName:)`:
+  `addText(_:) -> ItemID`, `setPinned/setTitle/setTag/delete`, `syncOnce()`, `run()` (push, then long-poll pull,
+  with exponential backoff and jitter), `changes: AsyncStream<Void>`
+
+**Relay (Server/)**: separate SwiftPM package (Hummingbird), so the root package keeps building on Windows.
+SQLite table `envelopes(seq INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT UNIQUE, item_id, device_id, ciphertext)`.
+It binds to the Tailscale address only (N10).
+
+## 5. Concealed content (F9)
+
+- macOS: skip when the pasteboard has `org.nspasteboard.ConcealedType` or `org.nspasteboard.TransientType`.
+- Windows: skip when the clipboard has the `ExcludeClipboardContentFromMonitorProcessing` or
+  `CanIncludeInClipboardHistory`=0 formats (used by password managers and Windows itself).
+- iOS: there's no background capture; the user sends explicitly.

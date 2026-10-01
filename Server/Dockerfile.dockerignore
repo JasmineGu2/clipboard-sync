@@ -1,0 +1,10 @@
+# Used by BuildKit for `docker build -f Server/Dockerfile .` (paths are relative to the repo root).
+**/.build
+**/.swiftpm
+.git
+.claude
+apps
+docs
+context
+**/_to_delete
+**/*.sqlite3*

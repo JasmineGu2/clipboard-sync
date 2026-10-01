@@ -32,3 +32,8 @@
 - **Decision:** `HybridClock.init` takes a required `resumingAfter:`; SyncEngine persists the high water in db meta. `observe` clamps remote clocks to now + 1 h.
 - **Why:** The convergence harness (seed 488) showed a restarted device re-issuing a timestamp it had already used, which made replicas disagree on a tag. A peer at wallMillis = UInt64.max could also crash every device through tick overflow.
 - **Alternatives:** Rebuilding the high water from stored ops at launch. That fails because deletes and overwritten edits keep no timestamp, and pushed ops leave the outbox.
+
+## 2026-10-01: SQLite synchronous=FULL on devices
+- **Decision:** Local databases use WAL with synchronous=FULL.
+- **Why:** With NORMAL, a clip the user just copied could vanish on power loss (code review). FULL costs about 0.3 ms per single-clip insert (0.58 → 0.87 ms) and almost nothing for batches.
+- **Alternatives:** NORMAL plus a checkpoint after local inserts (more moving parts for the same guarantee).

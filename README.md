@@ -67,7 +67,7 @@ From the requirements in [docs/prd.md](docs/prd.md). "Written, not built" means 
 | F11 | Images | Not yet | M4 |
 | F12 | Files | Not yet | M4 |
 | F13 | Revoke a lost device | Partly | The relay's token rotation route exists. The client flow doesn't. |
-| F14 | Unpinned items expire | Not yet | |
+| F14 | Unpinned items expire | Partly | Synced deletes, harness-checked. `clipctl expire` and `watch --expire-days`. Apple setting not built. |
 | F15 | Pause capture | Partly | clipctl (a `paused` file), smoke-tested. Mac menu written, not built. |
 | F16 | Direct device-to-device sync | Not yet | P2 |
 | F17 | Apple Watch | Not yet | P2 |

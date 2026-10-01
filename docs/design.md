@@ -48,6 +48,14 @@ Two rules keep that promise true in practice:
 
 **Ordering in the UI:** newest first by the create timestamp, pinned items in their own section.
 
+**Expiry (F14) is a delete, not a filter.** `SyncEngine.expireItems(olderThan:)` records an ordinary `delete` for
+each visible, unpinned item whose create op is older than the cutoff. No merge rule changes. The obvious
+alternative, each device hiding old items by its own clock and setting, breaks the one promise that matters: two
+devices would show different histories forever. The harness checks both. `--expiry deleteOps` converges;
+`--expiry hideLocally` fails nearly every seed with "devices show different items". The cost is that a delete is
+sticky, so a pin made on another device at the same moment loses to the expiry. That needs an item about to
+expire, pinned on one device while another device runs its sweep before the pin syncs.
+
 ## 3. Crypto (ClipCrypto)
 
 Only swift-crypto primitives (same API as CryptoKit).

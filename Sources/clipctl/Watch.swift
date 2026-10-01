@@ -12,9 +12,18 @@ struct Watch: AsyncParsableCommand {
         discussion: "Capture pauses while <home>/paused exists. Content marked concealed by password managers is never captured."
     )
     @OptionGroup var global: GlobalOptions
+    @Option(help: "Delete unpinned items older than this many days, on every device. Checked hourly.")
+    var expireDays: Int?
     @Option(help: .hidden) var exitAfter: Double?
 
     static let pollInterval: Duration = .milliseconds(250)
+    static let expiryInterval: Duration = .seconds(3600)
+
+    func validate() throws {
+        if let expireDays, !(1...SyncEngine.maxExpiryDays).contains(expireDays) {
+            throw ValidationError("--expire-days must be between 1 and \(SyncEngine.maxExpiryDays).")
+        }
+    }
 
     func run() async throws {
         let client = try Client.open(global)
@@ -43,6 +52,19 @@ struct Watch: AsyncParsableCommand {
             }
         }
         let syncLoop = Task { await engine.run() }
+        let expiryLoop = expireDays.map { days in
+            Task {
+                while !Task.isCancelled {
+                    do {
+                        let count = try await engine.expireItems(olderThan: .seconds(days * 86_400))
+                        if count > 0 { say("expired  \(count) item(s) older than \(days) days") }
+                    } catch {
+                        say("expiry failed  (\(describe(error)))")
+                    }
+                    try? await Task.sleep(for: Self.expiryInterval)
+                }
+            }
+        }
 
         #if os(Windows)
         var lastSequence = WindowsClipboard.sequenceNumber
@@ -84,6 +106,7 @@ struct Watch: AsyncParsableCommand {
             #endif
         }
 
+        expiryLoop?.cancel()
         syncLoop.cancel()
         await syncLoop.value
         // Let the reporter print anything recorded just before the stop.

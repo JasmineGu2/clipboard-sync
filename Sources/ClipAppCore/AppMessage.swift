@@ -60,6 +60,7 @@ public enum AppMessage: String, Equatable, Sendable, CaseIterable {
             case .pairingNotFound: self = .codeNotFound
             case .pairingDecryptionFailed: self = .codeMismatch
             case .missingSeq: self = .server
+            case .expiryStalled: self = .storage
             }
         case let error as TransportError:
             switch error {

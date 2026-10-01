@@ -23,6 +23,8 @@ public enum SyncError: Error, Equatable, Sendable {
     case pairingNotFound
     /// The blob didn't open with this code.
     case pairingDecryptionFailed
+    /// An expiry sweep found the same items twice: the local deletes didn't take.
+    case expiryStalled
 }
 
 /// Records local changes as ops, pushes them, pulls everyone else's, and keeps the local database current.
@@ -133,6 +135,34 @@ public actor SyncEngine {
     public func delete(_ item: ItemID) throws {
         try record(item, .delete)
     }
+
+    /// F14: deletes every visible, unpinned item created more than `age` ago. Returns how many.
+    ///
+    /// Expiry is an ordinary synced `delete`, not a local filter, so every device ends up with the same
+    /// history whatever its own setting (the harness's `ExpiryMode.hideLocally` shows the alternative
+    /// diverging). Deletes are sticky, so a pin made on another device at the same moment loses;
+    /// see docs/decisions.md.
+    @discardableResult
+    public func expireItems(olderThan age: Duration) async throws -> Int {
+        let (ageMillis, overflow) = UInt64(max(0, age.components.seconds)).multipliedReportingOverflow(by: 1000)
+        let nowMillis = Self.millis(now())
+        guard !overflow, nowMillis > ageMillis else { return 0 }
+        var expired = 0
+        var previous: [ItemID] = []
+        // Each delete hides its item, so the next batch starts where this one ended.
+        while case let batch = try db.expiredItemIDs(createdBeforeMillis: nowMillis - ageMillis), !batch.isEmpty {
+            // A batch that didn't change means the deletes didn't take; stop rather than spin.
+            guard batch != previous else { throw SyncError.expiryStalled }
+            for item in batch { try record(item, .delete) }
+            expired += batch.count
+            previous = batch
+            await Task.yield()  // let sync and UI calls in between batches of a large backlog
+        }
+        return expired
+    }
+
+    /// The longest expiry the apps and clipctl accept: 100 years. Keeps `days * 86_400` far from overflow.
+    public static let maxExpiryDays = 36_500
 
     private func record(_ item: ItemID, _ kind: OpKind) throws {
         let op = Op(itemID: item, timestamp: clock.tick(), kind: kind)

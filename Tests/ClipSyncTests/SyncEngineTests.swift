@@ -47,6 +47,47 @@ final class SyncEngineTests: XCTestCase {
         try db.items(limit: 10_000)
     }
 
+    // MARK: Expiry (F14)
+
+    func testExpireDeletesOldUnpinnedItemsAndSyncs() async throws {
+        let relay = InMemoryRelay()
+        let clock = TestClock()
+        let a = try makePeer("A", relay: relay, clock: clock)
+        let b = try makePeer("B", relay: relay)
+
+        let old = try await a.engine.addText("old")
+        let oldPinned = try await a.engine.addText("old but pinned")
+        try await a.engine.setPinned(oldPinned, true)
+        clock.set(1_700_000_000 + 10 * 86_400)
+        let fresh = try await a.engine.addText("fresh")
+
+        let expired = try await a.engine.expireItems(olderThan: .seconds(7 * 86_400))
+        XCTAssertEqual(expired, 1)
+        XCTAssertEqual(Set(try allStates(a.db).map(\.id)), [oldPinned, fresh])
+        XCTAssertEqual(try a.db.item(old)?.deleted, true)
+
+        // The expiry is an op like any other, so the other device converges on it.
+        try await a.engine.syncOnce()
+        try await b.engine.syncOnce()
+        XCTAssertEqual(Set(try allStates(b.db).map(\.id)), [oldPinned, fresh])
+
+        // Running it again finds nothing new.
+        let again = try await a.engine.expireItems(olderThan: .seconds(7 * 86_400))
+        XCTAssertEqual(again, 0)
+    }
+
+    func testExpireHandlesMoreThanOneBatch() async throws {
+        let relay = InMemoryRelay()
+        let clock = TestClock()
+        let a = try makePeer("A", relay: relay, clock: clock)
+        for i in 0..<1_200 { try await a.engine.addText("item \(i)") }
+        clock.set(1_700_000_000 + 2 * 86_400)
+
+        let expired = try await a.engine.expireItems(olderThan: .seconds(86_400))
+        XCTAssertEqual(expired, 1_200)
+        XCTAssertTrue(try allStates(a.db).isEmpty)
+    }
+
     // MARK: Convergence
 
     func testTwoDevicesConvergeAfterAddPinTagDelete() async throws {

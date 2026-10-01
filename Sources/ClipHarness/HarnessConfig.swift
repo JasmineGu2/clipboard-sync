@@ -25,6 +25,17 @@ public enum ClockRecovery: String, CaseIterable, Sendable {
     case fresh
 }
 
+/// How simulated devices expire unpinned items older than `expiryAfterMillis` (F14).
+public enum ExpiryMode: String, CaseIterable, Sendable {
+    /// No sweeps. The default, so seeds without expiry replay exactly as before it existed.
+    case off
+    /// A sweep records a `delete` op per expired item, like SyncEngine.expireItems. Should converge.
+    case deleteOps
+    /// Broken on purpose: a sweep hides expired items on that device only and sends nothing.
+    /// Proves the harness catches devices that disagree about what's visible.
+    case hideLocally
+}
+
 public struct HarnessConfig: Sendable {
     public var seed: UInt64
     /// Number of devices, 2...5. nil picks one from the seed.
@@ -50,6 +61,13 @@ public struct HarnessConfig: Sendable {
     /// Fail the run as soon as a device issues a timestamp not greater than its previous one.
     public var checkClockMonotonic: Bool = true
 
+    public var expiry: ExpiryMode = .off
+    /// Per step, when expiry is on: chance one device runs an expiry sweep.
+    public var expirySweepRate: Double = 0.03
+    /// Unpinned items created more than this long ago (by the sweeping device's wall clock) expire.
+    /// Simulated time moves 0–2 ms per step, so this is a few hundred steps.
+    public var expiryAfterMillis: UInt64 = 100
+
     public init(seed: UInt64, devices: Int? = nil, steps: Int = 400) {
         self.seed = seed
         self.devices = devices
@@ -70,6 +88,8 @@ public struct HarnessStats: Equatable, Sendable {
     public var offlineToggles = 0
     public var clockJumps = 0
     public var healRounds = 0
+    public var expirySweeps = 0
+    public var expiredItems = 0
 
     public var drops: Int { pushRequestDrops + pushResponseDrops + pullResponseDrops }
 
@@ -88,6 +108,8 @@ public struct HarnessStats: Equatable, Sendable {
         s.offlineToggles = a.offlineToggles + b.offlineToggles
         s.clockJumps = a.clockJumps + b.clockJumps
         s.healRounds = a.healRounds + b.healRounds
+        s.expirySweeps = a.expirySweeps + b.expirySweeps
+        s.expiredItems = a.expiredItems + b.expiredItems
         return s
     }
 }

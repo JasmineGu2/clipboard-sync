@@ -36,9 +36,10 @@ Dashes and case don't matter when you type the code.
 | `clipctl rename <id> <title>` | Shows the title instead of a preview. `--clear` removes it. |
 | `clipctl tag <id> <tag>` / `untag <id> <tag>` | Tags show as `#tag`. |
 | `clipctl delete <id>` | Deletes the item on every device. |
+| `clipctl expire --days 30` | Deletes unpinned items older than 30 days, on every device, then syncs. |
 | `clipctl sync` | Push and pull once. |
 | `clipctl status` | Server, device, item count, changes waiting to push, sync cursor, last error. |
-| `clipctl watch` | Keeps syncing and captures what you copy. Ctrl+C stops it. |
+| `clipctl watch` | Keeps syncing and captures what you copy. Ctrl+C stops it. Add `--expire-days 30` to expire old unpinned items every hour. |
 
 `<id>` is the start of an item's ID. The 8 characters `list` shows are always enough, and fewer work if they're unique.
 

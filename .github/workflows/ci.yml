@@ -25,6 +25,7 @@ jobs:
       - run: swift build
       - run: swift test
       - run: swift run -c release ConvergenceHarness --seeds 2000
+      - run: swift run -c release ConvergenceHarness --seeds 2000 --expiry deleteOps
 
   windows:
     runs-on: windows-latest

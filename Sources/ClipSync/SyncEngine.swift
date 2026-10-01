@@ -160,9 +160,11 @@ public actor SyncEngine {
                     page = try await transport.pull(
                         after: try db.syncCursor(), limit: WireLimits.defaultPullLimit, wait: 0)
                 } catch TransportError.cursorAhead(let latestSeq) where !didResetCursor {
-                    // Once per sync: a second cursorAhead right after resetting to 0 would mean a broken relay.
-                    try resetCursor(relayLatestSeq: latestSeq)
+                    // Once per sync: a second cursorAhead right after resetting to 0 would mean a broken relay,
+                    // so it is thrown instead of looping.
+                    try recoverFromRelayReset(relayLatestSeq: latestSeq)
                     didResetCursor = true
+                    try await pushPending()
                     continue
                 }
                 try apply(page)
@@ -248,12 +250,13 @@ public actor SyncEngine {
     }
 
     /// The relay's log ends before our cursor, so it lost data (reset, or restored from an old backup).
-    /// Start over from 0. Safe because applying an op this device already has is a no-op (merge is idempotent);
-    /// the only cost is re-downloading what the relay still holds.
-    private func resetCursor(relayLatestSeq: Int64) throws {
+    /// Queue every stored op for push again and start pulling from 0, in one transaction. Ops that lived only on
+    /// the old relay come back this way: every device re-pushes what it holds, and the relay dedupes by opID.
+    /// Re-pulling is safe because applying an op this device already has is a no-op (merge is idempotent).
+    private func recoverFromRelayReset(relayLatestSeq: Int64) throws {
         let cursor = try db.syncCursor()
-        log("relay log ends at seq \(relayLatestSeq), before our cursor \(cursor); re-pulling from 0")
-        try db.setSyncCursor(0)
+        log("relay log ends at seq \(relayLatestSeq), before our cursor \(cursor); re-pushing all ops, re-pulling from 0")
+        try db.markAllOutbound()
     }
 
     private func recordUndecryptable(_ opIDs: [String]) throws {
@@ -318,8 +321,8 @@ public actor SyncEngine {
                 task.cancel()
             }
         } catch TransportError.cursorAhead(let latestSeq) {
-            // Not a failure: the next syncOnce pulls from 0.
-            try resetCursor(relayLatestSeq: latestSeq)
+            // Not a failure: the next syncOnce re-pushes everything and pulls from 0.
+            try recoverFromRelayReset(relayLatestSeq: latestSeq)
             return
         } catch {
             // Cut short by a local op: not a failure, go push it.

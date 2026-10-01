@@ -420,21 +420,94 @@ final class SyncEngineTests: XCTestCase {
         let b2 = try SyncEngine(db: b.db, vaultKey: key, transport: newRelay, device: DeviceID(), deviceName: "B",
                                 log: { _ in })
 
-        // Empty relay: A resets to 0 and finds nothing, without failing.
+        // Empty relay: A re-pushes its 3 ops and pulls them back from 0, without failing.
         try await a2.syncOnce()
-        XCTAssertEqual(try a.db.syncCursor(), 0)
+        XCTAssertEqual(try a.db.syncCursor(), 3)
+        XCTAssertEqual(try a.db.pendingOutbound(), [])
         let aStatus = await a2.status
         XCTAssertEqual(aStatus, .idle)
+        let refilled = await newRelay.envelopes.count
+        XCTAssertEqual(refilled, 3)
 
-        // B writes to the new relay; its own cursor (3) is ahead of the new log (1) too.
+        // B's cursor (3) is valid on the refilled relay, so B just pushes and pulls the new op.
         let late = try await b2.addText("after reset")
         try await b2.syncOnce()
-        XCTAssertEqual(try b.db.syncCursor(), 1)
+        XCTAssertEqual(try b.db.syncCursor(), 4)
         try await a2.syncOnce()
-        XCTAssertEqual(try a.db.syncCursor(), 1)
+        XCTAssertEqual(try a.db.syncCursor(), 4)
         XCTAssertEqual(try a.db.item(late)?.content?.text, "after reset")
         XCTAssertEqual(try a.db.item(early)?.content?.text, "before reset")
         XCTAssertEqual(try allStates(a.db), try allStates(b.db))
+    }
+
+    func testRelayResetRepushesOpsThatLivedOnlyOnTheOldRelay() async throws {
+        let oldRelay = InMemoryRelay()
+        let a = try makePeer("A", relay: oldRelay)
+        let b = try makePeer("B", relay: oldRelay)
+        let shared = try await a.engine.addText("shared by A")
+        let fromB = try await b.engine.addText("from B")
+        try await a.engine.syncOnce()
+        try await b.engine.syncOnce()
+        try await a.engine.syncOnce()
+        try await b.engine.setPinned(shared, true)
+        try await b.engine.syncOnce()
+        try await a.engine.syncOnce()
+
+        // A writes more; it reaches the old relay but B never pulls it before the relay is lost.
+        let onlyA = try await a.engine.addText("only A has this")
+        try await a.engine.setTag(onlyA, "secret", present: true)
+        try await a.engine.setTitle(fromB, "titled by A")
+        try await a.engine.syncOnce()
+        XCTAssertNil(try b.db.item(onlyA))
+
+        // The relay is replaced by an empty one; A and B keep their databases and cursors.
+        let newRelay = InMemoryRelay()
+        let a2 = try SyncEngine(db: a.db, vaultKey: key, transport: newRelay, device: DeviceID(), deviceName: "A",
+                                log: { _ in })
+        let b2 = try SyncEngine(db: b.db, vaultKey: key, transport: newRelay, device: DeviceID(), deviceName: "B",
+                                log: { _ in })
+        try await b2.syncOnce()
+        try await a2.syncOnce()
+        try await b2.syncOnce()
+
+        // A new device joins the new relay only.
+        let c = try makePeer("C", relay: newRelay)
+        try await c.engine.syncOnce()
+
+        XCTAssertEqual(try c.db.item(onlyA)?.content?.text, "only A has this")
+        XCTAssertEqual(try c.db.item(onlyA)?.visibleTags, ["secret"])
+        XCTAssertEqual(try c.db.item(fromB)?.title.value, "titled by A")
+        XCTAssertEqual(try c.db.item(shared)?.pinned.value, true)
+        XCTAssertEqual(try allStates(c.db), try allStates(a.db))
+        XCTAssertEqual(try allStates(c.db), try allStates(b.db))
+        XCTAssertEqual(try a.db.pendingOutbound(), [])
+        XCTAssertEqual(try b.db.pendingOutbound(), [])
+        // The relay deduped the ops both devices re-pushed: one envelope per op.
+        let envelopes = await newRelay.envelopes
+        XCTAssertEqual(envelopes.count, Set(envelopes.map(\.opID)).count)
+        XCTAssertEqual(envelopes.count, 6)
+    }
+
+    func testRepeatedCursorAheadInOneSyncDoesNotLoop() async throws {
+        let relay = AlwaysAheadRelay()
+        let db = try ClipDatabase.inMemory()
+        try db.setSyncCursor(7)
+        let engine = try SyncEngine(db: db, vaultKey: key, transport: relay, device: DeviceID(), deviceName: "A",
+                                    log: { _ in })
+        _ = try await engine.addText("one")
+        _ = try await engine.addText("two")
+        do {
+            try await engine.syncOnce()
+            XCTFail("expected cursorAhead")
+        } catch {
+            XCTAssertEqual(error as? TransportError, .cursorAhead(latestSeq: 0))
+        }
+        let pulls = await relay.pullCount
+        let pushed = await relay.pushedEnvelopes
+        XCTAssertEqual(pulls, 2, "one retry after the reset, then the error is thrown")
+        XCTAssertEqual(pushed, 4, "the first push, then one re-push of everything")
+        let status = await engine.status
+        guard case .offline = status else { return XCTFail("expected offline, got \(status)") }
     }
 
     func testRelayRejectsControlCharactersInIDs() async throws {
@@ -541,6 +614,25 @@ final class SyncEngineTests: XCTestCase {
         if try await condition() { return }
         XCTFail("condition not met within \(timeout)", file: file, line: line)
     }
+}
+
+/// A broken relay: accepts pushes, but every pull says the cursor is past its log.
+actor AlwaysAheadRelay: SyncTransport {
+    private(set) var pullCount = 0
+    private(set) var pushedEnvelopes = 0
+
+    func push(_ request: PushRequest) async throws -> PushResponse {
+        pushedEnvelopes += request.envelopes.count
+        return PushResponse(latestSeq: 0)
+    }
+
+    func pull(after: Int64, limit: Int, wait: Int) async throws -> PullResponse {
+        pullCount += 1
+        throw TransportError.cursorAhead(latestSeq: 0)
+    }
+
+    func putPairing(id: String, blob: Data) async throws {}
+    func takePairing(id: String) async throws -> Data? { nil }
 }
 
 actor Flag {

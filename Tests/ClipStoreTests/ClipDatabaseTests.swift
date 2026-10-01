@@ -209,6 +209,24 @@ final class ClipDatabaseTests: XCTestCase {
         XCTAssertEqual(try db.pendingOutbound(limit: 10), [])
     }
 
+    func testMarkAllOutboundQueuesEveryOpAndResetsCursor() throws {
+        let db = try ClipDatabase.inMemory()
+        let local = create("local", at: ts(1))
+        let remote = (2...3).map { create("remote \($0)", at: ts(UInt64($0), 0, deviceB)) }
+        try db.insert([local], outbound: true)
+        try db.insertRemote(remote, newCursor: 12)
+        let late = create("late local", at: ts(4))
+        try db.insert([late], outbound: true)
+        try db.markSent([local.id])
+
+        try db.markAllOutbound()
+        XCTAssertEqual(try db.pendingOutbound(limit: 10), [local] + remote + [late], "every op, in insertion order")
+        XCTAssertEqual(try db.syncCursor(), 0)
+
+        try db.markSent((remote + [local, late]).map(\.id))
+        XCTAssertEqual(try db.pendingOutbound(limit: 10), [])
+    }
+
     func testInsertRemoteMovesCursorAtomically() throws {
         let db = try ClipDatabase.inMemory()
         XCTAssertEqual(try db.syncCursor(), 0)
@@ -273,7 +291,7 @@ final class ClipDatabaseTests: XCTestCase {
         let db = try ClipDatabase(url: try tempDirectory().appendingPathComponent("durable.sqlite"))
         defer { db.close() }
         XCTAssertEqual(try db.pragma("synchronous"), 2, "synchronous = FULL: a commit is fsynced before insert returns")
-        XCTAssertEqual(try db.pragma("user_version"), 2)
+        XCTAssertEqual(try db.pragma("user_version"), 3)
     }
 
     func testV1DatabaseMigratesInPlace() throws {
@@ -336,7 +354,7 @@ final class ClipDatabaseTests: XCTestCase {
         raw.close()
 
         let db = try ClipDatabase(url: url)
-        XCTAssertEqual(try db.pragma("user_version"), 2)
+        XCTAssertEqual(try db.pragma("user_version"), 3)
         XCTAssertEqual(try db.count(), 2)
         XCTAssertEqual(try db.items().map(\.id), [tagged.itemID, fox.itemID])
         for (id, state) in states { XCTAssertEqual(try db.item(id), state) }
@@ -356,6 +374,88 @@ final class ClipDatabaseTests: XCTestCase {
         defer { reopened.close() }
         XCTAssertEqual(try reopened.search("fox", limit: 10).map(\.id), [late.itemID, fox.itemID])
         XCTAssertEqual(try reopened.count(), 3)
+    }
+
+    func testV2DatabaseMigratesOpsKeepingOrderAndPendingFlags() throws {
+        let url = try tempDirectory().appendingPathComponent("v2.sqlite")
+        let item = ItemID()
+        // Timestamps run backwards against insertion order, so only the stored order can explain the result.
+        var ops: [Op] = [create("first stored", item: item, at: ts(60))]
+        for n in 0..<5 {
+            let device: DeviceID = n % 2 == 0 ? deviceA : deviceB
+            let wall = UInt64(50 - n * 10)
+            ops.append(op(item, .setTag("tag\(n)", present: true), at: ts(wall, 0, device)))
+        }
+        let rowids: [Int64] = [3, 10, 11, 40, 41, 100]  // gaps, as after deletes or VACUUM renumbering
+        let pending = [true, false, true, true, false, true]
+
+        // Build a v2 database by hand, exactly as the v2 code laid it out.
+        let raw = try RawSQLite(path: url.path)
+        try raw.exec("""
+            PRAGMA journal_mode = WAL;
+            CREATE TABLE ops (op_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, ts_wall INTEGER, ts_counter INTEGER,
+                ts_device TEXT, body BLOB NOT NULL, outbound_pending INTEGER NOT NULL DEFAULT 0);
+            CREATE INDEX ops_item ON ops(item_id);
+            CREATE INDEX ops_outbound ON ops(outbound_pending) WHERE outbound_pending = 1;
+            CREATE TABLE items (id INTEGER PRIMARY KEY, item_id TEXT UNIQUE NOT NULL, state BLOB NOT NULL,
+                visible INTEGER, pinned INTEGER, created_wall INTEGER, created_counter INTEGER, created_device TEXT,
+                preview TEXT);
+            CREATE INDEX items_newest ON items(created_wall DESC, created_counter DESC, created_device DESC)
+                WHERE visible = 1;
+            CREATE VIRTUAL TABLE items_fts USING fts5(item_id UNINDEXED, text, title, tags,
+                tokenize = 'unicode61 remove_diacritics 2');
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO meta VALUES ('sync_cursor', '42');
+            PRAGMA user_version = 2;
+            """)
+        let encoder = ClipCoding.makeEncoder()
+        // Insert in reverse rowid order, so the table's physical order differs from rowid order too.
+        for index in ops.indices.reversed() {
+            let op = ops[index]
+            try raw.exec("""
+                INSERT INTO ops (rowid, op_id, item_id, ts_wall, ts_counter, ts_device, body, outbound_pending)
+                VALUES (\(rowids[index]), '\(op.id)', '\(op.itemID)', \(op.timestamp.wallMillis),
+                    \(op.timestamp.counter), '\(op.timestamp.device)',
+                    CAST(\(RawSQLite.quote(try encoder.encode(op))) AS BLOB), \(pending[index] ? 1 : 0))
+                """)
+        }
+        raw.close()
+
+        let pendingInOrder = ops.indices.filter { pending[$0] }.map { ops[$0] }
+        let late = op(item, .setTitle("late"), at: ts(1))
+        do {
+            let db = try ClipDatabase(url: url)
+            XCTAssertEqual(try db.pragma("user_version"), 3)
+            XCTAssertEqual(try db.pendingOutbound(limit: 10), pendingInOrder)
+            XCTAssertEqual(try db.syncCursor(), 42)
+            try db.refoldAll()
+            var expected = ItemState(id: item)
+            for op in ops { expected.apply(op) }
+            XCTAssertEqual(try db.item(item), expected)
+            // New ops land after the migrated ones, and duplicates are still ignored.
+            XCTAssertEqual(try db.insert([late, ops[0]], outbound: true), [late])
+            XCTAssertEqual(try db.pendingOutbound(limit: 10), pendingInOrder + [late])
+            db.close()
+        }
+
+        let check = try RawSQLite(path: url.path)
+        XCTAssertEqual(try check.ints("SELECT seq FROM ops ORDER BY seq"), rowids + [101], "seq keeps the old rowids")
+        XCTAssertEqual(try check.ints("""
+            SELECT count(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ops'
+                AND ((name = 'ops_item' AND sql LIKE '%(item_id)%')
+                  OR (name = 'ops_outbound' AND sql LIKE '%WHERE outbound_pending = 1%'))
+            """), [2], "both ops indexes exist, the outbound one still partial")
+        // VACUUM may renumber implicit rowids, but not an INTEGER PRIMARY KEY.
+        try check.exec("VACUUM")
+        XCTAssertEqual(try check.ints("SELECT seq FROM ops ORDER BY seq"), rowids + [101])
+        check.close()
+
+        let reopened = try ClipDatabase(url: url)
+        defer { reopened.close() }
+        XCTAssertEqual(try reopened.pragma("user_version"), 3)
+        XCTAssertEqual(try reopened.pendingOutbound(limit: 10), pendingInOrder + [late], "order survives VACUUM")
+        try reopened.markAllOutbound()
+        XCTAssertEqual(try reopened.pendingOutbound(limit: 10), ops + [late])
     }
 
     func testSearchStaysCorrectAfterVacuum() throws {

@@ -20,10 +20,10 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps (detailed). M3–M5 are i
 - [ ] T03 ClipCrypto: vault key, AES-256-GCM seal/open with AAD(itemID,opID), pairing-code key wrap, known vectors · owns: Sources/ClipCrypto, Tests/ClipCryptoTests · check: `swift test --filter ClipCryptoTests` · verify: crypto-reviewer � deps: T01 � build: general-purpose (worktree) � verify: crypto-reviewer
 - [ ] T04 ClipStore: bundled SQLite (FTS5), WAL, ops/items/cursor tables, search · owns: Sources/CSQLite, Sources/ClipStore, Tests/ClipStoreTests · check: `swift test --filter ClipStoreTests`, including a 10k-item search under 50 ms � deps: T01 � build: general-purpose (worktree) � verify: code-reviewer
 - [ ] T05 ClipServer: separate package Server/ (Hummingbird), append-only ciphertext log, long-poll, pairing mailbox · owns: Server/ · check: `cd Server && swift test` � deps: T01 � build: general-purpose (worktree) � verify: code-reviewer
-- [ ] T01 Contracts: Package.swift, module stubs, public types (HLC, ItemID, Op, Envelope, wire API), docs/design.md · owns: Package.swift, Sources/*/Contracts.swift, docs/design.md · check: `swift build` passes · deps: none · build: main · verify: code-reviewer
 
 ## Review
 
 ## Done
+- [x] T01 Contracts: Package.swift, module stubs, public types (HLC, ItemID, Op, Envelope, wire API), docs/design.md · owns: Package.swift, Sources/*/Contracts.swift, docs/design.md · check: `swift build` passes · deps: none · build: main · verify: code-reviewer
 
 ## Blocked

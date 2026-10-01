@@ -14,12 +14,12 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps (detailed). M3â€“M5 are i
 - [ ] T14 XcodeGen project.yml for all Apple targets + README build steps Â· owns: apps/Apple/project.yml, apps/Apple/README.md Â· deps: T11,T12,T13 Â· build: general-purpose Â· verify: code-reviewer
 
 ## Ready
+
+## In progress
 - [ ] T02 ClipCore: op application + LWW/HLC merge, tombstones, tags Â· owns: Sources/ClipCore, Tests/ClipCoreTests Â· check: `swift test --filter ClipCoreTests` · deps: T01 · build: general-purpose (worktree) · verify: code-reviewer
 - [ ] T03 ClipCrypto: vault key, AES-256-GCM seal/open with AAD(itemID,opID), pairing-code key wrap, known vectors Â· owns: Sources/ClipCrypto, Tests/ClipCryptoTests Â· check: `swift test --filter ClipCryptoTests` Â· verify: crypto-reviewer · deps: T01 · build: general-purpose (worktree) · verify: crypto-reviewer
 - [ ] T04 ClipStore: bundled SQLite (FTS5), WAL, ops/items/cursor tables, search Â· owns: Sources/CSQLite, Sources/ClipStore, Tests/ClipStoreTests Â· check: `swift test --filter ClipStoreTests`, including a 10k-item search under 50 ms · deps: T01 · build: general-purpose (worktree) · verify: code-reviewer
 - [ ] T05 ClipServer: separate package Server/ (Hummingbird), append-only ciphertext log, long-poll, pairing mailbox Â· owns: Server/ Â· check: `cd Server && swift test` · deps: T01 · build: general-purpose (worktree) · verify: code-reviewer
-
-## In progress
 - [ ] T01 Contracts: Package.swift, module stubs, public types (HLC, ItemID, Op, Envelope, wire API), docs/design.md Â· owns: Package.swift, Sources/*/Contracts.swift, docs/design.md Â· check: `swift build` passes Â· deps: none Â· build: main Â· verify: code-reviewer
 
 ## Review

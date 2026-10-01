@@ -116,7 +116,7 @@ public final class ClipDatabase: @unchecked Sendable {
             try inTransaction {
                 var folded: [ItemID: ItemState] = [:]
                 var order: [ItemID] = []
-                try query("SELECT body FROM ops ORDER BY rowid") { stmt in
+                try query("SELECT body FROM ops ORDER BY seq") { stmt in
                     let op = try decoder.decode(Op.self, from: columnData(stmt, 0))
                     if folded[op.itemID] == nil { order.append(op.itemID) }
                     folded[op.itemID, default: ItemState(id: op.itemID)].apply(op)
@@ -137,6 +137,18 @@ public final class ClipDatabase: @unchecked Sendable {
                 for id in ids {
                     try run("UPDATE ops SET outbound_pending = 0 WHERE op_id = ?", [.text(id.description)])
                 }
+            }
+        }
+    }
+
+    /// Queues every stored op for push again and resets the sync cursor to 0, in one transaction.
+    /// Used when the relay lost its log: ops that lived only on the old relay go back up, and the relay
+    /// dedupes by opID, so devices re-pushing the same ops is harmless.
+    public func markAllOutbound() throws {
+        try locked {
+            try inTransaction {
+                try run("UPDATE ops SET outbound_pending = 1 WHERE outbound_pending = 0")
+                try writeMeta(Self.cursorKey, "0")
             }
         }
     }
@@ -203,7 +215,7 @@ public final class ClipDatabase: @unchecked Sendable {
     public func pendingOutbound(limit: Int = 500) throws -> [Op] {
         try locked {
             var ops: [Op] = []
-            try query("SELECT body FROM ops WHERE outbound_pending = 1 ORDER BY rowid LIMIT ?", [.int(Int64(limit))]) { stmt in
+            try query("SELECT body FROM ops WHERE outbound_pending = 1 ORDER BY seq LIMIT ?", [.int(Int64(limit))]) { stmt in
                 ops.append(try decoder.decode(Op.self, from: columnData(stmt, 0)))
             }
             return ops
@@ -262,6 +274,7 @@ public final class ClipDatabase: @unchecked Sendable {
         [
             { try self.exec(Self.schemaV1) },
             { try self.exec(Self.schemaV2); try self.reindexAllItems() },
+            { try self.exec(Self.schemaV3) },
         ]
     }
 
@@ -329,6 +342,28 @@ public final class ClipDatabase: @unchecked Sendable {
             item_id UNINDEXED, text, title, tags,
             tokenize = '\(tokenizer)'
         );
+        """
+
+    /// v3: ops gets `seq INTEGER PRIMARY KEY`, the local insertion order. pendingOutbound and refoldAll order by
+    /// it; the old implicit rowid could be renumbered by VACUUM. seq takes the old rowid, so the order is kept.
+    private static let schemaV3 = """
+        CREATE TABLE ops_v3 (
+            seq INTEGER PRIMARY KEY,
+            op_id TEXT UNIQUE NOT NULL,
+            item_id TEXT NOT NULL,
+            ts_wall INTEGER,
+            ts_counter INTEGER,
+            ts_device TEXT,
+            body BLOB NOT NULL, -- JSON-encoded Op
+            outbound_pending INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO ops_v3 (seq, op_id, item_id, ts_wall, ts_counter, ts_device, body, outbound_pending)
+            SELECT rowid, op_id, item_id, ts_wall, ts_counter, ts_device, body, outbound_pending
+            FROM ops ORDER BY rowid;
+        DROP TABLE ops;
+        ALTER TABLE ops_v3 RENAME TO ops;
+        CREATE INDEX ops_item ON ops(item_id);
+        CREATE INDEX ops_outbound ON ops(outbound_pending) WHERE outbound_pending = 1;
         """
 
     private func migrate() throws {

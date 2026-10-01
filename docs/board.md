@@ -3,7 +3,6 @@
 Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.md.
 
 ## Backlog
-- [ ] T24 ClipStore `pinnedItems()` query so pinned items show even outside the first page · owns: ClipStore, ClipAppCore
 - [ ] T21 Docs: README (what, how to run, measured N1–N6, the harness-found bugs), threat model · owns: README.md, docs/threat-model.md
 - [ ] M2 Mac-side: build apps/Apple on the MacBook with xcodegen; fix compile errors · needs: Mac
 
@@ -35,5 +34,8 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 - [x] T20 CI workflows (written; runs once the repo is on GitHub)
 
 - [x] T22/T23 Relay epoch (closes the reset limit); offline failure 30 s → 5 s
+
+- [x] T24 Pinned items query (old pinned items stay visible)
+- [x] T25 Apple review fixes (module names, team ID, device name, alerts, energy)
 
 ## Blocked

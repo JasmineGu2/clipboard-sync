@@ -836,3 +836,22 @@ Files changed:
 - `C:\Users\Jasmine Gu\Desktop\swift-t25\content\app.md`</result>
 <usage><subagent_tokens>141025</subagent_tokens><tool_uses>27</tool_uses><duration_ms>340497</duration_ms></usage>
 </task-notification>
+
+## 2026-10-01 07:04
+<task-notification>
+<task-id>ad652c75adeb5e477</task-id>
+<tool-use-id>toolu_01LSdcggQPW9hhdFtrR8kwuS</tool-use-id>
+<output-file>C:\Users\JASMIN~1\AppData\Local\Temp\claude\C--Users-Jasmine-Gu-desktop-swift\14a38c1b-a71c-4b5c-b11e-9c1df7b67d79\tasks\ad652c75adeb5e477.output</output-file>
+<status>completed</status>
+<summary>Agent "T24 pinned items query" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>T24 is done and committed on `t24` as `0ae7afe` ("T24: pinned items query", with the Co-Authored-By line). `swift build` and `swift test` both pass with 0 failures. I counted tests per suite from the XCTest output: ClipStore has 27 (one new) and ClipAppCore has 22 (one new). I didn't total them across all suites.
+
+- **New query:** `ClipDatabase.pinnedItems()` returns visible pinned items, newest first, with no page limit. I added no index and no migration: pinned sets are small, so `user_version` is unchanged.
+- **HistoryModel:** When you're not searching, the pinned section now comes from `pinnedItems()`. The recent section is the paged `items(limit:)` with pinned items filtered out in Swift. Search results are split the way they were before.
+- **ClipStore test:** `testPinnedItemsReturnsOldPinnedBeyondAnyPage` checks an old pinned item is returned even when 30 newer items push it past the page. It also checks deleted pinned items are excluded and that unpinning removes one.
+- **ClipAppCore test:** `testOldPinnedItemStaysInPinnedSectionBeyondTheFirstPage` pins an item, adds 205 newer ones, and confirms it stays in the pinned section and out of recent. After unpinning it appears in recent once you load more.
+
+Git warned that CRLF line endings will become LF on these four files. This was only a warning.</result>
+<usage><subagent_tokens>57527</subagent_tokens><tool_uses>7</tool_uses><duration_ms>233314</duration_ms></usage>
+</task-notification>

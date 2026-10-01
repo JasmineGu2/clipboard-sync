@@ -42,3 +42,9 @@
 - **Decision:** Ops and item state encode dates as Int64 milliseconds through `ClipCoding` (ClipCore), used by both ClipCrypto and ClipStore. ItemContent normalizes `createdAt` to the millisecond. Old ISO strings still decode.
 - **Why:** ISO text with fractional seconds round-trips through Double, so re-encoding a decoded date could drift by 1 ms. A device that stored a synced op once and one that stored it twice ended with different `createdAt`, breaking N11. It showed up as an intermittent failure in `testRelayResetResetsCursorAndRepulls`; a 5,000-date round-trip test now pins it.
 - **Alternatives:** Keep ISO but truncate rather than round (still two encoders to keep in sync).
+
+## 2026-10-01: Relay reset re-pushes every op; ops get a stable seq
+- **Decision:** On `cursorAhead`, a device marks every stored op outbound and resets its cursor to 0 in one transaction (`markAllOutbound`), then pushes and pulls; once per sync, and a second `cursorAhead` is thrown. Schema v3 gives `ops` a `seq INTEGER PRIMARY KEY` (copied from the old rowid); `pendingOutbound` and `refoldAll` order by `seq`.
+- **Why:** Resetting the cursor alone never brought back ops that lived only on the lost relay. The relay dedupes by opID, so many devices re-pushing is safe. VACUUM can renumber implicit rowids.
+- **Limit:** A reset is only detected when a device's cursor is past the new relay's latest seq. To be closed by a relay epoch ID (T22).
+- **Alternatives:** Re-push only this device's own ops (loses ops from devices that never return).

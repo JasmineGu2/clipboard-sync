@@ -451,3 +451,130 @@ Files:
 - C:\Users\Jasmine Gu\Desktop\swift-t16\Tests\ClipStoreTests\ClipDatabaseTests.swift</result>
 <usage><subagent_tokens>124502</subagent_tokens><tool_uses>42</tool_uses><duration_ms>941309</duration_ms></usage>
 </task-notification>
+
+## 2026-10-01 06:30
+<task-notification>
+<task-id>a8bef419f4192cd56</task-id>
+<tool-use-id>toolu_01LjzErEMP7tXxBD9rMvUrG1</tool-use-id>
+<output-file>C:\Users\JASMIN~1\AppData\Local\Temp\claude\C--Users-Jasmine-Gu-desktop-swift\14a38c1b-a71c-4b5c-b11e-9c1df7b67d79\tasks\a8bef419f4192cd56.output</output-file>
+<status>completed</status>
+<summary>Agent "T08 clipctl CLI" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>`clipctl` now works on Windows: every command you listed is in, the smoke test passes all 21 checks, and the work is committed on `t08` as `15b39c0`. `swift build`, `swift test` (all 5 test bundles) and `ConvergenceHarness --seeds 200` (200/200 converged) also pass.
+
+**Commands:** `init`, `pair start`, `pair join`, `add` (text, or `-` for stdin), `list`, `search`, `copy`, `pin`/`unpin`, `rename` (with `--clear`), `tag`/`untag`, `delete`, `sync`, `status` and `watch`. `--home` works before or after the subcommand.
+- Commands that change something sync afterwards. If the relay doesn't answer within 8 seconds they warn and keep the change queued.
+- The key is stored with DPAPI in `key.dpapi`. Off Windows, a plain-file key is only allowed with `--insecure-file-key` and prints a warning.
+- `copy` writes the text and also sets "ExcludeClipboardContentFromMonitorProcessing", so our own watcher doesn't save it again.
+- I added one hidden option, `watch --exit-after &lt;seconds&gt;`, so the smoke script can stop the watcher cleanly instead of killing it.
+
+**Smoke test** (`scripts/clipctl-smoke.ps1`, against the unreachable `http://127.0.0.1:9`):
+- **Setup:** `init` writes a 298-byte DPAPI-encrypted key file, not the raw 32 bytes.
+- **Items:** `add` and `add -` from a pipe work (offline warning shown, as expected). `list`, `search hel`, `pin`, `tag`, `rename` and `list --json` all show the right data, and `status` shows "5 changes waiting to push".
+- **Copy:** `Get-Clipboard` reads back `hello`, and the exclude marker is set.
+- **Watch:** prints `captured c2fc80fa now SmokePC watch-test-123`. It skips content marked "ExcludeClipboardContentFromMonitorProcessing", skips content with "CanIncludeInClipboardHistory" = 0, captures nothing while `&lt;home&gt;\paused` exists, and exits with `Stopped.`
+- **Delete:** the item is gone afterwards.
+
+**What you should know:**
+1. **I capped swift-argument-parser at `"1.5.0"..&lt;"1.8.0"` instead of plain `from: "1.5.0"`** (it resolves to 1.7.2). Versions 1.8.x contain git symlinks, which Windows can't check out without Developer Mode, and that broke a full `swift build`. The comment in `Package.swift` explains it.
+2. **An offline relay hangs for 30 seconds on Windows** (that's for ClipSync, not the CLI). Foundation on Windows reports a refused connection only when the 30-second request timeout runs out (error -1001), while `curl` fails in 2 seconds. I bounded syncs inside `clipctl`, but `pair start`/`pair join` still wait the full 30 s, and so would the Windows app.
+3. **Missing ClipSync APIs, which I worked around:**
+   - There's no count of changes waiting to push, so `status` loads all of them to count them.
+   - The engine doesn't save its status or last error, so `clipctl` stores them itself in two extra settings in the database (`clipctl.last_error`, `clipctl.last_sync`).
+   - There's no way to look up an item by the start of its ID, so `clipctl` scans every item.
+   - `clipctl` imports the other modules (ClipCore, ClipCrypto, ClipStore) through ClipSync without declaring them. That builds fine.
+4. **Exception to the copy rule:** ArgumentParser needs its help text in code, so short help and error messages are inline. The longer explanations live in `content/clipctl.md`.
+5. **Two quirks I fixed along the way:**
+   - The obvious `await ClipCtl.main()` silently ran the version that only prints help, so `main.swift` calls the async run directly.
+   - In Swift, `"\r\n"` counts as one character, so my first stdin version cut the last letter off piped text. Fixed.
+
+I didn't use any subagents or skills. The user's writing-voice guide shaped `content/clipctl.md`.
+
+Files are in `C:\Users\Jasmine Gu\Desktop\swift-t08`:
+- `Sources\clipctl\` (main, ClipCtl, Client, Display, KeyStores, WindowsClipboard, Watch)
+- `content\clipctl.md`
+- `scripts\clipctl-smoke.ps1`
+- `Package.swift`, `Package.resolved`</result>
+<usage><subagent_tokens>144183</subagent_tokens><tool_uses>56</tool_uses><duration_ms>1325541</duration_ms></usage>
+</task-notification>
+
+## 2026-10-01 06:38
+<task-notification>
+<task-id>aa1c6fcf41b15f554</task-id>
+<tool-use-id>toolu_01GsYEwJvM2eMiPpvEVnvTHz</tool-use-id>
+<output-file>C:\Users\JASMIN~1\AppData\Local\Temp\claude\C--Users-Jasmine-Gu-desktop-swift\14a38c1b-a71c-4b5c-b11e-9c1df7b67d79\tasks\aa1c6fcf41b15f554.output</output-file>
+<status>completed</status>
+<summary>Agent "T19 pairing hardening" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>T19 is committed on `t19` as 25a71a0. `swift build` and both test runs pass, but I'm unsure of the exact test counts.
+
+- **Redaction:** `PairingCode` now has a `customMirror` with no children, same as `VaultKey`. Its `debugDescription` was already redacted. The new test checks that `dump`, `debugDescription`, `String(reflecting:)` and interpolation show neither the canonical code nor the display code.
+- **Known-answer test:** the wrap key for bytes 0x00..0x13 is `13bbafa857fa86c8d62e92ad96fb666ca8e7d30b0c46fc83990e1fc0745df457`. I computed it with Python hmac/hashlib, and the test also checks it against the existing `referenceHKDF` helper. It reads the internal `wrapKey` through `@testable import`. No public API was added.
+- **AAD mismatch:** the test re-seals the vault key by hand with the right wrap key but another code's pairingID as AAD. `unwrap` throws `decryptionFailed`, and a manual seal with the correct AAD unwraps fine.
+- **Distinct codes:** 100 generated codes are all distinct, and each display code re-parses to the same canonical code.
+
+Importing `Crypto` into `KeyAndPairingTests.swift` made `CryptoError` ambiguous. I qualified the existing and new uses as `ClipCrypto.CryptoError`.
+
+**Test counts:**
+- The full `swift test` run reported 27 tests, 0 failures.
+- The first `--filter ClipCryptoTests` run showed a 34-test suite line and 0 failures. The last filter run only showed an empty "0 tests" line in my grep.
+
+I didn't reconcile why those numbers differ. The new tests ran and passed in the earlier runs, but I didn't print an exact per-class count.
+
+Git warned that CRLF line endings in two edited files will become LF. Files changed, all under `C:\Users\Jasmine Gu\Desktop\swift-t19`:
+- `Sources/ClipCrypto/PairingCode.swift`
+- `Tests/ClipCryptoTests/KeyAndPairingTests.swift`
+- `Tests/ClipCryptoTests/KnownAnswerTests.swift`</result>
+<usage><subagent_tokens>56791</subagent_tokens><tool_uses>8</tool_uses><duration_ms>451868</duration_ms></usage>
+</task-notification>
+
+## 2026-10-01 06:39
+<task-notification>
+<task-id>a4832ab6912496b18</task-id>
+<tool-use-id>toolu_01LLmGKDPAUz8HfuG43NycQH</tool-use-id>
+<output-file>C:\Users\JASMIN~1\AppData\Local\Temp\claude\C--Users-Jasmine-Gu-desktop-swift\14a38c1b-a71c-4b5c-b11e-9c1df7b67d79\tasks\a4832ab6912496b18.output</output-file>
+<status>completed</status>
+<summary>Agent "T17+T18 relay-reset repush, ops ordering" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>T17 and T18 are both done and committed on `t17` as `6d73c92`. Build, all tests and the harness pass.
+
+**Checks**
+- `swift build` succeeds.
+- `swift test`: 120 tests, 0 failures. That's SyncEngine + HTTPTransport 33 (was 31), ClipDatabase 21 (was 19), Harness 9, Crypto 30, Core 27.
+- `swift run ConvergenceHarness --seeds 500`: 500/500 seeds converged.
+
+**T17, relay-reset recovery**
+- **Store:** new `ClipDatabase.markAllOutbound()` marks every stored op as waiting to be pushed and sets the sync cursor to 0, in one transaction.
+- **Sync:** when `syncOnce` gets `cursorAhead`, it calls `markAllOutbound()`, pushes in the usual batches, then pulls from 0. This happens once per sync. A second `cursorAhead` in the same sync is thrown and the status goes offline, so it can't loop forever.
+- **Long-poll:** it now does the same marking when it gets `cursorAhead`, so the next `syncOnce` re-pushes. Before, a cursor reset to 0 never raised `cursorAhead` again, so nothing would have been re-pushed.
+- **Tests:**
+  - `testRelayResetRepushesOpsThatLivedOnlyOnTheOldRelay`: A and B sync, A writes ops B never pulled, the relay is replaced by an empty one, B and A sync, then new device C has every item. All three devices end up equal, and the relay holds exactly one envelope per op.
+  - `testRepeatedCursorAheadInOneSyncDoesNotLoop` uses a stub relay that always answers `cursorAhead`. It checks there are exactly 2 pulls and 4 envelopes pushed (the normal push, then one re-push), and that the error is thrown.
+- I updated the existing `testRelayResetResetsCursorAndRepulls`: after the reset, A's cursor is now 3 because it re-pushes, where it used to be 0.
+
+**T18, stable ops ordering**
+- **Migration v3:** rebuilds the ops table with `seq INTEGER PRIMARY KEY`, `op_id TEXT UNIQUE NOT NULL` and the existing columns. `seq` is copied straight from the old rowid, so the order stays the same. Both indexes are recreated, including the partial outbound index. It runs in the same single migration transaction as the earlier steps.
+- `pendingOutbound` and `refoldAll` now order by `seq`.
+- **Test:** `testV2DatabaseMigratesOpsKeepingOrderAndPendingFlags` builds a v2 database with raw SQL, with gaps in the rowids. It checks that the order and pending flags survive the migration, that both indexes exist, and that the order survives VACUUM and a reopen. I also added `testMarkAllOutboundQueuesEveryOpAndResetsCursor`, and updated two `user_version` checks from 2 to 3.
+
+**One limit you should know about:** a device only notices a reset when its cursor is higher than the new relay's latest seq. If other devices have already re-pushed enough to bring the new relay up to that device's cursor, it sees no `cursorAhead`. It then skips everything at or below its cursor, and never re-pushes ops that only it had. In practice the device that first refills the relay holds nearly everything, so this mostly costs nothing. Closing it fully needs a relay "epoch" ID (a value the relay changes whenever its log starts over) in the wire format, and ClipWire is outside what I own.
+
+**Decisions entry to paste into `docs/decisions.md`:**
+
+```
+## 2026-10-01: Relay reset re-pushes every op; ops get a stable seq
+- **Decision:** On `cursorAhead`, a device marks every stored op outbound and resets its cursor to 0 in one transaction (`markAllOutbound`), then pushes and pulls. This happens once per sync; a second `cursorAhead` is thrown. Schema v3 gives `ops` a `seq INTEGER PRIMARY KEY` (copied from the old rowid) and `op_id TEXT UNIQUE`; `pendingOutbound` and `refoldAll` order by `seq`.
+- **Why:** Resetting the cursor alone never brought back ops that lived only on the lost relay, so a new device joining afterwards missed them. The relay dedupes by opID, so several devices re-pushing the same ops is safe, and a fresh nonce per seal is fine. Implicit rowids can be renumbered by VACUUM, which would scramble the outbox and refold order.
+- **Limit:** A reset is detected only when a device's cursor is past the new relay's latest seq. Once other devices have refilled the new relay beyond it, that device sees no `cursorAhead`, skips everything at or below its cursor, and never re-pushes ops only it held. A relay epoch ID in the wire format would close this.
+- **Alternatives:** Re-push only this device's own ops (loses ops from devices that never come back). Keep ordering by rowid and forbid VACUUM (fragile).
+```
+
+Files changed:
+- `C:\Users\Jasmine Gu\Desktop\swift-t17\Sources\ClipStore\ClipDatabase.swift`
+- `C:\Users\Jasmine Gu\Desktop\swift-t17\Sources\ClipSync\SyncEngine.swift`
+- `C:\Users\Jasmine Gu\Desktop\swift-t17\Tests\ClipStoreTests\ClipDatabaseTests.swift`
+- `C:\Users\Jasmine Gu\Desktop\swift-t17\Tests\ClipSyncTests\SyncEngineTests.swift`
+
+I worked directly in the worktree without subagents or skills, because the task covered only these four files.</result>
+<usage><subagent_tokens>105396</subagent_tokens><tool_uses>23</tool_uses><duration_ms>531835</duration_ms></usage>
+</task-notification>

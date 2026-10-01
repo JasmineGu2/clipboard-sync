@@ -58,7 +58,6 @@ struct HistoryView: View {
                         guard let text = strings.first else { return }
                         Task { @MainActor in await history.send(text) }
                     }
-                    .labelStyle(.iconOnly)
                     .buttonBorderShape(.capsule)
                 }
                 ToolbarItem(placement: .status) {
@@ -72,18 +71,22 @@ struct HistoryView: View {
                 PairView(app: app) { showingPair = false }
                     .presentationDetents([.medium])
             }
-            .alert(Strings.renameTitle, isPresented: isPresented($renaming)) {
+            // `presenting:` hands the item to the buttons. Reading `renaming` there instead would see nil:
+            // the alert clears the binding before the button action runs.
+            .alert(Strings.renameTitle, isPresented: isPresented($renaming), presenting: renaming) { item in
                 TextField(Strings.renamePlaceholder, text: $renameText)
                 Button(Strings.save) {
-                    if let item = renaming { Task { await history.rename(item, to: renameText) } }
+                    let title = renameText
+                    Task { await history.rename(item, to: title) }
                 }
                 Button(Strings.cancel, role: .cancel) {}
             }
-            .alert(Strings.tagTitle, isPresented: isPresented($tagging)) {
+            .alert(Strings.tagTitle, isPresented: isPresented($tagging), presenting: tagging) { item in
                 TextField(Strings.tagPlaceholder, text: $tagText)
                     .textInputAutocapitalization(.never)
                 Button(Strings.save) {
-                    if let item = tagging { Task { await history.addTag(item, tagText) } }
+                    let tag = tagText
+                    Task { await history.addTag(item, tag) }
                 }
                 Button(Strings.cancel, role: .cancel) {}
             }
@@ -92,7 +95,8 @@ struct HistoryView: View {
             } message: { message in
                 Text(message.text)
             }
-            .sensoryFeedback(.success, trigger: history.lastCopied)
+            // copyCount, not lastCopied: copying the same item twice still changes it, so it buzzes again.
+            .sensoryFeedback(.success, trigger: history.copyCount)
         }
         .onAppear { history.setVisible(true) }
         .onDisappear { history.setVisible(false) }

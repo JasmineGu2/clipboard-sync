@@ -57,6 +57,9 @@ public enum Strings {
     public static let onboardingIntro = "Your history is encrypted on this device. The server only stores ciphertext."
     public static let serverLabel = "Server URL"
     public static let serverPlaceholder = "http://relay.your-tailnet.ts.net:8787"
+    public static let serverHint = "Use the relay's MagicDNS name, like http://relay.tailnet-name.ts.net:8787, not a 100.x address. iOS blocks plain HTTP to raw IP addresses."
+    public static let deviceNameLabel = "Device name"
+    public static let deviceNameHint = "Your other devices show this next to what you copy here."
     public static let createVault = "Create a new vault"
     public static let createVaultHint = "Start here on your first device."
     public static let joinVault = "Join with a pairing code"
@@ -74,11 +77,12 @@ public enum Strings {
     // MARK: Share extension and Shortcuts
     public static let shareSent = "Sent to ClipSync"
     public static let shareSavedOffline = "Saved. It syncs when the server is reachable."
-    // The App Intents compiler needs literal strings, so these four are repeated as literals in
+    // The App Intents compiler needs literal strings, so these five are repeated as literals in
     // apps/Apple/Shared/SendClipboardIntent.swift. `StringsTests.testIntentLiteralsMatchStrings` checks them.
     public static let intentTitle = "Send Clipboard to ClipSync"
     public static let intentDescription = "Adds text to your ClipSync history and syncs it to your other devices."
     public static let intentTextParameter = "Text"
+    public static let intentTextPrompt = "What text do you want to send?"
     public static let intentShortTitle = "Send Clipboard"
 
     // MARK: Errors (see AppMessage)
@@ -112,14 +116,17 @@ public enum Strings {
         "menuPauseCapture": menuPauseCapture, "menuResumeCapture": menuResumeCapture,
         "capturePaused": capturePaused, "menuPairDevice": menuPairDevice, "menuQuit": menuQuit,
         "onboardingTitle": onboardingTitle, "onboardingIntro": onboardingIntro, "serverLabel": serverLabel,
-        "serverPlaceholder": serverPlaceholder, "createVault": createVault, "createVaultHint": createVaultHint,
+        "serverPlaceholder": serverPlaceholder, "serverHint": serverHint,
+        "deviceNameLabel": deviceNameLabel, "deviceNameHint": deviceNameHint,
+        "createVault": createVault, "createVaultHint": createVaultHint,
         "joinVault": joinVault, "joinVaultHint": joinVaultHint, "codeLabel": codeLabel,
         "codePlaceholder": codePlaceholder, "working": working,
         "pairTitle": pairTitle, "pairInstructions": pairInstructions, "pairExpiry": pairExpiry,
         "pairNewCode": pairNewCode,
         "shareSent": shareSent, "shareSavedOffline": shareSavedOffline,
         "intentTitle": intentTitle, "intentDescription": intentDescription,
-        "intentTextParameter": intentTextParameter, "intentShortTitle": intentShortTitle,
+        "intentTextParameter": intentTextParameter, "intentTextPrompt": intentTextPrompt,
+        "intentShortTitle": intentShortTitle,
         "errorEmptyText": errorEmptyText, "errorTooLarge": errorTooLarge, "errorInvalidCode": errorInvalidCode,
         "errorCodeNotFound": errorCodeNotFound, "errorCodeMismatch": errorCodeMismatch,
         "errorInvalidServer": errorInvalidServer, "errorServerUnreachable": errorServerUnreachable,

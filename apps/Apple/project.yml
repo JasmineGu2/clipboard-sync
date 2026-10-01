@@ -11,7 +11,9 @@ options:
 
 settings:
   base:
-    # Set your team once in Xcode (Signing & Capabilities) or here, e.g. DEVELOPMENT_TEAM: ABCDE12345.
+    # XcodeGen fills ${CLIPSYNC_TEAM_ID} from the environment: `export CLIPSYNC_TEAM_ID=XXXXXXXXXX` before
+    # running `xcodegen` (see README.md). Without it the Keychain access group has no team prefix.
+    DEVELOPMENT_TEAM: ${CLIPSYNC_TEAM_ID}
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
@@ -36,9 +38,14 @@ targets:
     dependencies:
       - package: ClipSync
         product: ClipAppCore
+      # Shared/KeychainKeyStore.swift imports ClipCrypto directly, so link it explicitly.
+      - package: ClipSync
+        product: ClipCrypto
     settings:
       base:
+        # The app is called ClipSync, but its Swift module can't be: the package has a `ClipSync` module.
         PRODUCT_NAME: ClipSync
+        PRODUCT_MODULE_NAME: ClipSyncMac
         PRODUCT_BUNDLE_IDENTIFIER: dev.jazz.clipsync.mac
         INFOPLIST_FILE: macOS/Info.plist
         CODE_SIGN_ENTITLEMENTS: macOS/ClipSyncMac.entitlements
@@ -55,10 +62,14 @@ targets:
     dependencies:
       - package: ClipSync
         product: ClipAppCore
+      # Shared/KeychainKeyStore.swift imports ClipCrypto directly, so link it explicitly.
+      - package: ClipSync
+        product: ClipCrypto
       - target: ClipShare
     settings:
       base:
         PRODUCT_NAME: ClipSync
+        PRODUCT_MODULE_NAME: ClipSynciOS
         PRODUCT_BUNDLE_IDENTIFIER: dev.jazz.clipsync.ios
         INFOPLIST_FILE: iOS/Info.plist
         CODE_SIGN_ENTITLEMENTS: iOS/ClipSynciOS.entitlements
@@ -76,9 +87,13 @@ targets:
     dependencies:
       - package: ClipSync
         product: ClipAppCore
+      # Shared/KeychainKeyStore.swift imports ClipCrypto directly, so link it explicitly.
+      - package: ClipSync
+        product: ClipCrypto
     settings:
       base:
         PRODUCT_NAME: ClipShare
+        PRODUCT_MODULE_NAME: ClipShareExtension
         # An extension's bundle ID must start with its app's.
         PRODUCT_BUNDLE_IDENTIFIER: dev.jazz.clipsync.ios.share
         INFOPLIST_FILE: ShareExtension/Info.plist

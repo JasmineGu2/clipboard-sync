@@ -26,19 +26,30 @@ See "Check these first" at the bottom.
 ```sh
 brew install xcodegen
 cd apps/Apple
+export CLIPSYNC_TEAM_ID=XXXXXXXXXX   # your team ID, see below
 xcodegen
 open ClipSync.xcodeproj
 ```
 
+`project.yml` sets `DEVELOPMENT_TEAM: ${CLIPSYNC_TEAM_ID}`, and XcodeGen fills it in from the environment
+when it generates the project. Find your team ID in Xcode > Settings > Accounts (select the team), or on
+developer.apple.com under Membership. Put the `export` line in your shell profile so every `xcodegen` run
+gets it. Without it, the Keychain access group has no team prefix: setup shows "Couldn't access the
+Keychain", and the underlying error (`KeychainKeyStore.MissingTeamPrefix`) names `CLIPSYNC_TEAM_ID`.
+
 Run `xcodegen` again whenever you add or move a file. The `.xcodeproj` is generated, so don't edit it by
-hand (signing settings you pick in Xcode get wiped too; put `DEVELOPMENT_TEAM` in `project.yml` to keep it).
+hand (signing settings you pick in Xcode get wiped too).
+
+The apps are named ClipSync, but their Swift modules are `ClipSyncMac`, `ClipSynciOS` and
+`ClipShareExtension` (`PRODUCT_MODULE_NAME`), because the package already has a module called `ClipSync`.
 
 The first build resolves swift-crypto and compiles SQLite from source, so give it a few minutes.
 
 ## Signing with a free Apple ID
 
-1. In Xcode, select the project, then each target (`ClipSyncMac`, `ClipSynciOS`, `ClipShare`) in turn.
-2. Signing & Capabilities: tick "Automatically manage signing" and pick your Personal Team.
+1. Set `CLIPSYNC_TEAM_ID` to your Personal Team's ID and run `xcodegen` (see Build).
+2. In Xcode, check Signing & Capabilities on each target (`ClipSyncMac`, `ClipSynciOS`, `ClipShare`):
+   "Automatically manage signing" is on and your Personal Team is picked.
 3. If Xcode says a bundle ID is taken, change the prefix in `project.yml` (`dev.jazz.clipsync`) to something
    only you use, and change `group.dev.jazz.clipsync` in `iOS/ClipSynciOS.entitlements`,
    `ShareExtension/ClipShare.entitlements` and `Shared/AppPaths.swift` to match. Then run `xcodegen` again.
@@ -54,7 +65,8 @@ Shortcuts action then can't see its database and say "finish setup first". Paste
 1. Pick the `ClipSyncMac` scheme and "My Mac", then Run.
 2. A clipboard icon appears in the menu bar (no Dock icon). Click it.
 3. Enter the relay URL, for example `http://relay.your-tailnet.ts.net:8787`, and choose **Create a new
-   vault**. This is the first device, so it makes the key.
+   vault**. This is the first device, so it makes the key. The device name starts as the Mac's name; change
+   it if you like. Your other devices show it next to what you copy here.
 4. Copy some text in any app. It shows up in the menu within a second.
 
 Pause capture and Pair new device are in the `...` menu at the bottom.
@@ -69,7 +81,9 @@ Pause capture and Pair new device are in the `...` menu at the bottom.
 5. Turn on Tailscale on the iPhone.
 6. On the Mac, open the menu and choose **Pair new device**. A code shows up.
 7. On the iPhone, enter the same relay URL and the code, then **Join with a pairing code**. The history
-   from the Mac appears.
+   from the Mac appears. Use the MagicDNS name (`http://relay.your-tailnet.ts.net:8787`), not a raw `100.x`
+   Tailscale IP: iOS blocks plain HTTP to raw IP addresses. Give the iPhone a name too; the field starts as
+   "iPhone" because iOS no longer tells apps the name you gave the phone.
 
 To send from the iPhone:
 - Tap the paste button at the top right. It's the system paste button, so iOS doesn't ask for permission.
@@ -89,7 +103,7 @@ To send from the iPhone:
 All copy comes from `Strings` in `Sources/ClipAppCore/Strings.swift`, which mirrors `content/app.md`.
 
 Data lives in `ClipSync/` under Application Support (Mac, inside the sandbox container) or the App Group
-container (iPhone): `clips.sqlite` and `config.json` (server URL, device ID, pause flag). The vault key is
+container (iPhone): `clips.sqlite` and `config.json` (server URL, device ID, device name, pause flag). The vault key is
 only in the Keychain.
 
 ## Check these first
@@ -98,12 +112,17 @@ The parts most likely to need a fix on the first build, roughly in order:
 
 1. **Keychain on the Mac.** `KeychainKeyStore` sets `kSecUseDataProtectionKeychain`, which needs the app to
    be signed with a provisioning profile. If saving the key fails with -34018, check the
-   `keychain-access-groups` entitlement got a real team prefix.
+   `keychain-access-groups` entitlement got a real team prefix. On iOS, an access group that starts with
+   "." means `$(AppIdentifierPrefix)` was empty; `KeychainKeyStore` throws `MissingTeamPrefix` for that
+   instead of trying (set `CLIPSYNC_TEAM_ID` and run `xcodegen` again).
 2. **App Groups with a free team.** See above.
 3. **`$(AppIdentifierPrefix)` in Info.plist.** `ClipSyncKeychainGroup` must expand to `TEAMID.dev.jazz.clipsync.shared`.
    If it doesn't, the app and the extension use different keychain groups and the extension can't find the key.
 4. **App Intents.** `SendClipboardIntent` declares `description` and `openAppWhenRun` as `static let`.
    If Xcode complains, make them `static var`.
-5. **Concurrency warnings** in the UI layer (it builds in Swift 5 mode with complete checking).
-6. **Clipboard privacy prompts on newer macOS.** If macOS asks the user before an app reads the clipboard,
+5. **Menu bar visibility.** The Mac history refreshes its status only while the menu window is key
+   (`WindowKeyObserver` in `MenuContentView.swift`). If the status line looks stale while the menu is open,
+   check the window gets `NSWindow.didBecomeKeyNotification`.
+6. **Concurrency warnings** in the UI layer (it builds in Swift 5 mode with complete checking).
+7. **Clipboard privacy prompts on newer macOS.** If macOS asks the user before an app reads the clipboard,
    the watcher's reads will trigger it. Allow ClipSync in System Settings > Privacy & Security.

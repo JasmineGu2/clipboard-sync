@@ -33,7 +33,9 @@ public final class ClipApp {
     /// F15, persisted in the config.
     public private(set) var capturePaused = false
 
-    public let deviceName: String
+    /// The name this device shows on synced items. Starts as the platform default (the onboarding field's
+    /// prefill) and becomes the saved name once set up.
+    public private(set) var deviceName: String
 
     nonisolated public static let databaseFileName = "clips.sqlite"
     nonisolated public static let configFileName = "config.json"
@@ -106,7 +108,8 @@ public final class ClipApp {
 
     /// First device: makes a new vault key. Checks the server answers before saving anything,
     /// so a typo in the URL doesn't leave a half-set-up app.
-    public func createVault(server: String) async {
+    /// - Parameter deviceName: the name other devices show on clips from here. Blank or nil uses `deviceName`.
+    public func createVault(server: String, deviceName name: String? = nil) async {
         guard state == .needsSetup, let db else { return }
         guard let url = AppConfig.parseServerURL(server) else {
             message = .invalidServer
@@ -115,7 +118,7 @@ public final class ClipApp {
         state = .working
         message = nil
         let key = VaultKey.generate()
-        let config = AppConfig(serverURL: url, deviceName: deviceName)
+        let config = AppConfig(serverURL: url, deviceName: resolvedDeviceName(name))
         do {
             let engine = try makeEngine(db: db, config: config, key: key)
             try await engine.syncOnce()
@@ -128,7 +131,7 @@ public final class ClipApp {
     }
 
     /// New device: fetches the vault key with a code shown on an existing device, then pulls the history.
-    public func joinVault(server: String, code: String) async {
+    public func joinVault(server: String, code: String, deviceName name: String? = nil) async {
         guard state == .needsSetup, let db else { return }
         guard let url = AppConfig.parseServerURL(server) else {
             message = .invalidServer
@@ -137,7 +140,7 @@ public final class ClipApp {
         state = .working
         message = nil
         let key: VaultKey
-        let config = AppConfig(serverURL: url, deviceName: deviceName)
+        let config = AppConfig(serverURL: url, deviceName: resolvedDeviceName(name))
         do {
             key = try await SyncEngine.completePairing(code: code, transport: makeTransport(url, nil))
             // The code is spent now, so save the key before anything else can fail.
@@ -195,6 +198,11 @@ public final class ClipApp {
 
     // MARK: Internals
 
+    private func resolvedDeviceName(_ name: String?) -> String {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? deviceName : trimmed
+    }
+
     private func makeEngine(db: ClipDatabase, config: AppConfig, key: VaultKey) throws -> SyncEngine {
         try SyncEngine(
             db: db, vaultKey: key, transport: makeTransport(config.serverURL, key.authToken),
@@ -216,6 +224,7 @@ public final class ClipApp {
         self.config = config
         self.vaultKey = key
         self.engine = engine
+        deviceName = config.deviceName
         capturePaused = config.capturePaused
         let history = HistoryModel(engine: engine, db: db, pasteboard: pasteboard)
         self.history = history

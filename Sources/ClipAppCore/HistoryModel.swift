@@ -62,8 +62,12 @@ public final class HistoryModel {
     public private(set) var syncStatus: SyncIndicator = .synced(lastSyncedAt: nil)
     /// The last error, as copy. The UI shows it and sets it back to nil.
     public var message: AppMessage?
-    /// The item most recently put on the clipboard, for a "Copied" confirmation.
+    /// The item most recently put on the clipboard, for a "Copied" confirmation. Clears itself after
+    /// `copiedDuration`; another copy restarts the clock.
     public private(set) var lastCopied: ItemID?
+    /// Bumps on every copy. Use it as the haptics trigger: unlike `lastCopied`, it changes even when the
+    /// same item is copied twice in a row.
+    public private(set) var copyCount = 0
 
     /// Bound to the search field. Changes are debounced before querying.
     public var searchText = "" {
@@ -83,24 +87,28 @@ public final class HistoryModel {
     private let db: ClipDatabase
     private let pasteboard: any PasteboardWriter
     private let debounce: Duration
+    private let copiedDuration: Duration
     private var limit: Int
     private var searchTask: Task<Void, Never>?
     private var changesTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
+    private var copiedResetTask: Task<Void, Never>?
 
     public init(
         engine: SyncEngine,
         db: ClipDatabase,
         pasteboard: any PasteboardWriter,
         pageSize: Int = 200,
-        debounce: Duration = .milliseconds(250)
+        debounce: Duration = .milliseconds(250),
+        copiedDuration: Duration = .milliseconds(1500)
     ) {
         self.engine = engine
         self.db = db
         self.pasteboard = pasteboard
         self.pageSize = pageSize
         self.debounce = debounce
+        self.copiedDuration = copiedDuration
         self.limit = pageSize
     }
 
@@ -123,6 +131,7 @@ public final class HistoryModel {
     public func stop() {
         changesTask?.cancel()
         searchTask?.cancel()
+        copiedResetTask?.cancel()
         statusTask?.cancel()
         statusTask = nil
     }
@@ -219,6 +228,22 @@ public final class HistoryModel {
     public func copy(_ item: ClipItem) {
         pasteboard.write(text: item.text)
         lastCopied = item.id
+        copyCount += 1
+        copiedResetTask?.cancel()
+        let delay = copiedDuration
+        copiedResetTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return  // A newer copy restarted the clock.
+            }
+            self?.lastCopied = nil
+        }
+    }
+
+    /// Waits until the "Copied" confirmation clears. For tests.
+    public func waitForCopiedReset() async {
+        await copiedResetTask?.value
     }
 
     /// F2: adds text to the history, then syncs once. Offline is fine: the item is saved and syncs later.

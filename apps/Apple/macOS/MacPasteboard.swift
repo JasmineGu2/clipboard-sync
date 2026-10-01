@@ -23,6 +23,7 @@ final class MacPasteboard: PasteboardWriter, PasteboardReader {
         pasteboard.clearContents()
         pasteboard.declareTypes([.string, ownMarker], owner: nil)
         pasteboard.setString(text, forType: .string)
-        pasteboard.setData(Data(), forType: ownMarker)
+        // One byte, not empty Data: some pasteboard readers drop types with no data.
+        pasteboard.setData(Data([1]), forType: ownMarker)
     }
 }

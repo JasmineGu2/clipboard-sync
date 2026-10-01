@@ -51,6 +51,14 @@ struct OnboardingView: View {
 
     @State private var server = ""
     @State private var code = ""
+    @State private var deviceName: String
+
+    init(app: ClipApp, onFinish: @escaping () -> Void = {}) {
+        self.app = app
+        self.onFinish = onFinish
+        // Prefilled with the platform default: "iPhone" on iOS, the computer name on the Mac.
+        _deviceName = State(initialValue: app.deviceName)
+    }
 
     var body: some View {
         Form {
@@ -60,11 +68,20 @@ struct OnboardingView: View {
             Section(Strings.serverLabel) {
                 TextField(Strings.serverPlaceholder, text: $server)
                     .urlEntry()
+                Text(Strings.serverHint)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section(Strings.deviceNameLabel) {
+                TextField(Strings.deviceNameLabel, text: $deviceName)
+                Text(Strings.deviceNameHint)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             Section {
                 Button(Strings.createVault) {
                     Task {
-                        await app.createVault(server: server)
+                        await app.createVault(server: server, deviceName: deviceName)
                         onFinish()
                     }
                 }
@@ -77,7 +94,7 @@ struct OnboardingView: View {
                     .codeEntry()
                 Button(Strings.joinVault) {
                     Task {
-                        await app.joinVault(server: server, code: code)
+                        await app.joinVault(server: server, code: code, deviceName: deviceName)
                         onFinish()
                     }
                 }

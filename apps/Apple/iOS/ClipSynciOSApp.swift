@@ -7,7 +7,9 @@ struct ClipSynciOSApp: App {
     @State private var app = ClipApp.bootstrap(
         home: AppPaths.home,
         keyStore: KeychainKeyStore.appDefault,
-        deviceName: UIDevice.current.name,
+        // Only the onboarding prefill: since iOS 16, UIDevice.name is the generic model name without a
+        // special entitlement, so onboarding asks for a name and saves it in the config.
+        deviceName: UIDevice.current.model,
         pasteboard: IOSPasteboard()
     )
     @Environment(\.scenePhase) private var scenePhase

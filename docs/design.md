@@ -99,9 +99,18 @@ Only swift-crypto primitives (same API as CryptoKit).
 - `actor SyncEngine(db:cipher:transport:device:deviceName:)`:
   `addText(_:) -> ItemID`, `setPinned/setTitle/setTag/delete`, `syncOnce()`, `run()` (push, then long-poll pull,
   with exponential backoff and jitter), `changes: AsyncStream<Void>`
+- Cursor: the seq of the last envelope applied, stored in db meta and moved in the same transaction as its ops.
+- Relay reset: the engine stores the last relay epoch it saw in db meta (`relay_epoch`). The first epoch is just
+  stored. A different one on any push or pull response means the relay lost its log. Recovery is
+  `markAllOutbound` (every op queued for push again, cursor to 0, one transaction), then push, then pull, at most
+  once per `syncOnce`; then the new epoch is stored. Seen on a long-poll, the next `syncOnce` does the push and
+  pull. `cursorAhead` triggers the same recovery as a second line of defense (a relay without epochs, or one
+  restored from a backup, which keeps its epoch).
 
 **Relay (Server/)**: separate SwiftPM package (Hummingbird), so the root package keeps building on Windows.
 SQLite table `envelopes(seq INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT UNIQUE, item_id, device_id, ciphertext)`.
+Its epoch (a random UUID string, `meta.relay_epoch`) is made when the database is created and never changes;
+every push and pull response carries it. A pull with `after` past the newest seq gets 409 `CursorAheadResponse`.
 It binds to the Tailscale address only (N10).
 
 ## 5. Concealed content (F9)

@@ -429,7 +429,7 @@ final class SyncEngineTests: XCTestCase {
         let refilled = await newRelay.envelopes.count
         XCTAssertEqual(refilled, 3)
 
-        // B's cursor (3) is valid on the refilled relay, so B just pushes and pulls the new op.
+        // B's cursor (3) is valid on the refilled relay, so no cursorAhead; the new epoch tells B to re-push.
         let late = try await b2.addText("after reset")
         try await b2.syncOnce()
         XCTAssertEqual(try b.db.syncCursor(), 4)
@@ -508,6 +508,126 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(pushed, 4, "the first push, then one re-push of everything")
         let status = await engine.status
         guard case .offline = status else { return XCTFail("expected offline, got \(status)") }
+    }
+
+    // MARK: Relay epoch (T22)
+
+    func testFirstContactStoresTheRelayEpoch() async throws {
+        let relay = InMemoryRelay(epoch: "epoch-1")
+        let a = try makePeer("A", relay: relay)
+        XCTAssertNil(try a.db.meta(SyncEngine.relayEpochKey))
+        _ = try await a.engine.addText("hello")
+        try await a.engine.syncOnce()
+        XCTAssertEqual(try a.db.meta(SyncEngine.relayEpochKey), "epoch-1")
+        XCTAssertEqual(try a.db.syncCursor(), 1)
+        let pushes = await relay.pushCount
+        XCTAssertEqual(pushes, 1, "first contact is not a reset: nothing is re-pushed")
+    }
+
+    /// The limit the epoch closes: after a reset, other devices refill the new relay past X's cursor before X
+    /// syncs, so X never gets cursorAhead. X must still notice the reset and re-push the ops only it held.
+    func testEpochCatchesResetAfterOthersRefilledPastOurCursor() async throws {
+        let relay = InMemoryRelay(epoch: "epoch-1")
+        let x = try makePeer("X", relay: relay)
+        let b = try makePeer("B", relay: relay)
+        let shared = try await x.engine.addText("shared")
+        try await x.engine.syncOnce()
+        try await b.engine.syncOnce()
+
+        // X writes more; it reaches the old relay, but B never pulls it before the relay is lost.
+        let onlyX = try await x.engine.addText("only X has this")
+        try await x.engine.setTag(onlyX, "secret", present: true)
+        try await x.engine.setPinned(shared, true)
+        try await x.engine.syncOnce()
+        let xCursor = try x.db.syncCursor()
+        XCTAssertEqual(xCursor, 4)
+        XCTAssertNil(try b.db.item(onlyX))
+
+        // The relay loses everything. B comes back first and writes enough to pass X's cursor.
+        await relay.simulateReset(epoch: "epoch-2")
+        var fromB: [ItemID] = []
+        for n in 1...4 { fromB.append(try await b.engine.addText("B after reset \(n)")) }
+        try await b.engine.syncOnce()
+        let refilled = await relay.latestSeq
+        XCTAssertGreaterThan(refilled, xCursor, "X's cursor is valid on the new relay, so cursorAhead can't fire")
+        XCTAssertEqual(try b.db.meta(SyncEngine.relayEpochKey), "epoch-2")
+
+        // X has nothing pending; only the epoch on the pulled page reveals the reset.
+        XCTAssertEqual(try x.db.pendingOutbound(), [])
+        let messages = LogLines()
+        let x2 = try SyncEngine(db: x.db, vaultKey: key, transport: relay, device: DeviceID(), deviceName: "X",
+                                log: { messages.append($0) })
+        try await x2.syncOnce()
+        XCTAssertEqual(try x.db.meta(SyncEngine.relayEpochKey), "epoch-2")
+        XCTAssertEqual(try x.db.pendingOutbound(), [])
+        XCTAssertTrue(messages.all.contains { $0.contains("relay epoch changed") }, "\(messages.all)")
+        XCTAssertFalse(messages.all.contains { $0.contains("before our cursor") }, "\(messages.all)")
+        for item in fromB { XCTAssertNotNil(try x.db.item(item)) }
+        let status = await x2.status
+        XCTAssertEqual(status, .idle)
+
+        // A new device that only ever knew the new relay gets everything, including what only X held.
+        let c = try makePeer("C", relay: relay)
+        try await c.engine.syncOnce()
+        try await b.engine.syncOnce()
+        XCTAssertEqual(try c.db.item(onlyX)?.content?.text, "only X has this")
+        XCTAssertEqual(try c.db.item(onlyX)?.visibleTags, ["secret"])
+        XCTAssertEqual(try c.db.item(shared)?.pinned.value, true)
+        XCTAssertEqual(try allStates(c.db), try allStates(x.db))
+        XCTAssertEqual(try allStates(c.db), try allStates(b.db))
+        XCTAssertEqual(try c.db.count(), 6)
+        // Every op exactly once on the new relay: 4 from X's history, 4 new from B.
+        let envelopes = await relay.envelopes
+        XCTAssertEqual(envelopes.count, Set(envelopes.map(\.opID)).count)
+        XCTAssertEqual(envelopes.count, 8)
+    }
+
+    func testEpochChangeSeenByLongPollQueuesEverythingForTheNextSync() async throws {
+        let relay = InMemoryRelay(epoch: "epoch-1")
+        let a = try makePeer("A", relay: relay)
+        let b = try makePeer("B", relay: relay)
+        _ = try await a.engine.addText("shared")
+        try await a.engine.syncOnce()
+        try await b.engine.syncOnce()
+        let onlyA = try await a.engine.addText("only A")
+        try await a.engine.syncOnce()
+        XCTAssertNil(try b.db.item(onlyA))
+
+        let runner = Task { await a.engine.run() }
+        defer { runner.cancel() }
+        try await Task.sleep(for: .milliseconds(200))  // let A settle into its long-poll at cursor 2
+
+        // The relay resets while A waits. B's first push (3 ops) passes A's cursor and wakes the long-poll.
+        await relay.simulateReset(epoch: "epoch-2")
+        for n in 1...3 { _ = try await b.engine.addText("B \(n)") }
+        try await b.engine.syncOnce()
+
+        // A sees epoch-2 on the long-poll page, queues everything, and its next sync re-pushes "only A".
+        try await waitUntil(timeout: .seconds(2)) { await relay.envelopes.count == 5 }
+        try await waitUntil(timeout: .seconds(2)) { try a.db.count() == 5 }
+        XCTAssertEqual(try a.db.meta(SyncEngine.relayEpochKey), "epoch-2")
+        runner.cancel()
+        await runner.value
+
+        let c = try makePeer("C", relay: relay)
+        try await c.engine.syncOnce()
+        XCTAssertEqual(try c.db.item(onlyA)?.content?.text, "only A")
+        XCTAssertEqual(try c.db.count(), 5)
+    }
+
+    func testRelayWithoutEpochStillRecoversViaCursorAhead() async throws {
+        let relay = InMemoryRelay(sendsEpoch: false)
+        let a = try makePeer("A", relay: relay)
+        let onlyA = try await a.engine.addText("only A")
+        try await a.engine.syncOnce()
+        XCTAssertNil(try a.db.meta(SyncEngine.relayEpochKey))
+
+        await relay.simulateReset()
+        try await a.engine.syncOnce()
+        XCTAssertNil(try a.db.meta(SyncEngine.relayEpochKey))
+        let c = try makePeer("C", relay: relay)
+        try await c.engine.syncOnce()
+        XCTAssertEqual(try c.db.item(onlyA)?.content?.text, "only A")
     }
 
     func testRelayRejectsControlCharactersInIDs() async throws {
@@ -638,4 +758,18 @@ actor AlwaysAheadRelay: SyncTransport {
 actor Flag {
     private(set) var value = false
     func set() { value = true }
+}
+
+/// Collects SyncEngine log lines (the log callback is synchronous).
+final class LogLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func append(_ line: String) {
+        lock.lock(); defer { lock.unlock() }
+        lines.append(line)
+    }
+    var all: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return lines
+    }
 }

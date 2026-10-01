@@ -36,6 +36,9 @@ public protocol RelayStorage: Actor {
     /// Envelopes with seq > `after`, ascending, at most `limit`.
     func page(after: Int64, limit: Int) throws -> LogPage
     func latestSeq() throws -> Int64
+    /// This database's epoch: a random UUID string made when the database is first created, then never changed.
+    /// Clients compare it across responses to notice that the relay lost its log (design §4).
+    func epoch() throws -> String
 
     /// Purges expired blobs, then inserts this one unless the ID is taken or `maxLive` blobs are held.
     /// Never overwrites: a second PUT to a live ID is refused, so nobody can swap a parked key.

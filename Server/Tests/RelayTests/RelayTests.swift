@@ -117,6 +117,18 @@ func waitUntil(_ condition: () async -> Bool) async throws {
         }
     }
 
+    @Test func everyPushAndPullCarriesTheEpoch() async throws {
+        let relay = try Relay()
+        let epoch = try await relay.storage.epoch()
+        #expect(UUID(uuidString: epoch) != nil)
+        try await relay.run { client async throws in
+            #expect(try decode(PushResponse.self, try await client.push([envelope(1)])).epoch == epoch)
+            #expect(try decode(PushResponse.self, try await client.push([])).epoch == epoch)
+            #expect(try decode(PullResponse.self, try await client.pull("?after=0")).epoch == epoch)
+            #expect(try decode(PullResponse.self, try await client.pull("?after=1&wait=1")).epoch == epoch)
+        }
+    }
+
     @Test func duplicateOpIDIsIgnored() async throws {
         try await Relay().run { client async throws in
             #expect(try decode(PushResponse.self, try await client.push([envelope(1)])).latestSeq == 1)
@@ -571,6 +583,31 @@ func waitUntil(_ condition: () async -> Bool) async throws {
         #expect(try await reopened.latestSeq() == 2)
         // seq keeps growing after reopen.
         #expect(try await reopened.append([envelope(3)]).latestSeq == 3)
+    }
+
+    @Test func epochIsStableAcrossRestartsAndNewForANewDatabase() async throws {
+        let directory = FileManager.default.temporaryDirectory
+        let path = directory.appendingPathComponent("relay-\(UUID().uuidString).sqlite3").path
+        let otherPath = directory.appendingPathComponent("relay-\(UUID().uuidString).sqlite3").path
+        defer {
+            for file in [path, otherPath] {
+                for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: file + suffix) }
+            }
+        }
+        let first: String
+        do {
+            let storage = try SQLiteRelayStorage(path: path)
+            first = try await storage.epoch()
+            _ = try await storage.append([envelope(1)])
+        }
+        #expect(UUID(uuidString: first) != nil)
+        // Same file after a restart: same epoch.
+        #expect(try await SQLiteRelayStorage(path: path).epoch() == first)
+        #expect(try await SQLiteRelayStorage(path: path).epoch() == first)
+        // A new database file (the relay was reset or replaced): a new epoch.
+        let other = try await SQLiteRelayStorage(path: otherPath).epoch()
+        #expect(other != first)
+        #expect(try await SQLiteRelayStorage.inMemory().epoch() != first)
     }
 
     @Test func pinnedHashSurvivesRestartWithoutUndoingRotation() async throws {

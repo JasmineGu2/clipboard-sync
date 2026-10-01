@@ -35,7 +35,13 @@ public struct PushRequest: Codable, Sendable {
 public struct PushResponse: Codable, Sendable {
     /// Highest seq after the push.
     public var latestSeq: Int64
-    public init(latestSeq: Int64) { self.latestSeq = latestSeq }
+    /// The relay's epoch (see `PullResponse.epoch`). The relay always sends it; optional only so a client can
+    /// still read a relay from before epochs existed.
+    public var epoch: String?
+    public init(latestSeq: Int64, epoch: String? = nil) {
+        self.latestSeq = latestSeq
+        self.epoch = epoch
+    }
 }
 
 /// GET /v1/ops?after=<seq>&limit=<n>&wait=<seconds>
@@ -47,10 +53,16 @@ public struct PullResponse: Codable, Sendable {
     public var envelopes: [Envelope]   // ordered by seq ascending
     public var latestSeq: Int64
     public var hasMore: Bool
-    public init(envelopes: [Envelope], latestSeq: Int64, hasMore: Bool) {
+    /// A random ID (UUID string) the relay makes when its database is first created and keeps for the life of
+    /// that database. A different epoch than last time means the relay lost its log, even when the new log has
+    /// already grown past the client's cursor (which `CursorAheadResponse` can't catch). The relay always sends
+    /// it; optional only so a client can still read a relay from before epochs existed.
+    public var epoch: String?
+    public init(envelopes: [Envelope], latestSeq: Int64, hasMore: Bool, epoch: String? = nil) {
         self.envelopes = envelopes
         self.latestSeq = latestSeq
         self.hasMore = hasMore
+        self.epoch = epoch
     }
 }
 

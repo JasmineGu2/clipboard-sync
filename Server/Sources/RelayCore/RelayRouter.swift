@@ -63,7 +63,7 @@ public func buildRelayRouter(
         try validate(push, maxIDLength: config.maxIDLength)
         let result = try await storage.append(push.envelopes)
         if result.inserted > 0 { await notifier.notify() }
-        return try jsonResponse(PushResponse(latestSeq: result.latestSeq))
+        return try jsonResponse(PushResponse(latestSeq: result.latestSeq, epoch: try await storage.epoch()))
     }
 
     router.get("v1/ops") { request, _ -> Response in
@@ -89,7 +89,8 @@ public func buildRelayRouter(
             let remaining = deadline - ContinuousClock.now
             if !page.envelopes.isEmpty || remaining <= .zero || Task.isCancelled {
                 return try jsonResponse(PullResponse(
-                    envelopes: page.envelopes, latestSeq: page.latestSeq, hasMore: page.hasMore))
+                    envelopes: page.envelopes, latestSeq: page.latestSeq, hasMore: page.hasMore,
+                    epoch: try await storage.epoch()))
             }
             await notifier.wait(since: generation, timeout: remaining)
         }

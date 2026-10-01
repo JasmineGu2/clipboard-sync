@@ -3,13 +3,17 @@ import Foundation
 
 /// The relay's behavior without HTTP, for tests and the harness. Mirrors RelayRouter: dedupe by opID,
 /// server-assigned seq, paging with `hasMore`, long-poll that wakes on push, `cursorAhead` when a cursor is past
-/// the log, one-time pairing blobs (no overwrite, at most `WireLimits.maxLivePairings`), and the same limits
+/// the log, an epoch on every push and pull response, one-time pairing blobs (no overwrite, at most `WireLimits.maxLivePairings`), and the same limits
 /// (mapped to `TransportError` the way HTTPTransport maps status codes). It has no token, so it doesn't model auth.
 public actor InMemoryRelay: SyncTransport {
     public let maxPullLimit: Int
     public let pairingTTL: TimeInterval
     private let now: @Sendable () -> Date
 
+    /// Sent on every push and pull response, like the real relay's database epoch. Changed by `simulateReset()`.
+    public private(set) var epoch: String
+    /// False models a relay from before epochs existed: responses carry no epoch.
+    public private(set) var sendsEpoch: Bool
     private var log: [Envelope] = []
     private var seenOpIDs: Set<String> = []
     private var pairings: [String: (blob: Data, expires: Date)] = [:]
@@ -28,8 +32,12 @@ public actor InMemoryRelay: SyncTransport {
     public init(
         maxPullLimit: Int = WireLimits.defaultPullLimit,
         pairingTTL: TimeInterval = 10 * 60,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        epoch: String = UUID().uuidString.lowercased(),
+        sendsEpoch: Bool = true
     ) {
+        self.epoch = epoch
+        self.sendsEpoch = sendsEpoch
         self.maxPullLimit = max(1, min(maxPullLimit, WireLimits.maxPullLimit))
         self.pairingTTL = pairingTTL
         self.now = now
@@ -42,6 +50,17 @@ public actor InMemoryRelay: SyncTransport {
     /// The next `count` pushes are stored, then the response is lost (the caller sees a network error).
     public func loseNextPushResponses(_ count: Int) { lostPushResponses = count }
     public func failNextPulls(_ count: Int) { pullFailures = count }
+
+    /// The relay loses its log and starts over with a new epoch, as when its database is deleted or replaced.
+    /// Pending pairings go too; a long-poll in progress sees the new state on its next wakeup.
+    public func simulateReset(epoch: String = UUID().uuidString.lowercased()) {
+        self.epoch = epoch
+        log = []
+        seenOpIDs = []
+        pairings = [:]
+    }
+
+    public func setSendsEpoch(_ value: Bool) { sendsEpoch = value }
 
     /// Appends envelopes as-is, bypassing validation. For planting poisoned envelopes in tests.
     public func inject(_ envelopes: [Envelope]) { _ = append(envelopes) }
@@ -65,7 +84,7 @@ public actor InMemoryRelay: SyncTransport {
             lostPushResponses -= 1
             throw TransportError.network("simulated lost response")
         }
-        return PushResponse(latestSeq: latestSeq)
+        return PushResponse(latestSeq: latestSeq, epoch: sentEpoch)
     }
 
     public func pull(after: Int64, limit: Int, wait: Int) async throws -> PullResponse {
@@ -76,11 +95,12 @@ public actor InMemoryRelay: SyncTransport {
         guard after >= 0, limit >= 0, wait >= 0 else {
             throw TransportError.badRequest("after, limit and wait must not be negative")
         }
-        // A fresh relay (or one restored from an old backup) and a client that remembers more.
-        guard after <= latestSeq else { throw TransportError.cursorAhead(latestSeq: latestSeq) }
         let pageSize = max(1, min(limit, maxPullLimit))
         let deadline = ContinuousClock.now + .seconds(min(wait, WireLimits.maxWaitSeconds))
         while true {
+            // A fresh relay (or one restored from an old backup) and a client that remembers more. Checked on
+            // every wakeup, like RelayRouter, because a reset can land while a long-poll waits.
+            guard after <= latestSeq else { throw TransportError.cursorAhead(latestSeq: latestSeq) }
             let page = page(after: after, limit: pageSize)
             let remaining = deadline - ContinuousClock.now
             if !page.envelopes.isEmpty || remaining <= .zero || Task.isCancelled {
@@ -123,8 +143,11 @@ public actor InMemoryRelay: SyncTransport {
         // seq == index + 1, so the page starts at index `after`.
         let start = Int(min(after, Int64(log.count)))
         let end = min(start + limit, log.count)
-        return PullResponse(envelopes: Array(log[start..<end]), latestSeq: latestSeq, hasMore: end < log.count)
+        return PullResponse(
+            envelopes: Array(log[start..<end]), latestSeq: latestSeq, hasMore: end < log.count, epoch: sentEpoch)
     }
+
+    private var sentEpoch: String? { sendsEpoch ? epoch : nil }
 
     private func validate(_ request: PushRequest) throws {
         guard request.envelopes.count <= WireLimits.maxEnvelopesPerPush else { throw TransportError.payloadTooLarge }

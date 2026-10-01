@@ -103,4 +103,54 @@ final class HTTPTransportTests: XCTestCase {
         XCTAssertNil(pullError(200, Data()))
         XCTAssertEqual(pullError(401, Data()), .unauthorized)
     }
+
+    // MARK: Timeouts (T23)
+
+    func testRequestsTheRelayAnswersAtOnceUseTheShortTimeout() throws {
+        let builder = try makeBuilder()
+        let id = "0123456789abcdef0123456789abcdef"
+        XCTAssertEqual(RelayRequestBuilder.shortTimeout, 5)
+        XCTAssertEqual(try builder.push(PushRequest(envelopes: [])).timeoutInterval, 5)
+        XCTAssertEqual(builder.pull(after: 0, limit: 500, wait: 0).timeoutInterval, 5)
+        XCTAssertEqual(try builder.putPairing(id: id, blob: Data([1])).timeoutInterval, 5)
+        XCTAssertEqual(builder.takePairing(id: id).timeoutInterval, 5)
+    }
+
+    func testOnlyLongPollsGetTheWaitPlusGrace() throws {
+        let builder = try makeBuilder()
+        XCTAssertEqual(builder.pull(after: 0, limit: 500, wait: 1).timeoutInterval, 11)
+        XCTAssertEqual(builder.pull(after: 0, limit: 500, wait: 25).timeoutInterval, 35)
+        XCTAssertEqual(builder.pull(after: 0, limit: 500, wait: WireLimits.maxWaitSeconds).timeoutInterval, 40)
+        // A negative wait is the server's 400 to give, not a long timeout.
+        XCTAssertEqual(builder.pull(after: 0, limit: 500, wait: -3).timeoutInterval, 5)
+    }
+
+    /// Nothing listens on port 9 (discard), so the connection is refused. The push must fail as a network
+    /// error within the short timeout, not after Foundation's 30 s.
+    func testPushToUnreachableRelayFailsFast() async throws {
+        let transport = HTTPTransport(baseURL: try url("http://127.0.0.1:9"), token: "abc")
+        let start = ContinuousClock.now
+        do {
+            _ = try await transport.push(PushRequest(envelopes: []))
+            XCTFail("expected a network error")
+        } catch let error as TransportError {
+            guard case .network = error else { return XCTFail("expected .network, got \(error)") }
+        }
+        let elapsed = ContinuousClock.now - start
+        print("[T23] push to 127.0.0.1:9 failed after \(elapsed)")
+        XCTAssertLessThan(elapsed, .seconds(RelayRequestBuilder.shortTimeout + 3))
+    }
+
+    // MARK: Epoch (T22)
+
+    func testEpochIsOptionalOnTheWire() throws {
+        let old = try JSONDecoder().decode(PullResponse.self, from: Data(#"{"envelopes":[],"latestSeq":3,"hasMore":false}"#.utf8))
+        XCTAssertNil(old.epoch)
+        let new = try JSONDecoder().decode(
+            PullResponse.self, from: Data(#"{"envelopes":[],"latestSeq":3,"hasMore":false,"epoch":"e1"}"#.utf8))
+        XCTAssertEqual(new.epoch, "e1")
+        XCTAssertNil(try JSONDecoder().decode(PushResponse.self, from: Data(#"{"latestSeq":3}"#.utf8)).epoch)
+        XCTAssertEqual(
+            try JSONDecoder().decode(PushResponse.self, from: Data(#"{"latestSeq":3,"epoch":"e2"}"#.utf8)).epoch, "e2")
+    }
 }

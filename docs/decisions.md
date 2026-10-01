@@ -80,3 +80,8 @@
 - **Trade-off:** Delete is sticky, so a pin racing a sweep on another device loses. With a per-device setting, the shortest one in use effectively applies to everyone. The cutoff uses the sweeping device's clock, so a clock far ahead expires items early; HybridClock's one-hour forward clamp doesn't cover the local wall clock. Days are capped at 36,500 so the arithmetic can't overflow.
 - **Alternatives:** A new `expire` op that a later pin can override (a merge change and a new harness mutation, for a rare race); a synced vault-wide setting (needs a vault-level op type that doesn't exist yet); hiding by age on read (diverges, see above).
 - **Also fixed:** the nightly harness step piped through `tee` without `shell: bash`, so it ran without `pipefail` and a failing seed would have shown green.
+
+## 2026-10-01: The relay pin lives on VaultKey and shows in clipctl status
+- **Decision:** `VaultKey.authTokenSHA256` (hex SHA-256 of the token's UTF-8, same as the relay's `TokenAuthenticator.sha256Hex`) is printed as "Relay pin" in `clipctl status`, and the operator passes it as `CLIP_RELAY_TOKEN_SHA256`.
+- **Why:** The threat model recommends pinning over trust on first use, but nothing told the operator the value. The hash is safe to show: the relay hashes whatever it's sent, so the pin can't be used as a token. Checked end to end: a pinned relay accepted its vault and gave another vault 401.
+- **Alternatives:** Computing it in clipctl only (the Apple apps will want to show it too); a separate `clipctl pin` command (one more command for one value).

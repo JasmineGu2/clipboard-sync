@@ -48,7 +48,7 @@ final class ManualTime: @unchecked Sendable {
 }
 
 private func makeClock(_ device: DeviceID, _ time: ManualTime) -> HybridClock {
-    HybridClock(device: device, now: { time.millis })
+    HybridClock(device: device, resumingAfter: nil, now: { time.millis })
 }
 
 private func content(_ text: String, from device: DeviceID, seconds: Int = 0) -> ItemContent {
@@ -431,5 +431,32 @@ final class ConvergenceTests: XCTestCase {
             ops.append(Op(id: OpID(rng.uuid()), itemID: item, timestamp: clocks[d].tick(), kind: kind))
         }
         return ops
+    }
+}
+
+final class ClockSafetyTests: XCTestCase {
+    func testResumingAfterKeepsTicksAboveStoredHighWater() {
+        let device = DeviceID()
+        let stored = HLCTimestamp(wallMillis: 5_000, counter: 7, device: device)
+        // Wall clock is behind the stored high water, as after a restart with a clock that jumped back.
+        var clock = HybridClock(device: device, resumingAfter: stored, now: { 1_000 })
+        XCTAssertGreaterThan(clock.tick(), stored)
+    }
+
+    func testFarFutureRemoteIsClampedAndCannotOverflow() {
+        let device = DeviceID()
+        var clock = HybridClock(device: device, resumingAfter: nil, now: { 10_000 })
+        clock.observe(HLCTimestamp(wallMillis: .max, counter: .max, device: DeviceID()))
+        let ts = clock.tick()  // must not trap
+        XCTAssertLessThanOrEqual(ts.wallMillis, 10_000 + HybridClock.maxForwardSkewMillis)
+        XCTAssertGreaterThan(clock.tick(), ts)
+    }
+
+    func testModestRemoteSkewIsStillObserved() {
+        let device = DeviceID()
+        var clock = HybridClock(device: device, resumingAfter: nil, now: { 10_000 })
+        let remote = HLCTimestamp(wallMillis: 70_000, counter: 3, device: DeviceID())
+        clock.observe(remote)
+        XCTAssertGreaterThan(clock.tick(), remote)
     }
 }

@@ -73,12 +73,12 @@ public actor SyncEngine {
         self.log = log
         (changes, changesContinuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
 
-        var clock = HybridClock(device: device, now: { Self.millis(now()) })
         let stored = try db.meta(Self.clockKey).flatMap(Self.parseClock)
-        if let stored {
-            clock.observe(HLCTimestamp(wallMillis: stored.wall, counter: stored.counter, device: device))
-        }
-        self.clock = clock
+        self.clock = HybridClock(
+            device: device,
+            resumingAfter: stored.map { HLCTimestamp(wallMillis: $0.wall, counter: $0.counter, device: device) },
+            now: { Self.millis(now()) }
+        )
         self.highWater = stored ?? (0, 0)
     }
 

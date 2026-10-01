@@ -27,3 +27,8 @@
 ## 2026-10-01: Verify the relay in WSL Ubuntu instead of Docker
 - **Decision:** Install Ubuntu in WSL plus Swift there; run Server tests there.
 - **Why:** Docker Desktop's engine won't start on this PC (its WSL distro is missing). WSL Ubuntu matches the Linux VM anyway.
+
+## 2026-10-01: The clock must resume from a persisted high water (harness-found bug)
+- **Decision:** `HybridClock.init` takes a required `resumingAfter:`; SyncEngine persists the high water in db meta. `observe` clamps remote clocks to now + 1 h.
+- **Why:** The convergence harness (seed 488) showed a restarted device re-issuing a timestamp it had already used, which made replicas disagree on a tag. A peer at wallMillis = UInt64.max could also crash every device through tick overflow.
+- **Alternatives:** Rebuilding the high water from stored ops at launch. That fails because deletes and overwritten edits keep no timestamp, and pushed ops leave the outbox.

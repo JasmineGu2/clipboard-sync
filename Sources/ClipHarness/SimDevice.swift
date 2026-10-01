@@ -51,7 +51,7 @@ struct SimDevice {
         self.skew = skew
         let wall = FakeWallClock(0)
         self.wall = wall
-        self.clock = HybridClock(device: id, now: { wall.millis })
+        self.clock = HybridClock(device: id, resumingAfter: nil, now: { wall.millis })
         self.store = MergeStore(mutation: mutation)
         self.disk = DeviceDisk(store: MergeStore(mutation: mutation))
     }
@@ -101,11 +101,10 @@ struct SimDevice {
         // Local ops recorded after the last snapshot live only in the outbox; fold them back in.
         for op in outbox { store.apply(op) }
         let wall = self.wall
-        clock = HybridClock(device: id, now: { wall.millis })
         clockHighWater = disk.clockHighWater
-        if recovery == .persistedHighWater, let high = clockHighWater {
-            clock.observe(high)
-        }
+        // `.fresh` reproduces the restart bug the harness found (seed 488); production resumes from the high water.
+        let resume = recovery == .persistedHighWater ? clockHighWater : nil
+        clock = HybridClock(device: id, resumingAfter: resume, now: { wall.millis })
         online = true
     }
 }

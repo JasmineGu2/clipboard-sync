@@ -37,9 +37,22 @@ public struct HybridClock: Sendable {
     private var last: (wall: UInt64, counter: UInt32) = (0, 0)
     private let now: @Sendable () -> UInt64
 
-    public init(device: DeviceID, now: @escaping @Sendable () -> UInt64 = HybridClock.systemMillis) {
+    /// How far ahead of our wall clock a remote timestamp may pull us. A peer with a wildly wrong clock
+    /// still merges correctly, but can't drag every device's clock (and LWW) into the far future.
+    public static let maxForwardSkewMillis: UInt64 = 60 * 60 * 1000
+
+    /// `resumingAfter` is the highest timestamp this device issued or observed before it last stopped.
+    /// Required on purpose: a clock that forgets it can re-issue a timestamp after a restart, which breaks
+    /// LWW convergence (found by the harness, seed 488; see docs/decisions.md). Pass nil only for a brand-new device.
+    public init(device: DeviceID, resumingAfter: HLCTimestamp?, now: @escaping @Sendable () -> UInt64 = HybridClock.systemMillis) {
         self.device = device
         self.now = now
+        if let resumingAfter { observe(resumingAfter) }
+    }
+
+    /// The highest timestamp issued or observed; persist it and pass it back as `resumingAfter`.
+    public var highWater: HLCTimestamp {
+        HLCTimestamp(wallMillis: last.wall, counter: last.counter, device: device)
     }
 
     public static let systemMillis: @Sendable () -> UInt64 = {
@@ -61,6 +74,13 @@ public struct HybridClock: Sendable {
 
     /// Moves the clock past a remote timestamp so the next local tick sorts after it.
     public mutating func observe(_ remote: HLCTimestamp) {
+        let ceiling = now().addingReportingOverflow(Self.maxForwardSkewMillis)
+        let limit = ceiling.overflow ? UInt64.max - 1 : ceiling.partialValue
+        if remote.wallMillis > limit {
+            // Far-future peer clock: advance only to the ceiling. Also keeps `last.wall + 1` in tick() from overflowing.
+            if limit > last.wall { last = (limit, 0) }
+            return
+        }
         if remote.wallMillis > last.wall {
             last = (remote.wallMillis, remote.counter)
         } else if remote.wallMillis == last.wall, remote.counter > last.counter {

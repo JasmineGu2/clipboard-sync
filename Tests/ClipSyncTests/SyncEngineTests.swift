@@ -305,7 +305,8 @@ final class SyncEngineTests: XCTestCase {
 
     func testClockPersistsObservedRemoteTimestamps() async throws {
         let relay = InMemoryRelay()
-        let ahead = try makePeer("Ahead", relay: relay, clock: TestClock(1_800_000_000))
+        // 30 minutes ahead: within HybridClock.maxForwardSkewMillis, so B must follow it (further skew is clamped).
+        let ahead = try makePeer("Ahead", relay: relay, clock: TestClock(1_700_001_800))
         let item = try await ahead.engine.addText("from the future")
         try await ahead.engine.syncOnce()
 
@@ -322,7 +323,7 @@ final class SyncEngineTests: XCTestCase {
         try await engine.setTitle(item, "renamed")
         let title = try XCTUnwrap(try db.item(item)?.title)
         XCTAssertEqual(title.value, "renamed")
-        XCTAssertGreaterThan(try XCTUnwrap(title.timestamp).wallMillis, 1_799_999_999_000)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(title.timestamp).wallMillis, 1_700_001_800_000)
     }
 
     // MARK: Run loop

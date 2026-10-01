@@ -38,6 +38,14 @@ bumps the counter on ties; `observe(remote)` pulls the clock forward past anythi
 to real time while staying correct when device clocks disagree. The device ID breaks ties, so no two
 timestamps are equal.
 
+Two rules keep that promise true in practice:
+- **The clock survives restarts.** `HybridClock(device:resumingAfter:)` requires the highest timestamp issued or
+  seen before the last shutdown (SyncEngine stores it in db meta `hlc_high_water`). Without it, a restarted device
+  whose wall clock is behind re-issues an old timestamp, and LWW then depends on arrival order. The convergence
+  harness found this: `swift run ConvergenceHarness --start 488 --seeds 1 --clock-recovery fresh --no-clock-check`.
+- **Peers can't drag the clock arbitrarily far ahead.** `observe` follows a remote clock only up to now + 1 hour.
+  A far-future op still merges normally; it just doesn't push every device's clock (and the tick overflow) with it.
+
 **Ordering in the UI:** newest first by the create timestamp, pinned items in their own section.
 
 ## 3. Crypto (ClipCrypto)

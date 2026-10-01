@@ -4,8 +4,6 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 
 ## Backlog
 - [ ] T24 ClipStore `pinnedItems()` query so pinned items show even outside the first page · owns: ClipStore, ClipAppCore
-- [ ] T22 Relay epoch ID in PullResponse; a device treats an epoch change as a reset (closes the T17 limit) · owns: ClipWire, Server, ClipSync
-- [ ] T23 HTTPTransport: short connect timeout so an offline relay fails in ~3 s, not 30 s (Foundation on Windows) · owns: Sources/ClipSync
 - [ ] T21 Docs: README (what, how to run, measured N1–N6, the harness-found bugs), threat model · owns: README.md, docs/threat-model.md
 - [ ] M2 Mac-side: build apps/Apple on the MacBook with xcodegen; fix compile errors · needs: Mac
 
@@ -35,5 +33,7 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 
 - [x] T10–T14 ClipAppCore (36 tests, Windows) + Apple app sources (iOS, macOS menu bar, share extension, App Intent); unbuilt, needs the Mac
 - [x] T20 CI workflows (written; runs once the repo is on GitHub)
+
+- [x] T22/T23 Relay epoch (closes the reset limit); offline failure 30 s → 5 s
 
 ## Blocked

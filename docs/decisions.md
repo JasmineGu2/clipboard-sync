@@ -53,3 +53,9 @@
 - **Decision:** `HistoryModel` (@Observable), onboarding, capture filtering and the one-shot send live in ClipAppCore, which builds and tests on Windows. apps/Apple holds only SwiftUI views and platform adapters (Keychain, NSPasteboard/UIPasteboard).
 - **Why:** There's no Mac on hand. This puts about 90% of the app's behavior under test now; only the thin UI waits for Xcode.
 - **Also:** `Strings` mirrors content/app.md and a test keeps them in sync (SwiftUI needs compile-time strings). The share extension and Shortcut use a one-shot send against the App Group database.
+
+## 2026-10-01: Relay epoch detects resets; short request timeouts
+- **Decision:** The relay makes a random epoch UUID when its database is created and sends it on every push/pull response. A client that sees a different epoch runs the reset recovery (`markAllOutbound`, push, pull) once per sync. cursorAhead stays as a second line of defense. HTTPTransport uses a 5 s per-request timeout, except long-polls (wait + 10 s).
+- **Why:** cursorAhead missed a reset once other devices refilled the new relay past a device's cursor (closes the limit in the relay-reset entry). On Windows a refused connection only fails when the timeout expires: 30 s before, 5.0 s now (measured).
+- **Limit:** A relay restored from a backup keeps its old epoch; only cursorAhead catches that.
+- **Alternatives:** A 5 s session-wide timeout (could cut long-polls short on platforms that take the smaller value); racing each request against a sleep (not needed).

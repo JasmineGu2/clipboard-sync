@@ -7,7 +7,7 @@ PRD: @docs/prd.md · Board: @docs/board.md · Next: @NEXT.md
 - Windows shell setup first: `. scripts/swiftenv.sh` (puts Swift 6.4 on PATH, sets SDKROOT)
 - `swift build` / `swift test`: root package (Windows, Linux, macOS)
 - `swift run ConvergenceHarness --seeds 500`: randomized convergence check
-- `Server/`: relay package (`ClipRelay`); Linux only, tested in WSL Ubuntu: see Server/README.md
+- `Server/`: relay package (`ClipRelay`); tested on Linux (WSL Ubuntu) and macOS 14: see Server/README.md
 - `swift run clipctl`: command-line client (Windows fallback)
 - `apps/Apple`: built with xcodebuild on the MacBook only
 

@@ -1,6 +1,6 @@
 # NEXT
 
-**Now:** Run the Mac app. All three Apple targets compile and signing is set up, so what is left is launching it: quit Xcode, reopen apps/Apple/ClipSync.xcodeproj, pick the ClipSyncMac scheme and My Mac, press Cmd-R, and click Always Allow when macOS asks about the signing key. Then work down the first-build checklist in apps/Apple/README.md and get it onto the iPhone.
+**Now:** Set up the Mac app against a local relay. The app builds, signs and launches from the terminal (2026-10-04), so the keychain prompt is cleared. Start a relay (`cd Server && ./.build/debug/ClipRelay --port 8788 --db <path>`), click the menu bar icon, enter `http://127.0.0.1:8788`, choose Create a new vault, copy some text, then pair a clipctl client into it with Pair new device. Then work down the first-build checklist in apps/Apple/README.md and get it onto the iPhone.
 
 ## Where things stand (2026-10-01)
 - M1 works end to end: `scripts/e2e.ps1` (relay in WSL + two clipctl devices) passes; A→B p50 ≈ 100 ms on localhost.
@@ -9,6 +9,13 @@
 - All three Apple targets compile on Xcode 16.2: ClipSyncMac, ClipSynciOS and ClipShare, 0 errors and no warnings from our own Swift. The 7 risks in apps/Apple/README.md's first-build checklist did not happen, including the App Intent `static let` one and the concurrency warnings.
 - Signing works. Team 3Z2K32VQXV (free Personal Team), and Apple issued a Mac provisioning profile for dev.jazz.clipsync.mac.
 - Neither app has been run yet, so nothing about behaviour is tested: no menu bar icon seen, no keychain write, no sync.
+
+## Mac run (2026-10-04)
+- `xcodebuild` builds and signs ClipSyncMac without the keychain prompt; the app launches (no crash report). The vault setup UI has not been clicked through yet.
+- The relay builds and its 36 tests pass on macOS, so it no longer needs WSL or the VM for local testing.
+- Local end to end on the Mac: relay on 127.0.0.1:8788 plus two clipctl clients (`--insecure-file-key`). Init, pairing and sync in both directions all work.
+- Check: `swift build` clean, 174 tests pass, harness 500/500.
+- An older relay from the 2026-10-03 session was still listening on 127.0.0.1:8787, with its database in that session's scratch folder. Left running.
 
 ## Mac setup (2026-10-01)
 - Xcode 16.2 is installed, licensed and selected. Its Swift is 6.0.3, older than the 6.4 the shared code was written against.

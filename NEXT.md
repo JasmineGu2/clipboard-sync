@@ -1,6 +1,6 @@
 # NEXT
 
-**Now:** Set up the Mac app against a local relay. The app builds, signs and launches from the terminal (2026-10-04), so the keychain prompt is cleared. Start a relay (`cd Server && ./.build/debug/ClipRelay --port 8788 --db <path>`), click the menu bar icon, enter `http://127.0.0.1:8788`, choose Create a new vault, copy some text, then pair a clipctl client into it with Pair new device. Then work down the first-build checklist in apps/Apple/README.md and get it onto the iPhone.
+**Now:** Set up the Mac app against a local relay. The app builds, signs and launches from the terminal (2026-10-04), so the keychain prompt is cleared. A relay runs detached on 127.0.0.1:8788 with its data in `.relay/` (gitignored); restart it with `cd Server && nohup ./.build/debug/ClipRelay --port 8788 --db ../.relay/relay.sqlite3 > ../.relay/relay.log 2>&1 &`. Then, click the menu bar icon, enter `http://127.0.0.1:8788`, choose Create a new vault, copy some text, then pair a clipctl client into it with Pair new device. Then work down the first-build checklist in apps/Apple/README.md and get it onto the iPhone.
 
 ## Where things stand (2026-10-01)
 - M1 works end to end: `scripts/e2e.ps1` (relay in WSL + two clipctl devices) passes; A→B p50 ≈ 100 ms on localhost.
@@ -15,6 +15,7 @@
 - The relay builds and its 36 tests pass on macOS, so it no longer needs WSL or the VM for local testing.
 - Local end to end on the Mac: relay on 127.0.0.1:8788 plus two clipctl clients (`--insecure-file-key`). Init, pairing and sync in both directions all work.
 - Check: `swift build` clean, 174 tests pass, harness 500/500.
+- Onboarding errors were invisible: they rendered at the bottom of a form taller than the menu window, so Create a new vault looked dead when the relay was down. Errors now show under the button that was pressed.
 - An older relay from the 2026-10-03 session was still listening on 127.0.0.1:8787, with its database in that session's scratch folder. Left running.
 
 ## Mac setup (2026-10-01)

@@ -52,6 +52,11 @@ struct OnboardingView: View {
     @State private var server = ""
     @State private var code = ""
     @State private var deviceName: String
+    /// Which button ran last, so its error shows right under it. The form is taller than the Mac menu
+    /// window, so an error at the bottom was out of sight and the button looked like it did nothing.
+    @State private var lastAction: Action?
+
+    private enum Action { case create, join }
 
     init(app: ClipApp, onFinish: @escaping () -> Void = {}) {
         self.app = app
@@ -80,6 +85,7 @@ struct OnboardingView: View {
             }
             Section {
                 Button(Strings.createVault) {
+                    lastAction = .create
                     Task {
                         await app.createVault(server: server, deviceName: deviceName)
                         onFinish()
@@ -88,11 +94,13 @@ struct OnboardingView: View {
                 Text(Strings.createVaultHint)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                errorText(for: .create)
             }
             Section(Strings.joinVault) {
                 TextField(Strings.codePlaceholder, text: $code)
                     .codeEntry()
                 Button(Strings.joinVault) {
+                    lastAction = .join
                     Task {
                         await app.joinVault(server: server, code: code, deviceName: deviceName)
                         onFinish()
@@ -101,8 +109,9 @@ struct OnboardingView: View {
                 Text(Strings.joinVaultHint)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                errorText(for: .join)
             }
-            if let message = app.message {
+            if lastAction == nil, let message = app.message {
                 Section {
                     Text(message.text)
                         .foregroundStyle(.red)
@@ -115,6 +124,14 @@ struct OnboardingView: View {
             if app.state == .working {
                 ProgressView(Strings.working)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func errorText(for action: Action) -> some View {
+        if lastAction == action, let message = app.message {
+            Text(message.text)
+                .foregroundStyle(.red)
         }
     }
 }

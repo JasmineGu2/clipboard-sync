@@ -4,3 +4,6 @@
 xcuserdata/
 DerivedData/
 .claude/worktrees/
+
+# Local relay data and logs
+.relay/

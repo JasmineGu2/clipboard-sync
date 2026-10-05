@@ -71,7 +71,11 @@ struct OnboardingView: View {
                 Text(Strings.onboardingIntro)
             }
             Section(Strings.serverLabel) {
-                TextField(Strings.serverPlaceholder, text: $server)
+                // On macOS a Form shows a field's title as a side label, which squeezed the box to a sliver
+                // beside the example URL. Hide the label (the section header names it) and show the example
+                // inside the box instead.
+                TextField(Strings.serverLabel, text: $server, prompt: Text(Strings.serverPlaceholder))
+                    .labelsHidden()
                     .urlEntry()
                 Text(Strings.serverHint)
                     .font(.footnote)
@@ -79,6 +83,7 @@ struct OnboardingView: View {
             }
             Section(Strings.deviceNameLabel) {
                 TextField(Strings.deviceNameLabel, text: $deviceName)
+                    .labelsHidden()
                 Text(Strings.deviceNameHint)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -97,7 +102,8 @@ struct OnboardingView: View {
                 errorText(for: .create)
             }
             Section(Strings.joinVault) {
-                TextField(Strings.codePlaceholder, text: $code)
+                TextField(Strings.joinVault, text: $code, prompt: Text(Strings.codePlaceholder))
+                    .labelsHidden()
                     .codeEntry()
                 Button(Strings.joinVault) {
                     lastAction = .join

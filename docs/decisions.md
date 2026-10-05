@@ -68,3 +68,19 @@
 - **Decision:** `OpCipher.seal(_:device:nonce:)` is an internal overload that only the known-answer test calls; the public `seal` always uses a fresh random nonce. The expected bytes come from `scripts/kat/opcipher_kat.py` (Python `cryptography`), not from Swift.
 - **Why:** A random nonce means no test pinned the exact wire bytes, so a silent change to the AAD string, byte layout or op JSON would only show up as old devices failing to decrypt. Computing the vector outside Swift makes it an independent check.
 - **Alternatives:** `#if DEBUG` around the overload (tests build in debug anyway, but release test runs would lose it); an injectable nonce source on the public API (puts nonce reuse one parameter away from production callers).
+
+## 2026-10-01: Mac dev tools come from release tarballs, not Homebrew
+- **Decision:** `gh` 2.102.0 and `xcodegen` 2.46.0 are installed in `~/.local/bin` from their official release downloads, with xcodegen's share folder at `~/.local/share/xcodegen`. Clones use SSH (`git@github.com`) with `~/.ssh/id_ed25519`, not `gh repo clone`.
+- **Why:** The fresh Mac had Command Line Tools from the Xcode 14.3 era, and Homebrew refuses to install anything on an outdated CLT. The release tarballs are prebuilt binaries, so they needed no toolchain and no password, and the SSH key already authenticated as JasmineGu2, so the browser login was not needed either. That unblocked both clones hours before Xcode finished downloading.
+- **Now:** Xcode 16.2 is installed and Homebrew works again, so `brew install gh xcodegen` can take these over. Until someone does, `brew list` will not show them and `gh` is not logged in.
+- **Alternatives:** Reinstalling the Command Line Tools (needs a password and a download, and installing Xcode replaces them anyway); waiting for Xcode before touching anything (would have blocked the clones and the whole setup).
+
+## 2026-10-01: The Mac builds with Swift 6.0.3, not the 6.4 the code was written against
+- **Decision:** Take Xcode 16.2 and its Swift 6.0.3 as the Mac toolchain for the first build, instead of adding a newer swift.org toolchain.
+- **Why:** 16.2 is the newest Xcode that macOS 14.6 accepts, and Package.swift only asks for swift-tools-version 6.0. `swift build` is clean and all 174 tests pass, which is one more test than Windows runs. So the version gap costs the core nothing. If the SwiftUI layer turns out to need something only 6.4 has, change the code, because the Xcode app targets compile with Xcode's own compiler either way.
+- **Alternatives:** A swift.org 6.4 toolchain (it would not change how the Xcode app targets build); upgrading macOS to reach a newer Xcode (a much bigger change than the problem).
+
+## 2026-10-01: Package.resolved pins swift-asn1 1.6.0 so both toolchains agree
+- **Decision:** Keep the Mac's resolution, which moved swift-asn1 from 1.7.3 down to 1.6.0, and commit it.
+- **Why:** swift-asn1 1.7.x declares swift-tools-version 6.1, which Xcode 16.2's Swift 6.0.3 cannot read, so SwiftPM on the Mac drops back to 1.6.0 every time it resolves. Left alone, the Mac and the Windows machine (Swift 6.4) would rewrite Package.resolved against each other on every build, and CI would be a coin flip. 1.6.0 satisfies both: swift-crypto 3.15.1 only asks for asn1 from 1.2.0, and nothing in this repo imports SwiftASN1 directly.
+- **Alternatives:** An explicit upper bound on swift-asn1 in Package.swift (more honest about the constraint, but it is a transitive dependency and the pin already does the job); leaving Package.resolved dirty on the Mac (a modified file after every build, and no machine agreeing with CI).

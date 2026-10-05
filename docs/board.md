@@ -4,7 +4,7 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 
 ## Backlog
 - [ ] T21 Docs: README (what, how to run, measured N1–N6, the harness-found bugs), threat model · owns: README.md, docs/threat-model.md
-- [ ] M2 Mac-side: build apps/Apple on the MacBook with xcodegen; fix compile errors · needs: Mac
+- [ ] M2 Mac-side: run the apps. Compiling is done; this is launch, keychain, pairing, N3 and N4 · needs: Mac, iPhone, relay VM
 
 ## Ready
 
@@ -38,5 +38,6 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 - [x] T24 Pinned items query (old pinned items stay visible)
 - [x] T25 Apple review fixes (module names, team ID, device name, alerts, energy)
 - [x] OpCipher fixed-nonce known-answer vector (Python-checked)
+- [x] M2 first compile on the Mac: all 3 Apple targets build clean on Xcode 16.2, signing set up with a free Personal Team; none of the 7 predicted first-build fixes were needed
 
 ## Blocked

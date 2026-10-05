@@ -64,6 +64,12 @@ To pause capture, create an empty file named `paused` in the home folder. Delete
 
 When you `clipctl copy` an item, clipctl marks the clipboard the same way password managers do, so the watcher doesn't save it again as a new item. Windows clipboard history skips it too.
 
+## Receiving copies from other devices
+
+While `watch` runs on Windows, the newest copy from any other device goes straight onto this clipboard, so Ctrl+V pastes it. It prints a `received` line when that happens. Only the newest item counts: if the PC was offline and 20 items arrive at once, only the latest lands. It never replaces something you copied here more recently, and starting `watch` doesn't change the clipboard. Like `copy`, the write is marked so the watcher doesn't save it again and Windows clipboard history skips it.
+
+`clipctl watch --no-receive` turns this off; you can still get any item with `clipctl copy <id>`.
+
 On macOS and Linux, `watch` only syncs.
 
 ## Where things live

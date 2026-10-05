@@ -9,9 +9,14 @@ import WinSDK
 struct Watch: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Keep syncing and (on Windows) capture copied text. Ctrl+C to stop.",
-        discussion: "Capture pauses while <home>/paused exists. Content marked concealed by password managers is never captured."
+        discussion: """
+            Capture pauses while <home>/paused exists. Content marked concealed by password managers is never captured.
+            On Windows, the newest copy from another device goes on this clipboard as it arrives; --no-receive turns that off.
+            """
     )
     @OptionGroup var global: GlobalOptions
+    @Flag(name: .customLong("no-receive"), help: "Don't put the newest copy from another device on this clipboard.")
+    var noReceive = false
     @Option(help: .hidden) var exitAfter: Double?
 
     static let pollInterval: Duration = .milliseconds(250)
@@ -31,16 +36,30 @@ struct Watch: AsyncParsableCommand {
         #endif
         if client.home.isPaused { print("Capture is paused: \(client.home.pausedURL.path) exists.") }
 
+        #if os(Windows)
+        let receives = !noReceive
+        #else
+        let receives = false  // no clipboard to write to
+        #endif
+        // The reporter decides what to receive; the loop below writes it, so it can skip its own write.
+        let inbox = ClipboardInbox()
+        var baseline = LatestClipFollower(device: client.device)
+        _ = baseline.update(newest: try client.db.items(limit: 1).first)
+
         // One line per new item, whether captured here or synced from another device.
         let alreadySeen = Set(try client.db.items(limit: 500).map(\.id))
-        let reporter = Task {
+        let reporter = Task { [baseline] in
             var seen = alreadySeen
+            var follower = baseline
             for await _ in engine.changes {
                 guard let fresh = try? client.db.items(limit: 50).filter({ !seen.contains($0.id) }) else { continue }
                 for item in fresh.reversed() {
                     seen.insert(item.id)
                     let verb = item.content?.sourceDevice == client.device ? "captured" : "synced  "
                     print("\(verb) \(itemLine(item))")
+                }
+                if receives, let text = follower.update(newest: try? client.db.items(limit: 1).first) {
+                    inbox.put(text)
                 }
             }
         }
@@ -54,6 +73,17 @@ struct Watch: AsyncParsableCommand {
             if let deadline, Date() >= deadline { break }
             try? await Task.sleep(for: Self.pollInterval)
             #if os(Windows)
+            // Only when nothing new was copied here since the last check: otherwise capture that first (below),
+            // and since it's newer, drop the pending receive.
+            if WindowsClipboard.sequenceNumber == lastSequence, let text = inbox.take() {
+                do {
+                    try WindowsClipboard.write(text)
+                    print("received \(preview(text))")
+                } catch {
+                    print("not received (\(describe(error)))")
+                }
+                lastSequence = WindowsClipboard.sequenceNumber  // our own write, not a copy to capture
+            }
             let sequence = WindowsClipboard.sequenceNumber
             guard sequence != lastSequence else { continue }
             let paused = client.home.isPaused
@@ -69,6 +99,7 @@ struct Watch: AsyncParsableCommand {
             case .busy:
                 continue  // keep lastSequence so the next tick tries again
             case .text(let text):
+                _ = inbox.take()  // a copy made here is newer than anything waiting to be received
                 do {
                     try await engine.addText(text)
                 } catch SyncError.emptyText {
@@ -92,6 +123,27 @@ struct Watch: AsyncParsableCommand {
         try? await Task.sleep(for: .milliseconds(100))
         reporter.cancel()
         print("Stopped.")
+    }
+}
+
+/// The newest copy from another device, waiting for the watch loop to put it on the clipboard.
+/// Only the latest matters, so a newer one replaces one that hasn't been written yet.
+final class ClipboardInbox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: String?
+
+    func put(_ text: String) {
+        lock.lock()
+        pending = text
+        lock.unlock()
+    }
+
+    func take() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        let text = pending
+        pending = nil
+        return text
     }
 }
 

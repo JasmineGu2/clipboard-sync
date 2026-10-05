@@ -55,6 +55,7 @@ The code reads these from the `Strings` enum in `Sources/ClipAppCore/Strings.swi
 - `menuPauseCapture`: Pause capture
 - `menuResumeCapture`: Resume capture
 - `capturePaused`: Capture is paused
+- `menuReceiveLatest`: Use copies from other devices
 - `menuPairDevice`: Pair new device…
 - `menuQuit`: Quit ClipSync
 

@@ -49,6 +49,7 @@ public enum Strings {
     public static let menuPauseCapture = "Pause capture"
     public static let menuResumeCapture = "Resume capture"
     public static let capturePaused = "Capture is paused"
+    public static let menuReceiveLatest = "Use copies from other devices"
     public static let menuPairDevice = "Pair new device…"
     public static let menuQuit = "Quit ClipSync"
 
@@ -114,7 +115,8 @@ public enum Strings {
         "sendClipboard": sendClipboard,
         "statusSynced": statusSynced, "statusSyncing": statusSyncing, "statusOffline": statusOffline,
         "menuPauseCapture": menuPauseCapture, "menuResumeCapture": menuResumeCapture,
-        "capturePaused": capturePaused, "menuPairDevice": menuPairDevice, "menuQuit": menuQuit,
+        "capturePaused": capturePaused, "menuReceiveLatest": menuReceiveLatest,
+        "menuPairDevice": menuPairDevice, "menuQuit": menuQuit,
         "onboardingTitle": onboardingTitle, "onboardingIntro": onboardingIntro, "serverLabel": serverLabel,
         "serverPlaceholder": serverPlaceholder, "serverHint": serverHint,
         "deviceNameLabel": deviceNameLabel, "deviceNameHint": deviceNameHint,

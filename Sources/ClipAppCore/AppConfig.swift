@@ -8,12 +8,18 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var deviceName: String
     /// F15: the Mac watcher stops capturing while true.
     public var capturePaused: Bool
+    /// Puts the newest copy from another device on this device's clipboard (`LatestClipFollower`).
+    public var receivesLatest: Bool
 
-    public init(serverURL: URL, deviceID: UUID = UUID(), deviceName: String, capturePaused: Bool = false) {
+    public init(
+        serverURL: URL, deviceID: UUID = UUID(), deviceName: String, capturePaused: Bool = false,
+        receivesLatest: Bool = true
+    ) {
         self.serverURL = serverURL
         self.deviceID = deviceID
         self.deviceName = deviceName
         self.capturePaused = capturePaused
+        self.receivesLatest = receivesLatest
     }
 
     public init(from decoder: any Decoder) throws {
@@ -22,6 +28,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         deviceID = try container.decode(UUID.self, forKey: .deviceID)
         deviceName = try container.decode(String.self, forKey: .deviceName)
         capturePaused = try container.decodeIfPresent(Bool.self, forKey: .capturePaused) ?? false
+        receivesLatest = try container.decodeIfPresent(Bool.self, forKey: .receivesLatest) ?? true
     }
 
     /// nil when the file doesn't exist yet.

@@ -32,6 +32,7 @@ public final class ClipApp {
     public var message: AppMessage?
     /// F15, persisted in the config.
     public private(set) var capturePaused = false
+    public private(set) var receivesLatest = true
 
     /// The name this device shows on synced items. Starts as the platform default (the onboarding field's
     /// prefill) and becomes the saved name once set up.
@@ -189,6 +190,20 @@ public final class ClipApp {
         }
     }
 
+    /// Whether the newest copy from another device goes on this device's clipboard.
+    public func setReceivesLatest(_ on: Bool) {
+        receivesLatest = on
+        history?.receivesLatest = on
+        guard var config else { return }
+        config.receivesLatest = on
+        self.config = config
+        do {
+            try config.save(to: configURL)
+        } catch {
+            message = AppMessage(error)
+        }
+    }
+
     /// Stops syncing and refreshing (app termination, tests).
     public func stop() {
         runTask?.cancel()
@@ -226,7 +241,9 @@ public final class ClipApp {
         self.engine = engine
         deviceName = config.deviceName
         capturePaused = config.capturePaused
+        receivesLatest = config.receivesLatest
         let history = HistoryModel(engine: engine, db: db, pasteboard: pasteboard)
+        history.receivesLatest = config.receivesLatest
         self.history = history
         history.start()
         if autoSync {

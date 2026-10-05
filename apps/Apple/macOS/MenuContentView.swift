@@ -130,6 +130,11 @@ struct MacHistoryView: View {
                 Button(controller.app.capturePaused ? Strings.menuResumeCapture : Strings.menuPauseCapture) {
                     controller.setCapturePaused(!controller.app.capturePaused)
                 }
+                // A checkmark item: on, the newest copy from another device lands on this clipboard.
+                Toggle(Strings.menuReceiveLatest, isOn: Binding(
+                    get: { controller.app.receivesLatest },
+                    set: { controller.app.setReceivesLatest($0) }
+                ))
                 Button(Strings.menuPairDevice) { showingPair = true }
                 Divider()
                 QuitButton()

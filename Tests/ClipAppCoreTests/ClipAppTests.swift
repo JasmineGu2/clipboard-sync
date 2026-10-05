@@ -94,6 +94,51 @@ final class ClipAppTests: XCTestCase {
         XCTAssertNil(try keyStore.loadVaultKey(), "nothing is saved until the server answers")
     }
 
+    /// Polls until `condition` holds; the clipboard write follows a sync on a background task.
+    func waitUntil(_ condition: () -> Bool, timeout: Duration = .seconds(2)) async {
+        let deadline = ContinuousClock.now + timeout
+        while !condition(), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func testNewestCopyFromAnotherDeviceLandsOnTheClipboard() async throws {
+        let relay = InMemoryRelay()
+        let macHome = try makeHome()
+        let (mac, macPasteboard) = makeApp(home: macHome, keyStore: InMemoryKeyStore(), relay: relay, name: "Mac")
+        let (phone, phonePasteboard) = makeApp(home: try makeHome(), keyStore: InMemoryKeyStore(), relay: relay, name: "iPhone")
+        await mac.createVault(server: server)
+        let macHistory = try XCTUnwrap(mac.history)
+        await macHistory.send("already here before the phone joined")
+        let maybeCode = await mac.startPairing()
+        await phone.joinVault(server: server, code: try XCTUnwrap(maybeCode))
+        let phoneHistory = try XCTUnwrap(phone.history)
+
+        // Joining pulls the history but leaves the phone's clipboard alone.
+        await phoneHistory.syncNow()
+        XCTAssertEqual(phonePasteboard.written, [])
+
+        await phoneHistory.send("from the phone")
+        await macHistory.syncNow()
+        await waitUntil { !macPasteboard.written.isEmpty }
+        XCTAssertEqual(macPasteboard.written, ["from the phone"])
+
+        // The phone made it, so its own clipboard isn't touched.
+        await phoneHistory.syncNow()
+        XCTAssertEqual(phonePasteboard.written, [])
+
+        // Switched off, and remembered across restarts.
+        mac.setReceivesLatest(false)
+        await phoneHistory.send("while receiving is off")
+        await macHistory.syncNow()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(macPasteboard.written, ["from the phone"])
+        XCTAssertEqual(try AppConfig.load(from: macHome.appendingPathComponent(ClipApp.configFileName))?.receivesLatest, false)
+
+        mac.stop()
+        phone.stop()
+    }
+
     func testJoinWithCodeFromAnotherDeviceSyncsHistory() async throws {
         let relay = InMemoryRelay()
         let macKeys = InMemoryKeyStore()
@@ -119,7 +164,8 @@ final class ClipAppTests: XCTestCase {
         XCTAssertEqual(phoneHistory.recent.map(\.text), ["from the mac"])
         XCTAssertEqual(phoneHistory.recent.first?.sourceDeviceName, "Mac")
 
-        // And back.
+        // And back. Receiving has its own test; off here, so the only write is the manual copy.
+        mac.setReceivesLatest(false)
         await phoneHistory.send("from the phone")
         await macHistory.syncNow()
         XCTAssertEqual(macHistory.recent.map(\.text), ["from the phone", "from the mac"])

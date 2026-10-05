@@ -77,6 +77,9 @@ public final class HistoryModel {
         }
     }
 
+    /// When true, the newest copy from another device goes on this device's clipboard as it arrives.
+    public var receivesLatest = true
+
     /// Number of fetches that ran a full-text search. Lets tests check the debounce.
     public private(set) var searchQueryCount = 0
 
@@ -94,6 +97,7 @@ public final class HistoryModel {
     private var statusTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var copiedResetTask: Task<Void, Never>?
+    private var follower: LatestClipFollower
 
     public init(
         engine: SyncEngine,
@@ -110,6 +114,7 @@ public final class HistoryModel {
         self.debounce = debounce
         self.copiedDuration = copiedDuration
         self.limit = pageSize
+        self.follower = LatestClipFollower(device: engine.device)
     }
 
     // MARK: Lifecycle
@@ -119,9 +124,12 @@ public final class HistoryModel {
         guard changesTask == nil else { return }
         let changes = engine.changes
         changesTask = Task { [weak self] in
+            // The baseline comes first, so what is already in the history never overwrites the clipboard.
+            await self?.receiveLatest()
             for await _ in changes {
                 guard let self else { return }
                 await self.refresh()
+                await self.receiveLatest()
             }
         }
         Task { await refresh() }
@@ -250,6 +258,20 @@ public final class HistoryModel {
             }
             self?.lastCopied = nil
         }
+    }
+
+    /// Puts the newest item on the clipboard when another device just made it (see `LatestClipFollower`).
+    /// The follower keeps tracking while `receivesLatest` is off, so turning it back on doesn't replay
+    /// an old item.
+    private func receiveLatest() async {
+        guard case .success(let newest) = await Self.newest(db: db) else { return }
+        guard let text = follower.update(newest: newest), receivesLatest else { return }
+        pasteboard.write(text: text)
+    }
+
+    /// The newest visible item, read off the main actor.
+    nonisolated private static func newest(db: ClipDatabase) async -> Result<ItemState?, any Error> {
+        Result { try db.items(limit: 1).first }
     }
 
     /// Waits until the "Copied" confirmation clears. For tests.

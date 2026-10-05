@@ -28,7 +28,7 @@ public enum SyncError: Error, Equatable, Sendable {
 /// Records local changes as ops, pushes them, pulls everyone else's, and keeps the local database current.
 /// See docs/design.md §4.
 public actor SyncEngine {
-    public let device: DeviceID
+    public nonisolated let device: DeviceID
     public let deviceName: String
     public private(set) var status: SyncStatus = .idle
     public private(set) var lastSyncedAt: Date?

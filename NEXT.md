@@ -16,6 +16,8 @@
 - Local end to end on the Mac: relay on 127.0.0.1:8788 plus two clipctl clients (`--insecure-file-key`). Init, pairing and sync in both directions all work.
 - Check: `swift build` clean, 174 tests pass, harness 500/500.
 - Onboarding errors were invisible: they rendered at the bottom of a form taller than the menu window, so Create a new vault looked dead when the relay was down. Errors now show under the button that was pressed.
+- The Mac app works: Create a new vault against 127.0.0.1:8788 succeeded (keychain write OK) and copied text shows up in the menu.
+- `tailscale serve --bg --tcp 8788 tcp://127.0.0.1:8788` exposes the local relay to the tailnet only, at `http://macbook-air.tailc07d02.ts.net:8788`, so the PC and iPhone can reach it before the VM exists. Turn off with `tailscale serve --tcp=8788 off`.
 - An older relay from the 2026-10-03 session was still listening on 127.0.0.1:8787, with its database in that session's scratch folder. Left running.
 
 ## Mac setup (2026-10-01)

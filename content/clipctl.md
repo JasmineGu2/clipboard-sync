@@ -36,9 +36,10 @@ Dashes and case don't matter when you type the code.
 | `clipctl rename <id> <title>` | Shows the title instead of a preview. `--clear` removes it. |
 | `clipctl tag <id> <tag>` / `untag <id> <tag>` | Tags show as `#tag`. |
 | `clipctl delete <id>` | Deletes the item on every device. |
+| `clipctl expire --days 30` | Deletes unpinned items older than 30 days, on every device, then syncs. |
 | `clipctl sync` | Push and pull once. |
 | `clipctl status` | Server, device, item count, changes waiting to push, sync cursor, last error. |
-| `clipctl watch` | Keeps syncing and captures what you copy. Ctrl+C stops it. |
+| `clipctl watch` | Keeps syncing and captures what you copy. Ctrl+C stops it. Add `--expire-days 30` to expire old unpinned items every hour. |
 
 `<id>` is the start of an item's ID. The 8 characters `list` shows are always enough, and fewer work if they're unique.
 
@@ -71,6 +72,12 @@ While `watch` runs on Windows, the newest copy from any other device goes straig
 `clipctl watch --no-receive` turns this off; you can still get any item with `clipctl copy <id>`.
 
 On macOS and Linux, `watch` only syncs.
+
+## Locking the relay to your vault
+
+`clipctl status` shows a **Relay pin**: a hash of your vault's relay token. Start the relay with it
+(`CLIP_RELAY_TOKEN_SHA256=<pin>`, see Server/README.md) and it only ever accepts your vault. The pin is safe to
+copy around; it can't be used to log in.
 
 ## Where things live
 

@@ -71,6 +71,48 @@ final class ConvergenceHarnessTests: XCTestCase {
         }
     }
 
+    // MARK: - Expiry (F14)
+
+    /// Expiry as `delete` ops converges under every fault, including sweeps racing pins on other devices.
+    func testExpiryAsDeleteOpsConverges() {
+        var total = HarnessStats()
+        for seed in UInt64(1)...50 {
+            var config = HarnessConfig(seed: seed)
+            config.expiry = .deleteOps
+            let result = runSimulation(config)
+            total = total + result.stats
+            XCTAssertTrue(result.converged, result.failure ?? "seed \(seed)")
+        }
+        XCTAssertGreaterThan(total.expirySweeps, 0)
+        XCTAssertGreaterThan(total.expiredItems, 0, "sweeps should actually expire items")
+    }
+
+    /// Hiding expired items on one device without an op leaves devices showing different histories.
+    /// This is why expiry is a synced delete, not a local filter.
+    func testExpiryThatOnlyHidesLocallyIsCaught() {
+        var caught = 0
+        var example: String?
+        for seed in UInt64(1)...20 {
+            var config = HarnessConfig(seed: seed)
+            config.expiry = .hideLocally
+            let result = runSimulation(config)
+            if !result.converged {
+                caught += 1
+                example = example ?? result.failure
+            }
+        }
+        XCTAssertGreaterThanOrEqual(caught, 15, "only \(caught)/20 seeds caught local-only expiry")
+        XCTAssertTrue(example?.contains("devices show different items") ?? false, example ?? "")
+    }
+
+    /// Expiry off draws nothing extra from the RNG, so every older seed replays exactly.
+    func testExpiryOffLeavesSeedsUnchanged() {
+        var explicit = HarnessConfig(seed: 42)
+        explicit.expiry = .off
+        XCTAssertEqual(runSimulation(explicit).trace, runSimulation(HarnessConfig(seed: 42)).trace)
+        XCTAssertEqual(runSimulation(explicit).stats.expirySweeps, 0)
+    }
+
     /// Real bug found by this harness: HybridClock keeps its state only in memory. A device that restarts with a
     /// fresh clock while its wall clock is behind re-issues timestamps it already used. The strict-tick
     /// invariant catches the backwards tick on most seeds.

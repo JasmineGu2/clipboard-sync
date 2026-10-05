@@ -1,6 +1,6 @@
 # NEXT
 
-**Now:** Set up the Mac app against a local relay. The app builds, signs and launches from the terminal (2026-10-04), so the keychain prompt is cleared. A relay runs detached on 127.0.0.1:8788 with its data in `.relay/` (gitignored); restart it with `cd Server && nohup ./.build/debug/ClipRelay --port 8788 --db ../.relay/relay.sqlite3 > ../.relay/relay.log 2>&1 &`. Then, click the menu bar icon, enter `http://127.0.0.1:8788`, choose Create a new vault, copy some text, then pair a clipctl client into it with Pair new device. Then work down the first-build checklist in apps/Apple/README.md and get it onto the iPhone.
+**Now:** Test receiving between the Mac and the PC. The Mac app is set up against the local relay (127.0.0.1:8788, shared on the tailnet as `http://macbook-air.tailc07d02.ts.net:8788`; restart it with `cd Server && nohup ./.build/debug/ClipRelay --port 8788 --db ../.relay/relay.sqlite3 > ../.relay/relay.log 2>&1 &`). On the PC: `git pull`, pair clipctl with a code from the Mac menu's Pair new device, run `clipctl watch`, then copy on one and paste on the other. Then the iPhone (apps/Apple/README.md).
 
 ## Where things stand (2026-10-01)
 - M1 works end to end: `scripts/e2e.ps1` (relay in WSL + two clipctl devices) passes; A→B p50 ≈ 100 ms on localhost.
@@ -9,6 +9,9 @@
 - All three Apple targets compile on Xcode 16.2: ClipSyncMac, ClipSynciOS and ClipShare, 0 errors and no warnings from our own Swift. The 7 risks in apps/Apple/README.md's first-build checklist did not happen, including the App Intent `static let` one and the concurrency warnings.
 - Signing works. Team 3Z2K32VQXV (free Personal Team), and Apple issued a Mac provisioning profile for dev.jazz.clipsync.mac.
 - Neither app has been run yet, so nothing about behaviour is tested: no menu bar icon seen, no keychain write, no sync.
+- CI on GitHub (private repo JasmineGu2/clipboard-sync) is green on Linux, Windows, macOS and relay. 181 tests; harness 2000/2000 with and without expiry; clipctl smoke test 20/20.
+- Relay VM: Hetzner account is paid, no server yet. Steps: Server/README.md (Docker option), bind the Tailscale IP, pin with `CLIP_RELAY_TOKEN_SHA256`.
+- T26 expiry (F14) landed on Windows: synced deletes, `clipctl expire`, `watch --expire-days`, `setExpiryDays` in ClipAppCore.
 
 ## Mac run (2026-10-04)
 - `xcodebuild` builds and signs ClipSyncMac without the keychain prompt; the app launches (no crash report). The vault setup UI has not been clicked through yet.
@@ -29,18 +32,25 @@
 - What blocks running it: `codesign` needs permission to use the signing key, and macOS asks for that with a dialog. A headless session cannot answer it and gets `errSecInternalComponent`. Pressing Cmd-R in Xcode once and clicking Always Allow clears it. `security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k <password> ~/Library/Keychains/login.keychain-db` does the same from a terminal.
 
 ## Needs Jazz
-1. Mac: run the app once from Xcode to clear the keychain prompt, then measure N3 (launch) and N4 (energy).
-2. GitHub: check CI. The repo is already on GitHub, so T20's workflows may have run already.
-3. VM: deploy the relay (Server/README.md), pin the token hash, rerun N1 across real devices over Tailscale.
-4. Cleanup: 17 merged worktree folders (swift-t02 to swift-t25) on the Windows machine. They are not on the Mac. OK to `git worktree remove` them?
+1. PC: `git pull`, pair clipctl with a code from the Mac menu, run `clipctl watch`, and check copy on Mac → Ctrl+V on PC (and back).
+2. Mac: measure N3 (launch) and N4 (energy); iPhone: install from Xcode and pair.
+3. Hetzner: create the server, deploy and pin the relay (Server/README.md), rerun N1 across real devices over Tailscale.
+4. Apple Developer account before any demo (free provisioning expires every 7 days).
+5. Cleanup: 17 merged worktree folders (swift-t02 to swift-t25) plus branch t26-expiry on the Windows machine. OK to `git worktree remove` them?
 
 ## Next build tasks (no hardware needed)
 - M3 Windows tray app around ClipAppCore (clipctl watch covers capture today).
-- M4 images/files (F11/F12, N5/N6), revoke (F13), expiry (F14).
+- M4 images/files (F11/F12, N5/N6), revoke (F13).
+- Mac: a Ctrl-Cmd-V picker for older items; an expiry setting in the menu (ClipApp.setExpiryDays exists).
 
+## Next build tasks
+- Mac session: expiry control (ClipApp.setExpiryDays) in the Mac menu and iPhone settings, copy in content/app.md; show the relay pin in the apps.
+- Check the README makes the seed-488 harness bug findable within a minute (PRD outreach goal). Run the nightly workflow once by hand: `gh workflow run nightly.yml`.
+- Optional for v1: M3 Windows tray app, F13 revoke client flow, F11/F12 images and files.
 
 ## Open questions
-- Is the relay VM ready (its Tailscale MagicDNS name)?
+- When is the MacBook available?
+- The relay VM's Tailscale name, once the server exists.
 
 ## Files touched this session
-Everything in the repo was created this session: Package.swift, Sources/* (ClipWire, ClipCore, ClipCrypto, CSQLite, ClipStore, ClipSync, ClipHarness, ConvergenceHarness, clipctl, ClipAppCore), Tests/*, Server/, apps/Apple/, scripts/ (swiftenv.sh, wsl-setup.sh, e2e.ps1, clipctl-smoke.ps1), .github/workflows/, content/ (clipctl.md, app.md), docs/ (prd, vision, design, board, decisions, threat-model), README.md, CLAUDE.md, context/.
+Sources/ClipCrypto/{OpCipher,VaultKey}.swift, Sources/ClipSync/SyncEngine.swift, Sources/ClipStore/ClipDatabase.swift, Sources/ClipAppCore/{AppConfig,ClipApp,AppMessage}.swift, Sources/ClipHarness/{HarnessConfig,SimDevice,Simulation}.swift, Sources/ConvergenceHarness/main.swift, Sources/clipctl/{ClipCtl,Client,Watch}.swift, Tests/ (KnownAnswerTests, SyncEngineTests, ClipAppTests, CaptureAndMessageTests, ConvergenceHarnessTests), scripts/kat/opcipher_kat.py, .github/workflows/{ci,nightly}.yml, content/clipctl.md, Server/README.md, docs/{design,decisions,threat-model,board}.md, README.md, context/{inbox,links}.md, NEXT.md.

@@ -101,6 +101,8 @@ struct Simulation {
             stats.clockJumps += 1
             log("\(devices[d].name) wall clock jumps \(delta)ms")
         }
+        // Only draws from the RNG when expiry is on, so expiry-off seeds (seed 488 included) replay unchanged.
+        if config.expiry != .off, rng.chance(config.expirySweepRate) { try expirySweep(randomDevice()) }
         let d = randomDevice()
         switch Int.random(in: 0..<100, using: &rng) {
         case 0..<40: try userAction(d)
@@ -145,10 +147,15 @@ struct Simulation {
         }
 
         let op = devices[d].record(kind, item: item, opID: OpID(rng.uuid()))
+        try noteIssued(op, by: d)
+    }
+
+    /// Bookkeeping and clock checks for an op a device just recorded.
+    private mutating func noteIssued(_ op: Op, by d: Int, note: String = "") throws(HarnessFailure) {
         opLabels[op.id] = allOps.count
         allOps.append(op)
         stats.ops += 1
-        log("\(devices[d].name) \(describe(op))")
+        log("\(devices[d].name) \(describe(op))\(note)")
 
         if config.checkClockMonotonic {
             if let last = lastIssued[d], !(last < op.timestamp) {
@@ -159,6 +166,35 @@ struct Simulation {
             }
         }
         lastIssued[d] = op.timestamp
+    }
+
+    /// F14: the device expires its visible, unpinned items created before its wall clock minus the expiry age.
+    /// Mirrors SyncEngine.expireItems, which records an ordinary `delete` op per item.
+    private mutating func expirySweep(_ d: Int) throws(HarnessFailure) {
+        let now = devices[d].wall.millis
+        guard now > config.expiryAfterMillis else { return }
+        // Same field as ClipDatabase.expiredItemIDs: the wall time of the item's create op.
+        let cutoff = now - config.expiryAfterMillis
+        let expired = devices[d].store.items.values
+            .filter { $0.isVisible && !$0.pinned.value && !devices[d].hidden.contains($0.id) }
+            .filter { ($0.createdBy?.wallMillis ?? .max) < cutoff }
+            .compactMap { itemLabels[$0.id] }
+            .sorted()
+            .map { itemsByLabel[$0] }
+        stats.expirySweeps += 1
+        log("\(devices[d].name) expiry sweep: \(expired.count) item(s)")
+        for item in expired {
+            stats.expiredItems += 1
+            switch config.expiry {
+            case .off: preconditionFailure("expiry sweeps only run with expiry on")
+            case .hideLocally:
+                devices[d].hideLocally(item)
+                log("\(devices[d].name) hides \(label(item)) locally")
+            case .deleteOps:
+                let op = devices[d].record(.delete, item: item, opID: OpID(rng.uuid()))
+                try noteIssued(op, by: d, note: " (expired)")
+            }
+        }
     }
 
     private mutating func push(_ d: Int, faulty: Bool) throws(HarnessFailure) {
@@ -278,6 +314,14 @@ struct Simulation {
         // (1) All replicas are equal.
         for device in devices.dropFirst() where device.store != devices[0].store {
             throw fail("replicas diverged: \(diff(devices[0].name, devices[0].store.items, device.name, device.store.items))")
+        }
+        // (5) Every device shows the same items. Equal replicas imply this unless a device hides items
+        // outside the op log, which is what `ExpiryMode.hideLocally` does.
+        for device in devices.dropFirst() where device.shownItems != devices[0].shownItems {
+            let onlyFirst = devices[0].shownItems.subtracting(device.shownItems).map(label).sorted()
+            let onlyThis = device.shownItems.subtracting(devices[0].shownItems).map(label).sorted()
+            throw fail("devices show different items: only \(devices[0].name) shows \(onlyFirst), "
+                + "only \(device.name) shows \(onlyThis)")
         }
         // (2) Each equals ClipCore's Replica built from every op, in a random order.
         var shuffled = allOps

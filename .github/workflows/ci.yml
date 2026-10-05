@@ -25,16 +25,35 @@ jobs:
       - run: swift build
       - run: swift test
       - run: swift run -c release ConvergenceHarness --seeds 2000
+      - run: swift run -c release ConvergenceHarness --seeds 2000 --expiry deleteOps
 
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      # compnerd/gha-setup-swift installs a toolchain by branch + tag. Bump both together for newer Swift.
-      - uses: compnerd/gha-setup-swift@main
-        with:
-          branch: swift-6.3-release
-          tag: 6.3-RELEASE
+      # The official installer, same toolchain and per-user layout as local dev (winget's Swift.Toolchain).
+      # compnerd/gha-setup-swift installed fine but then couldn't find swift on PATH (2026-10-01).
+      - name: Install Swift 6.4.0
+        shell: pwsh
+        run: |
+          $url = "https://download.swift.org/swift-6.4.0-release/windows10/swift-6.4.0-RELEASE/swift-6.4.0-RELEASE-windows10.exe"
+          $exe = Join-Path $env:RUNNER_TEMP "swift-installer.exe"
+          Invoke-WebRequest $url -OutFile $exe
+          $p = Start-Process $exe -ArgumentList "-q" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Swift installer exited with $($p.ExitCode)" }
+      # Mirrors scripts/swiftenv.sh: toolchain and runtime on PATH, SDKROOT set.
+      - name: Put Swift on PATH
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:LOCALAPPDATA "Programs\Swift"
+          $tc = Get-ChildItem "$root\Toolchains" -Directory | Select-Object -Last 1
+          $rt = Get-ChildItem "$root\Runtimes" -Directory | Select-Object -Last 1
+          $pf = Get-ChildItem "$root\Platforms" -Directory | Select-Object -Last 1
+          if (-not ($tc -and $rt -and $pf)) { Get-ChildItem $root -Recurse -Depth 2 | Out-Host; throw "Swift layout not found under $root" }
+          "$($tc.FullName)\usr\bin" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+          "$($rt.FullName)\usr\bin" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+          "SDKROOT=$($pf.FullName)\Windows.platform\Developer\SDKs\Windows.sdk" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+      - run: swift --version
       - uses: actions/cache@v4
         with:
           path: .build

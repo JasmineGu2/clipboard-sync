@@ -33,6 +33,8 @@ public final class ClipApp {
     /// F15, persisted in the config.
     public private(set) var capturePaused = false
     public private(set) var receivesLatest = true
+    /// F14, persisted in the config. nil keeps items forever.
+    public private(set) var expiryDays: Int?
 
     /// The name this device shows on synced items. Starts as the platform default (the onboarding field's
     /// prefill) and becomes the saved name once set up.
@@ -51,6 +53,10 @@ public final class ClipApp {
     @ObservationIgnored private var vaultKey: VaultKey?
     @ObservationIgnored private var engine: SyncEngine?
     @ObservationIgnored private var runTask: Task<Void, Never>?
+    @ObservationIgnored private var expiryTask: Task<Void, Never>?
+
+    /// How often a running app re-checks for expired items.
+    nonisolated static let expiryCheckInterval: Duration = .seconds(3600)
 
     nonisolated public static let httpTransport: TransportFactory = { url, token in HTTPTransport(baseURL: url, token: token) }
 
@@ -204,10 +210,40 @@ public final class ClipApp {
         }
     }
 
+    /// F14. Saves the setting and expires anything already past it. nil or below 1 keeps items forever;
+    /// anything over `SyncEngine.maxExpiryDays` is capped.
+    public func setExpiryDays(_ days: Int?) async {
+        guard var config else { return }
+        let days = days.flatMap { $0 >= 1 ? min($0, SyncEngine.maxExpiryDays) : nil }
+        expiryDays = days
+        config.expiryDays = days
+        self.config = config
+        do {
+            try config.save(to: configURL)
+        } catch {
+            message = AppMessage(error)
+            return
+        }
+        await expireNow()
+    }
+
+    /// Deletes unpinned items older than `expiryDays`. The deletes sync like any other edit.
+    func expireNow() async {
+        guard let engine, let days = expiryDays, days >= 1 else { return }
+        do {
+            // Clamped here too: a hand-edited config.json never went through setExpiryDays.
+            try await engine.expireItems(olderThan: .seconds(min(days, SyncEngine.maxExpiryDays) * 86_400))
+        } catch {
+            message = AppMessage(error)
+        }
+    }
+
     /// Stops syncing and refreshing (app termination, tests).
     public func stop() {
         runTask?.cancel()
         runTask = nil
+        expiryTask?.cancel()
+        expiryTask = nil
         history?.stop()
     }
 
@@ -242,12 +278,20 @@ public final class ClipApp {
         deviceName = config.deviceName
         capturePaused = config.capturePaused
         receivesLatest = config.receivesLatest
+        expiryDays = config.expiryDays
         let history = HistoryModel(engine: engine, db: db, pasteboard: pasteboard)
         history.receivesLatest = config.receivesLatest
         self.history = history
         history.start()
         if autoSync {
             runTask = Task { await engine.run() }
+            expiryTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    await self?.expireNow()
+                    guard self != nil else { return }  // app gone: don't keep waking hourly
+                    try? await Task.sleep(for: Self.expiryCheckInterval)
+                }
+            }
         }
         state = .ready
     }

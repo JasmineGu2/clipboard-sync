@@ -12,12 +12,14 @@ struct Options {
     var mutation = MergeMutation.none
     var clockRecovery = ClockRecovery.persistedHighWater
     var clockCheck = true
+    var expiry = ExpiryMode.off
 
     func config(seed: UInt64) -> HarnessConfig {
         var c = HarnessConfig(seed: seed, devices: devices, steps: steps)
         c.mutation = mutation
         c.clockRecovery = clockRecovery
         c.checkClockMonotonic = clockCheck
+        c.expiry = expiry
         return c
     }
 
@@ -28,6 +30,7 @@ struct Options {
         if mutation != .none { s += " --mutation \(mutation.rawValue)" }
         if clockRecovery != .persistedHighWater { s += " --clock-recovery \(clockRecovery.rawValue)" }
         if !clockCheck { s += " --no-clock-check" }
+        if expiry != .off { s += " --expiry \(expiry.rawValue)" }
         return s
     }
 }
@@ -37,6 +40,7 @@ func usage() -> Never {
         usage: ConvergenceHarness [--seeds N] [--start S] [--steps K] [--devices 2...5] [--verbose]
                [--mutation \(MergeMutation.allCases.map(\.rawValue).joined(separator: "|"))]
                [--clock-recovery \(ClockRecovery.allCases.map(\.rawValue).joined(separator: "|"))] [--no-clock-check]
+               [--expiry \(ExpiryMode.allCases.map(\.rawValue).joined(separator: "|"))]
         """)
     exit(2)
 }
@@ -68,6 +72,9 @@ func parseOptions(_ args: [String]) -> Options {
             guard let raw = it.next(), let r = ClockRecovery(rawValue: raw) else { usage() }
             options.clockRecovery = r
         case "--no-clock-check": options.clockCheck = false
+        case "--expiry":
+            guard let raw = it.next(), let e = ExpiryMode(rawValue: raw) else { usage() }
+            options.expiry = e
         case "--help", "-h": usage()
         default:
             print("unknown argument \(arg)")
@@ -104,7 +111,9 @@ let elapsed = clock.now - started
 let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
 let converged = options.seeds - failures.count
 print("\(converged)/\(options.seeds) seeds converged (ops=\(total.ops), pushes=\(total.pushes), drops=\(total.drops),"
-    + " duplicate pushes=\(total.duplicatePushes), restarts=\(total.restarts)) in \(String(format: "%.1f", seconds))s")
+    + " duplicate pushes=\(total.duplicatePushes), restarts=\(total.restarts)"
+    + (options.expiry == .off ? "" : ", expiry sweeps=\(total.expirySweeps), expired=\(total.expiredItems)")
+    + ") in \(String(format: "%.1f", seconds))s")
 
 if let first = failures.first, let failure = first.failure {
     print("\nFAILED: \(failures.count) seed(s): \(failures.prefix(20).map { String($0.seed) }.joined(separator: ", "))")

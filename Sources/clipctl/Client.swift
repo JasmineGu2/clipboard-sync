@@ -94,7 +94,7 @@ func defaultDeviceName() -> String {
 }
 
 func warn(_ message: String) {
-    fflush(stdout)  // keep stdout and stderr in order when both go to one console or file
+    fflush(nil)  // keep stdout and stderr in order when both go to one console or file
     FileHandle.standardError.write(Data("warning: \(message)\n".utf8))
 }
 
@@ -107,6 +107,7 @@ func describe(_ error: any Error) -> String {
         case .invalidPairingCode: return "that isn't a valid pairing code"
         case .pairingNotFound: return "no pairing for that code: it's wrong, already used, or expired"
         case .pairingDecryptionFailed: return "the pairing blob didn't open with that code"
+        case .expiryStalled: return "expiry stopped: the local database didn't record the deletes"
         }
     }
     return String(describing: error)

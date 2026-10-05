@@ -17,24 +17,31 @@ struct Watch: AsyncParsableCommand {
     @OptionGroup var global: GlobalOptions
     @Flag(name: .customLong("no-receive"), help: "Don't put the newest copy from another device on this clipboard.")
     var noReceive = false
+    @Option(help: "Delete unpinned items older than this many days, on every device. Checked hourly.")
+    var expireDays: Int?
     @Option(help: .hidden) var exitAfter: Double?
 
     static let pollInterval: Duration = .milliseconds(250)
+    static let expiryInterval: Duration = .seconds(3600)
+
+    func validate() throws {
+        if let expireDays, !(1...SyncEngine.maxExpiryDays).contains(expireDays) {
+            throw ValidationError("--expire-days must be between 1 and \(SyncEngine.maxExpiryDays).")
+        }
+    }
 
     func run() async throws {
-        // Unbuffered, so each line shows up right away even when stdout is a file or pipe.
-        setvbuf(stdout, nil, _IONBF, 0)
         let client = try Client.open(global)
         let engine = client.engine
         let stop = StopSignal.install()
         let deadline = exitAfter.map { Date().addingTimeInterval($0) }
 
         #if os(Windows)
-        print("Watching the clipboard and syncing with \(client.config.serverURL). Ctrl+C to stop.")
+        say("Watching the clipboard and syncing with \(client.config.serverURL). Ctrl+C to stop.")
         #else
-        print("Syncing with \(client.config.serverURL) (no clipboard capture on this OS). Ctrl+C to stop.")
+        say("Syncing with \(client.config.serverURL) (no clipboard capture on this OS). Ctrl+C to stop.")
         #endif
-        if client.home.isPaused { print("Capture is paused: \(client.home.pausedURL.path) exists.") }
+        if client.home.isPaused { say("Capture is paused: \(client.home.pausedURL.path) exists.") }
 
         #if os(Windows)
         let receives = !noReceive
@@ -56,7 +63,7 @@ struct Watch: AsyncParsableCommand {
                 for item in fresh.reversed() {
                     seen.insert(item.id)
                     let verb = item.content?.sourceDevice == client.device ? "captured" : "synced  "
-                    print("\(verb) \(itemLine(item))")
+                    say("\(verb) \(itemLine(item))")
                 }
                 if receives, let text = follower.update(newest: try? client.db.items(limit: 1).first) {
                     inbox.put(text)
@@ -64,6 +71,19 @@ struct Watch: AsyncParsableCommand {
             }
         }
         let syncLoop = Task { await engine.run() }
+        let expiryLoop = expireDays.map { days in
+            Task {
+                while !Task.isCancelled {
+                    do {
+                        let count = try await engine.expireItems(olderThan: .seconds(days * 86_400))
+                        if count > 0 { say("expired  \(count) item(s) older than \(days) days") }
+                    } catch {
+                        say("expiry failed  (\(describe(error)))")
+                    }
+                    try? await Task.sleep(for: Self.expiryInterval)
+                }
+            }
+        }
 
         #if os(Windows)
         var lastSequence = WindowsClipboard.sequenceNumber
@@ -78,9 +98,9 @@ struct Watch: AsyncParsableCommand {
             if WindowsClipboard.sequenceNumber == lastSequence, let text = inbox.take() {
                 do {
                     try WindowsClipboard.write(text)
-                    print("received \(preview(text))")
+                    say("received \(preview(text))")
                 } catch {
-                    print("not received (\(describe(error)))")
+                    say("not received (\(describe(error)))")
                 }
                 lastSequence = WindowsClipboard.sequenceNumber  // our own write, not a copy to capture
             }
@@ -88,7 +108,7 @@ struct Watch: AsyncParsableCommand {
             guard sequence != lastSequence else { continue }
             let paused = client.home.isPaused
             if paused != wasPaused {
-                print(paused ? "Capture paused." : "Capture resumed.")
+                say(paused ? "Capture paused." : "Capture resumed.")
                 wasPaused = paused
             }
             if paused {
@@ -104,12 +124,12 @@ struct Watch: AsyncParsableCommand {
                     try await engine.addText(text)
                 } catch SyncError.emptyText {
                 } catch {
-                    print("skipped  (\(describe(error)))")
+                    say("skipped  (\(describe(error)))")
                 }
             case .concealed(let marker):
-                print("skipped  concealed content (\(marker))")
+                say("skipped  concealed content (\(marker))")
             case .tooLarge:
-                print("skipped  text over 1 MB")
+                say("skipped  text over 1 MB")
             case .noText:
                 break
             }
@@ -117,12 +137,13 @@ struct Watch: AsyncParsableCommand {
             #endif
         }
 
+        expiryLoop?.cancel()
         syncLoop.cancel()
         await syncLoop.value
         // Let the reporter print anything recorded just before the stop.
         try? await Task.sleep(for: .milliseconds(100))
         reporter.cancel()
-        print("Stopped.")
+        say("Stopped.")
     }
 }
 
@@ -188,4 +209,12 @@ final class StopSignal: @unchecked Sendable {
         #endif
         return shared
     }
+}
+
+/// Prints one line and flushes, so it shows up right away even when stdout is a file or pipe.
+/// `fflush(nil)` flushes every stream without touching the C `stdout` global, which Swift 6
+/// rejects on Linux as shared mutable state.
+private func say(_ line: String) {
+    print(line)
+    fflush(nil)
 }

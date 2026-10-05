@@ -10,16 +10,19 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var capturePaused: Bool
     /// Puts the newest copy from another device on this device's clipboard (`LatestClipFollower`).
     public var receivesLatest: Bool
+    /// F14: unpinned items older than this many days are deleted on every device. nil keeps them forever.
+    public var expiryDays: Int?
 
     public init(
         serverURL: URL, deviceID: UUID = UUID(), deviceName: String, capturePaused: Bool = false,
-        receivesLatest: Bool = true
+        receivesLatest: Bool = true, expiryDays: Int? = nil
     ) {
         self.serverURL = serverURL
         self.deviceID = deviceID
         self.deviceName = deviceName
         self.capturePaused = capturePaused
         self.receivesLatest = receivesLatest
+        self.expiryDays = expiryDays
     }
 
     public init(from decoder: any Decoder) throws {
@@ -29,6 +32,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         deviceName = try container.decode(String.self, forKey: .deviceName)
         capturePaused = try container.decodeIfPresent(Bool.self, forKey: .capturePaused) ?? false
         receivesLatest = try container.decodeIfPresent(Bool.self, forKey: .receivesLatest) ?? true
+        expiryDays = try container.decodeIfPresent(Int.self, forKey: .expiryDays)
     }
 
     /// nil when the file doesn't exist yet.

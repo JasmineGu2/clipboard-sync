@@ -66,7 +66,7 @@ From the requirements in [docs/prd.md](docs/prd.md). "Written, not built" means 
 | F10 | Pair with a code | Done | Tested end to end with clipctl. Apple flow written, not built. |
 | F11 | Images | Not yet | M4 |
 | F12 | Files | Not yet | M4 |
-| F13 | Revoke a lost device | Partly | The relay's token rotation route exists. The client flow doesn't. |
+| F13 | Revoke a lost device | Partly | `clipctl devices` / `clipctl revoke`, and Devices in the Mac menu and iPhone app. A revoke swaps in a new vault key, wipes the relay, and hands the key to the other devices with HPKE. Tested end to end with three clipctl clients; the Apple screens are built but not clicked through. |
 | F14 | Unpinned items expire | Partly | Synced deletes, harness-checked. `clipctl expire` and `watch --expire-days`. Apple setting not built. |
 | F15 | Pause capture | Partly | clipctl (a `paused` file), smoke-tested. Mac menu written, not built. |
 | F16 | Direct device-to-device sync | Not yet | P2 |

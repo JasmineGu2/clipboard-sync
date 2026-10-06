@@ -27,6 +27,10 @@ public enum AppMessage: String, Equatable, Sendable, CaseIterable {
     case storage
     case keychain
     case notSetUp
+    case removedFromVault
+    case cannotRemoveThisDevice
+    case unknownDevice
+    case notRegistered
     case unknown
 
     /// The copy for this message, from `Strings`.
@@ -45,6 +49,10 @@ public enum AppMessage: String, Equatable, Sendable, CaseIterable {
         case .storage: Strings.errorStorage
         case .keychain: Strings.errorKeychain
         case .notSetUp: Strings.errorNotSetUp
+        case .removedFromVault: Strings.errorRemovedFromVault
+        case .cannotRemoveThisDevice: Strings.errorCannotRemoveThisDevice
+        case .unknownDevice: Strings.errorUnknownDevice
+        case .notRegistered: Strings.errorNotRegistered
         case .unknown: Strings.errorUnknown
         }
     }
@@ -61,6 +69,11 @@ public enum AppMessage: String, Equatable, Sendable, CaseIterable {
             case .pairingDecryptionFailed: self = .codeMismatch
             case .missingSeq: self = .server
             case .expiryStalled: self = .storage
+            case .deviceRevoked: self = .removedFromVault
+            case .cannotRevokeThisDevice: self = .cannotRemoveThisDevice
+            case .unknownDevice: self = .unknownDevice
+            case .notRegistered: self = .notRegistered
+            case .membershipUnavailable: self = .unknown
             }
         case let error as TransportError:
             switch error {

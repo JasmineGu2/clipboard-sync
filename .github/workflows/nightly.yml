@@ -28,6 +28,7 @@ jobs:
         run: |
           swift run -c release ConvergenceHarness --seeds 20000 --start ${{ github.run_number }}000000 2>&1 | tee harness-output.txt
           swift run -c release ConvergenceHarness --seeds 5000 --start ${{ github.run_number }}500000 --expiry deleteOps 2>&1 | tee -a harness-output.txt
+          swift run -c release ConvergenceHarness --seeds 5000 --start ${{ github.run_number }}700000 --revoke repushAll 2>&1 | tee -a harness-output.txt
       - name: Upload output
         if: always()
         uses: actions/upload-artifact@v4

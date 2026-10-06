@@ -36,6 +36,19 @@ public enum ExpiryMode: String, CaseIterable, Sendable {
     case hideLocally
 }
 
+/// What happens when one device is revoked mid-run (F13). The relay wipes its log and starts a new epoch, the
+/// revoked device can no longer push or pull, and each remaining device notices on its next request.
+public enum RevokeMode: String, CaseIterable, Sendable {
+    /// No revoke. The default, so seeds without it replay exactly as before it existed.
+    case off
+    /// What SyncEngine does: a remaining device queues every op it holds for push again and pulls from 0
+    /// (`markAllOutbound` on the epoch change). Should converge.
+    case repushAll
+    /// Broken on purpose: remaining devices only reset their cursor and push what was still queued, so ops that
+    /// lived only on the wiped relay never come back. Proves the harness catches a lossy revoke.
+    case resetCursorOnly
+}
+
 public struct HarnessConfig: Sendable {
     public var seed: UInt64
     /// Number of devices, 2...5. nil picks one from the seed.
@@ -68,6 +81,8 @@ public struct HarnessConfig: Sendable {
     /// Simulated time moves 0–2 ms per step, so this is a few hundred steps.
     public var expiryAfterMillis: UInt64 = 100
 
+    public var revoke: RevokeMode = .off
+
     public init(seed: UInt64, devices: Int? = nil, steps: Int = 400) {
         self.seed = seed
         self.devices = devices
@@ -90,6 +105,9 @@ public struct HarnessStats: Equatable, Sendable {
     public var healRounds = 0
     public var expirySweeps = 0
     public var expiredItems = 0
+    public var revokes = 0
+    /// Remaining devices that noticed the revoke and recovered.
+    public var revokeRecoveries = 0
 
     public var drops: Int { pushRequestDrops + pushResponseDrops + pullResponseDrops }
 
@@ -110,6 +128,8 @@ public struct HarnessStats: Equatable, Sendable {
         s.healRounds = a.healRounds + b.healRounds
         s.expirySweeps = a.expirySweeps + b.expirySweeps
         s.expiredItems = a.expiredItems + b.expiredItems
+        s.revokes = a.revokes + b.revokes
+        s.revokeRecoveries = a.revokeRecoveries + b.revokeRecoveries
         return s
     }
 }

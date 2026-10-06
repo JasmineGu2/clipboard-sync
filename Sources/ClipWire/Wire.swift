@@ -86,12 +86,88 @@ public struct PairingBlob: Codable, Sendable {
 }
 
 /// POST /v1/auth/rotate   (bearer token required: the CURRENT token; 204 on success)
-/// Replaces the relay's stored token hash. Used for revocation (design §3): after making a new vault key,
-/// a remaining device sends SHA-256(new token) here, and the old token stops working at once.
+/// Replaces the relay's stored token hash, and nothing else. Clients revoke with `POST /v1/auth/revoke` instead
+/// (`RevokeRequest`), which also wipes the log and hands the new vault key to the remaining devices.
 public struct RotateTokenRequest: Codable, Sendable, Equatable {
     /// SHA-256 of the new bearer token, 64 hex characters. The token itself never leaves the device.
     public var newTokenSHA256: String
     public init(newTokenSHA256: String) { self.newTokenSHA256 = newTokenSHA256 }
+}
+
+// MARK: - Devices and revocation (F13, design §3)
+
+/// One device in the vault, as the relay stores it.
+/// PUT /v1/devices/<deviceID>   (bearer token; 204. 409 if the relay already holds a different public key for
+///                               this ID, 429 when it holds `WireLimits.maxDevices` records.)
+/// GET /v1/devices              (bearer token; `DeviceListResponse`)
+public struct DeviceRecord: Codable, Hashable, Sendable {
+    public var deviceID: String
+    /// The device's X25519 public key, 32 bytes. Public, so it travels in the clear; the relay uses it only to
+    /// refuse a second key for the same device ID.
+    public var publicKey: Data
+    /// The device's name, AES-GCM sealed under a key derived from the vault key, with the device ID and public key
+    /// as associated data. The relay can't read it, and can't pair a name with a key it chose.
+    public var sealed: Data
+
+    public init(deviceID: String, publicKey: Data, sealed: Data) {
+        self.deviceID = deviceID
+        self.publicKey = publicKey
+        self.sealed = sealed
+    }
+}
+
+public struct DeviceListResponse: Codable, Sendable {
+    public var devices: [DeviceRecord]
+    public init(devices: [DeviceRecord]) { self.devices = devices }
+}
+
+/// A new vault key sealed to one remaining device (HPKE, see ClipCrypto `RekeyHandoff`).
+public struct Handoff: Codable, Hashable, Sendable {
+    public var deviceID: String
+    public var blob: Data
+    public init(deviceID: String, blob: Data) {
+        self.deviceID = deviceID
+        self.blob = blob
+    }
+}
+
+/// POST /v1/auth/revoke   (bearer token: the CURRENT one; 200 with `RevokeResponse`)
+/// In one transaction the relay: replaces its token hash with `newTokenSHA256`, deletes every envelope and pending
+/// pairing, starts a new epoch, replaces the device table with `devices`, drops handoffs for devices no longer
+/// listed, and appends `handoffs`. Devices left out of `devices` are revoked: the old token gets 401 from then on.
+public struct RevokeRequest: Codable, Sendable, Equatable {
+    public var newTokenSHA256: String
+    /// The devices that stay, their names sealed under the new vault key.
+    public var devices: [DeviceRecord]
+    /// The new vault key for each device that stays, this one included (so a crash before it saves the key is
+    /// recoverable).
+    public var handoffs: [Handoff]
+    /// Every device ID the revoker saw in the list, revoked ones included. When set, the relay answers 409 and
+    /// changes nothing if its list differs, so a device that registered meanwhile isn't silently dropped.
+    public var expectedDeviceIDs: [String]?
+
+    public init(
+        newTokenSHA256: String, devices: [DeviceRecord], handoffs: [Handoff], expectedDeviceIDs: [String]? = nil
+    ) {
+        self.newTokenSHA256 = newTokenSHA256
+        self.devices = devices
+        self.handoffs = handoffs
+        self.expectedDeviceIDs = expectedDeviceIDs
+    }
+}
+
+public struct RevokeResponse: Codable, Sendable, Equatable {
+    /// The relay's new epoch. Every device that sees it re-pushes all its ops under the new key.
+    public var epoch: String
+    public init(epoch: String) { self.epoch = epoch }
+}
+
+/// GET /v1/rekey/<deviceID>   (no token: the device's old token stopped working. Each blob is sealed to that
+///                             device's own key, so it's useless to anyone else. Oldest first; 200 with an empty
+///                             list when there are none.)
+public struct HandoffsResponse: Codable, Sendable {
+    public var handoffs: [Data]
+    public init(handoffs: [Data]) { self.handoffs = handoffs }
 }
 
 public enum WireHeaders {
@@ -117,6 +193,21 @@ public enum WireLimits {
     /// opID, itemID and deviceID: 1...128 UTF-8 bytes, no NUL or other control characters.
     public static let maxIDBytes = 128
     public static let maxWaitSeconds = 30
+    /// Most device records a relay holds (PUT /v1/devices beyond it gets 429; a revoke may list no more).
+    public static let maxDevices = 64
+    /// X25519 public keys are 32 bytes.
+    public static let devicePublicKeyBytes = 32
+    /// A sealed device name: nonce + JSON of a name up to a few hundred bytes + tag.
+    public static let maxSealedDeviceBytes = 2048
+    /// One handoff: HPKE encapsulated key (32) + sealed vault key (32) + tag (16) = 80 bytes; room to spare.
+    public static let maxHandoffBytes = 512
+    /// Handoffs kept per device, oldest dropped first. A device offline through more revocations than this
+    /// has to pair again.
+    public static let maxHandoffsPerDevice = 8
+    /// PUT /v1/devices body cap, checked before decoding.
+    public static let maxDeviceBodyBytes = 8 * 1024
+    /// POST /v1/auth/revoke body cap: `maxDevices` records and handoffs as base64 JSON fit well under it.
+    public static let maxRevokeBodyBytes = 512 * 1024
 }
 
 extension WireLimits {

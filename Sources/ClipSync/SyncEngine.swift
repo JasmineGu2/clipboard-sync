@@ -8,6 +8,9 @@ public enum SyncStatus: Equatable, Sendable {
     case idle
     case syncing
     case offline(lastError: String)
+    /// The relay refused this device's key and no other device left it a new one: it was removed from the vault
+    /// (F13), or the relay's token was changed by hand. Syncing has stopped.
+    case revoked
 }
 
 public enum SyncError: Error, Equatable, Sendable {
@@ -25,6 +28,17 @@ public enum SyncError: Error, Equatable, Sendable {
     case pairingDecryptionFailed
     /// An expiry sweep found the same items twice: the local deletes didn't take.
     case expiryStalled
+    /// F13: the relay refused this device's key and there was no new key for it. See `SyncStatus.revoked`.
+    case deviceRevoked
+    /// F13: a device can't remove itself.
+    case cannotRevokeThisDevice
+    /// F13: the device to remove isn't in the vault's device list.
+    case unknownDevice
+    /// F13: this device isn't in the vault's device list yet (it hasn't synced since it got the device list),
+    /// so it can't hand out a new key.
+    case notRegistered
+    /// F13: the engine was made without a device key (tests, the one-shot share extension).
+    case membershipUnavailable
 }
 
 /// Records local changes as ops, pushes them, pulls everyone else's, and keeps the local database current.
@@ -32,23 +46,28 @@ public enum SyncError: Error, Equatable, Sendable {
 public actor SyncEngine {
     public nonisolated let device: DeviceID
     public let deviceName: String
-    public private(set) var status: SyncStatus = .idle
+    public internal(set) var status: SyncStatus = .idle
     public private(set) var lastSyncedAt: Date?
 
     /// Fires after local records and after remote ops are applied. Single consumer (the UI).
     public nonisolated let changes: AsyncStream<Void>
 
     private let db: ClipDatabase
-    private let cipher: OpCipher
-    private let transport: any SyncTransport
+    // Vars because a revoke (F13) swaps the vault key, and with it the cipher and the token. See Revocation.swift.
+    var vaultKey: VaultKey
+    var cipher: OpCipher
+    var transport: any SyncTransport
+    let membership: Membership?
+    /// The token hash this device last registered its record under; nil means register on the next sync.
+    var registeredUnder: String?
     private let now: @Sendable () -> Date
-    private let log: @Sendable (String) -> Void
+    let log: @Sendable (String) -> Void
     private let changesContinuation: AsyncStream<Void>.Continuation
     private var clock: HybridClock
     /// Highest timestamp issued or observed; persisted so the clock survives restarts.
     private var highWater: (wall: UInt64, counter: UInt32)
 
-    private var syncTask: Task<Void, Error>?
+    var syncTask: Task<Void, Error>?
     private var longPollTask: Task<PullResponse, Error>?
     private var wakePending = false
     /// How the current sync already recovered from a relay reset, if it did. At most one recovery per sync.
@@ -76,9 +95,12 @@ public actor SyncEngine {
         device: DeviceID,
         deviceName: String,
         now: @escaping @Sendable () -> Date = { Date() },
-        log: @escaping @Sendable (String) -> Void = SyncEngine.logToStandardError
+        log: @escaping @Sendable (String) -> Void = SyncEngine.logToStandardError,
+        membership: Membership? = nil
     ) throws {
         self.db = db
+        self.vaultKey = vaultKey
+        self.membership = membership
         self.cipher = OpCipher(vaultKey: vaultKey)
         self.transport = transport
         self.device = device
@@ -180,7 +202,7 @@ public actor SyncEngine {
     /// Pushes every pending op, then pulls until caught up. Concurrent calls run one after another.
     public func syncOnce() async throws {
         while let running = syncTask { _ = await running.result }
-        let task = Task { try await self.performSync() }
+        let task = Task { try await self.performSyncRecoveringKey() }
         syncTask = task
         defer { syncTask = nil }
         try await withTaskCancellationHandler {
@@ -190,10 +212,11 @@ public actor SyncEngine {
         }
     }
 
-    private func performSync() async throws {
+    func performSync() async throws {
         status = .syncing
         resetInSync = .none
         do {
+            try await registerIfNeeded()
             try await pushPending()
             while true {
                 try Task.checkCancellation()
@@ -388,6 +411,10 @@ public actor SyncEngine {
                 try await longPoll()
             } catch {
                 if Task.isCancelled { break }
+                if case SyncError.deviceRevoked = error {
+                    log("this device was removed from the vault (the relay refused its key); sync stopped")
+                    break
+                }
                 failures += 1
                 let delay = Self.backoff(failures: failures)
                 log("sync failed (attempt \(failures)), retrying in \(String(format: "%.1f", delay)) s: \(error)")
@@ -408,6 +435,7 @@ public actor SyncEngine {
 
     private func longPoll() async throws {
         let cursor = try db.syncCursor()
+        let keyAtStart = vaultKey
         let transport = self.transport
         let task = Task {
             try await transport.pull(after: cursor, limit: WireLimits.defaultPullLimit, wait: Self.longPollWait)
@@ -430,6 +458,9 @@ public actor SyncEngine {
             if wakePending, !Task.isCancelled { return }
             throw error
         }
+        // A revoke swapped the key while this poll waited: the page is from the old relay log. Drop it; the next
+        // syncOnce handles the new epoch.
+        guard vaultKey == keyAtStart else { return }
         if let epoch = page.epoch, let stored = try changedEpoch(epoch) {
             // Same as cursorAhead: queue everything; the next syncOnce pushes it and pulls from 0.
             try recoverFromEpochChange(from: stored, to: epoch)
@@ -440,7 +471,7 @@ public actor SyncEngine {
     }
 
     /// Ends a pending long-poll so the run loop pushes right away.
-    private func wake() {
+    func wake() {
         wakePending = true
         longPollTask?.cancel()
     }

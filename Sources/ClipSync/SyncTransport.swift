@@ -14,6 +14,17 @@ public protocol SyncTransport: Sendable {
     func putPairing(id: String, blob: Data) async throws
     /// GET /v1/pairing/<id>, no token. Returns the blob once, then it's gone; nil if missing or expired.
     func takePairing(id: String) async throws -> Data?
+
+    // F13: devices and revocation (design §3).
+
+    /// PUT /v1/devices/<id>. `.conflict` when the relay holds another public key for this device ID.
+    func putDevice(_ record: DeviceRecord) async throws
+    /// GET /v1/devices.
+    func listDevices() async throws -> [DeviceRecord]
+    /// POST /v1/auth/revoke with the current token. Returns the relay's new epoch.
+    func revoke(_ request: RevokeRequest) async throws -> RevokeResponse
+    /// GET /v1/rekey/<deviceID>, no token. Handoff blobs for this device, oldest first.
+    func handoffs(deviceID: String) async throws -> [Data]
 }
 
 public enum TransportError: Error, Equatable, Sendable, CustomStringConvertible {

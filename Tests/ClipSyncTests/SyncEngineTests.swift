@@ -794,6 +794,10 @@ actor AlwaysAheadRelay: SyncTransport {
 
     func putPairing(id: String, blob: Data) async throws {}
     func takePairing(id: String) async throws -> Data? { nil }
+    func putDevice(_ record: DeviceRecord) async throws {}
+    func listDevices() async throws -> [DeviceRecord] { [] }
+    func revoke(_ request: RevokeRequest) async throws -> RevokeResponse { throw TransportError.notFound }
+    func handoffs(deviceID: String) async throws -> [Data] { [] }
 }
 
 actor Flag {

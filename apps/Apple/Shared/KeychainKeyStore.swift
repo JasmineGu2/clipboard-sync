@@ -16,6 +16,9 @@ struct KeychainKeyStore: KeyStore {
         self.accessGroup = accessGroup
     }
 
+    /// F13: this device's own key pair, a second item next to the vault key with the same protection.
+    static let deviceKeyAccount = "device-key"
+
     /// The store each target uses. `ClipSyncKeychainGroup` in Info.plist is
     /// `$(AppIdentifierPrefix)dev.jazz.clipsync.shared` on iOS (app and extension) and absent on macOS.
     static var appDefault: KeychainKeyStore {
@@ -52,7 +55,9 @@ struct KeychainKeyStore: KeyStore {
         }
     }
 
-    private var baseQuery: [String: Any] {
+    private var baseQuery: [String: Any] { query(account: account) }
+
+    private func query(account: String) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -68,8 +73,24 @@ struct KeychainKeyStore: KeyStore {
     }
 
     func loadVaultKey() throws -> VaultKey? {
+        try load(account: account).map { try VaultKey(rawBytes: $0) }
+    }
+
+    func saveVaultKey(_ key: VaultKey) throws {
+        try save(key.rawBytes, account: account)
+    }
+
+    func loadDeviceKey() throws -> DeviceKey? {
+        try load(account: Self.deviceKeyAccount).map { try DeviceKey(rawBytes: $0) }
+    }
+
+    func saveDeviceKey(_ key: DeviceKey) throws {
+        try save(key.rawBytes, account: Self.deviceKeyAccount)
+    }
+
+    private func load(account: String) throws -> Data? {
         try checkAccessGroup()
-        var query = baseQuery
+        var query = query(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
@@ -77,7 +98,7 @@ struct KeychainKeyStore: KeyStore {
         switch status {
         case errSecSuccess:
             guard let data = result as? Data else { throw KeychainError(status: errSecDecode) }
-            return try VaultKey(rawBytes: data)
+            return data
         case errSecItemNotFound:
             return nil
         default:
@@ -85,18 +106,19 @@ struct KeychainKeyStore: KeyStore {
         }
     }
 
-    func saveVaultKey(_ key: VaultKey) throws {
+    private func save(_ data: Data, account: String) throws {
         try checkAccessGroup()
+        let base = query(account: account)
         let attributes: [String: Any] = [
-            kSecValueData as String: key.rawBytes,
+            kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
-        let updateStatus = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
+        let updateStatus = SecItemUpdate(base as CFDictionary, attributes as CFDictionary)
         switch updateStatus {
         case errSecSuccess:
             return
         case errSecItemNotFound:
-            let addQuery = baseQuery.merging(attributes) { _, new in new }
+            let addQuery = base.merging(attributes) { _, new in new }
             let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
             guard addStatus == errSecSuccess else { throw KeychainError(status: addStatus) }
         default:

@@ -91,6 +91,10 @@ struct Watch: AsyncParsableCommand {
         #endif
         while !stop.isSet {
             if let deadline, Date() >= deadline { break }
+            if await engine.status == .revoked {
+                say("This device was removed from the vault, so it no longer syncs. Pair it again to use it.")
+                break
+            }
             try? await Task.sleep(for: Self.pollInterval)
             #if os(Windows)
             // Only when nothing new was copied here since the last check: otherwise capture that first (below),

@@ -6,6 +6,7 @@ struct HistoryView: View {
     let app: ClipApp
 
     @State private var showingPair = false
+    @State private var showingDevices = false
     @State private var renaming: ClipItem?
     @State private var renameText = ""
     @State private var tagging: ClipItem?
@@ -46,10 +47,19 @@ struct HistoryView: View {
             .refreshable { await history.syncNow() }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showingPair = true
+                    Menu {
+                        Button {
+                            showingPair = true
+                        } label: {
+                            Label(Strings.menuPairDevice, systemImage: "iphone.and.arrow.forward")
+                        }
+                        Button {
+                            showingDevices = true
+                        } label: {
+                            Label(Strings.menuDevices, systemImage: "laptopcomputer.and.iphone")
+                        }
                     } label: {
-                        Label(Strings.menuPairDevice, systemImage: "iphone.and.arrow.forward")
+                        Label(Strings.devicesTitle, systemImage: "laptopcomputer.and.iphone")
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -70,6 +80,10 @@ struct HistoryView: View {
             .sheet(isPresented: $showingPair) {
                 PairView(app: app) { showingPair = false }
                     .presentationDetents([.medium])
+            }
+            .sheet(isPresented: $showingDevices) {
+                DevicesView(app: app) { showingDevices = false }
+                    .presentationDetents([.medium, .large])
             }
             // `presenting:` hands the item to the buttons. Reading `renaming` there instead would see nil:
             // the alert clears the binding before the button action runs.

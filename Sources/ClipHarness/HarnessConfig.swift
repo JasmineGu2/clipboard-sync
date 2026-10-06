@@ -62,6 +62,23 @@ public enum RevokeMode: String, CaseIterable, Sendable {
     case resetCursorOnly
 }
 
+/// Images and files across a revoke (F13 x F11/F12). Only matters with both `--revoke` and `--blob-gc` on: then
+/// each device holds the blobs it created or downloaded, a push uploads a create op's blob only if the pusher holds
+/// it, each blob on the relay remembers which vault key sealed it, and the final check asks that every visible item
+/// whose blob a remaining device holds is on the relay under the current key, and that nothing on the relay is
+/// still under the old one.
+public enum RevokeBlobMode: String, CaseIterable, Sendable {
+    /// What the relay and SyncEngine do: the revoke wipes relay blobs with the log, and a recovering device
+    /// re-uploads every blob it holds (`markAllOutbound` queues them) under the new key. Should pass.
+    case reuploadHeld
+    /// Broken on purpose: the revoke keeps relay blobs. Chunks are never overwritten, so re-uploads under the new
+    /// key are ignored and remaining devices can't open what's there (and a leaked backup still opens with the
+    /// old key).
+    case keepRelayBlobs
+    /// Broken on purpose: the relay wipes blobs but devices re-push only ops, so blobs they hold are lost.
+    case opsOnly
+}
+
 public struct HarnessConfig: Sendable {
     public var seed: UInt64
     /// Number of devices, 2...5. nil picks one from the seed.
@@ -98,6 +115,10 @@ public struct HarnessConfig: Sendable {
     /// Per step, when blobs are on: chance one online device runs a blob garbage-collection sweep.
     public var blobGCSweepRate: Double = 0.03
     public var revoke: RevokeMode = .off
+    /// Used only when `revoke` and `blobGC` are both on.
+    public var revokeBlobs: RevokeBlobMode = .reuploadHeld
+    /// Per pulled image or file item, when `revokeBlobs` applies: chance the device downloads its blob.
+    public var blobFetchRate: Double = 0.3
 
     public init(seed: UInt64, devices: Int? = nil, steps: Int = 400) {
         self.seed = seed
@@ -126,6 +147,9 @@ public struct HarnessStats: Equatable, Sendable {
     public var revokes = 0
     /// Remaining devices that noticed the revoke and recovered.
     public var revokeRecoveries = 0
+    /// With `revokeBlobs`: blobs devices downloaded, and blobs uploaded after the revoke (re-uploads and new ones).
+    public var blobFetches = 0
+    public var blobReuploads = 0
 
     public var drops: Int { pushRequestDrops + pushResponseDrops + pullResponseDrops }
 
@@ -150,6 +174,8 @@ public struct HarnessStats: Equatable, Sendable {
         s.blobsCollected = a.blobsCollected + b.blobsCollected
         s.revokes = a.revokes + b.revokes
         s.revokeRecoveries = a.revokeRecoveries + b.revokeRecoveries
+        s.blobFetches = a.blobFetches + b.blobFetches
+        s.blobReuploads = a.blobReuploads + b.blobReuploads
         return s
     }
 }

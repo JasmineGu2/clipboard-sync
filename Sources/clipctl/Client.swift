@@ -126,7 +126,9 @@ func describe(_ error: any Error) -> String {
         switch error {
         case .notABlobItem: return "that item is text, not an image or file"
         case .noLocalCopy: return "this device has no copy of that file"
-        case .notUploadedYet(let chunk): return "the sending device hasn't uploaded it yet (chunk \(chunk)); try again later"
+        case .notUploadedYet(let chunk):
+            return "the relay doesn't have it (chunk \(chunk)): the sending device hasn't uploaded it yet, or it was "
+                + "removed from the vault before any other device downloaded it; try again later"
         case .relayCountMismatch: return "the relay holds a different blob under that ID"
         case .invalidBlobRef: return "the item's file reference is outside the limits"
         case .corruptChunk(let index): return "chunk \(index) didn't decrypt: tampered with or corrupted on the relay"

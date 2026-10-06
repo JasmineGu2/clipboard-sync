@@ -15,6 +15,7 @@ struct Options {
     var expiry = ExpiryMode.off
     var blobGC = BlobGCMode.off
     var revoke = RevokeMode.off
+    var revokeBlobs = RevokeBlobMode.reuploadHeld
 
     func config(seed: UInt64) -> HarnessConfig {
         var c = HarnessConfig(seed: seed, devices: devices, steps: steps)
@@ -24,6 +25,7 @@ struct Options {
         c.expiry = expiry
         c.blobGC = blobGC
         c.revoke = revoke
+        c.revokeBlobs = revokeBlobs
         return c
     }
 
@@ -37,6 +39,7 @@ struct Options {
         if expiry != .off { s += " --expiry \(expiry.rawValue)" }
         if blobGC != .off { s += " --blob-gc \(blobGC.rawValue)" }
         if revoke != .off { s += " --revoke \(revoke.rawValue)" }
+        if revokeBlobs != .reuploadHeld { s += " --revoke-blobs \(revokeBlobs.rawValue)" }
         return s
     }
 }
@@ -49,6 +52,8 @@ func usage() -> Never {
                [--expiry \(ExpiryMode.allCases.map(\.rawValue).joined(separator: "|"))]
                [--blob-gc \(BlobGCMode.allCases.map(\.rawValue).joined(separator: "|"))]
                [--revoke \(RevokeMode.allCases.map(\.rawValue).joined(separator: "|"))]
+               [--revoke-blobs \(RevokeBlobMode.allCases.map(\.rawValue).joined(separator: "|"))]
+                 (images and files across the revoke; needs --revoke and --blob-gc)
         """)
     exit(2)
 }
@@ -89,6 +94,9 @@ func parseOptions(_ args: [String]) -> Options {
         case "--revoke":
             guard let raw = it.next(), let r = RevokeMode(rawValue: raw) else { usage() }
             options.revoke = r
+        case "--revoke-blobs":
+            guard let raw = it.next(), let r = RevokeBlobMode(rawValue: raw) else { usage() }
+            options.revokeBlobs = r
         case "--help", "-h": usage()
         default:
             print("unknown argument \(arg)")
@@ -96,6 +104,10 @@ func parseOptions(_ args: [String]) -> Options {
         }
     }
     guard options.seeds > 0, options.steps >= 0 else { usage() }
+    if options.revokeBlobs != .reuploadHeld, options.revoke == .off || options.blobGC == .off {
+        print("--revoke-blobs needs --revoke and --blob-gc")
+        usage()
+    }
     return options
 }
 
@@ -129,6 +141,8 @@ print("\(converged)/\(options.seeds) seeds converged (ops=\(total.ops), pushes=\
     + (options.expiry == .off ? "" : ", expiry sweeps=\(total.expirySweeps), expired=\(total.expiredItems)")
     + (options.blobGC == .off ? "" : ", blob GC sweeps=\(total.blobGCSweeps), blobs collected=\(total.blobsCollected)")
     + (options.revoke == .off ? "" : ", revokes=\(total.revokes), recoveries=\(total.revokeRecoveries)")
+    + (options.revoke == .off || options.blobGC == .off ? ""
+        : ", blob fetches=\(total.blobFetches), uploads after revoke=\(total.blobReuploads)")
     + ") in \(String(format: "%.1f", seconds))s")
 
 if let first = failures.first, let failure = first.failure {

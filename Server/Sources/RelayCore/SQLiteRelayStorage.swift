@@ -229,10 +229,12 @@ public actor SQLiteRelayStorage: RelayStorage {
     // MARK: Blobs
 
     public func putBlobChunk(
-        blobID: String, index: Int, count: Int, data: Data, now: Int64, maxTotalBytes: Int64
+        blobID: String, index: Int, count: Int, data: Data, now: Int64, maxTotalBytes: Int64,
+        requiringTokenHash tokenHash: String?
     ) throws -> BlobChunkPutResult {
         var result = BlobChunkPutResult.stored
         try transaction {
+            try checkToken(tokenHash)
             let existing = try Statement(db, "SELECT chunk_count FROM blobs WHERE blob_id = ?")
             try existing.bind(1, blobID)
             if try existing.step() {
@@ -267,7 +269,11 @@ public actor SQLiteRelayStorage: RelayStorage {
         return result
     }
 
-    public func blobStatus(blobID: String) throws -> (chunkCount: Int, received: [Int])? {
+    public func blobStatus(
+        blobID: String, requiringTokenHash tokenHash: String?
+    ) throws -> (chunkCount: Int, received: [Int])? {
+        // Reads need no transaction for the check: this actor runs one storage call at a time, revokes included.
+        try checkToken(tokenHash)
         let blob = try Statement(db, "SELECT chunk_count FROM blobs WHERE blob_id = ?")
         try blob.bind(1, blobID)
         guard try blob.step() else { return nil }
@@ -279,7 +285,8 @@ public actor SQLiteRelayStorage: RelayStorage {
         return (count, received)
     }
 
-    public func blobChunk(blobID: String, index: Int) throws -> Data? {
+    public func blobChunk(blobID: String, index: Int, requiringTokenHash tokenHash: String?) throws -> Data? {
+        try checkToken(tokenHash)
         let query = try Statement(db, "SELECT data FROM blob_chunks WHERE blob_id = ? AND idx = ?")
         try query.bind(1, blobID)
         try query.bind(2, Int64(index))
@@ -287,13 +294,21 @@ public actor SQLiteRelayStorage: RelayStorage {
         return query.blob(0)
     }
 
-    public func deleteBlob(blobID: String) throws {
+    public func deleteBlob(blobID: String, requiringTokenHash tokenHash: String?) throws {
         try transaction {
+            try checkToken(tokenHash)
             for sql in ["DELETE FROM blob_chunks WHERE blob_id = ?", "DELETE FROM blobs WHERE blob_id = ?"] {
                 let delete = try Statement(db, sql)
                 try delete.bind(1, blobID)
                 _ = try delete.step()
             }
+        }
+    }
+
+    /// Throws `AuthChanged` when `tokenHash` is set and isn't the stored auth hash any more (a revoke landed).
+    private func checkToken(_ tokenHash: String?) throws {
+        if let tokenHash, let stored = try readMeta(Self.authTokenKey), stored != tokenHash {
+            throw AuthChanged()
         }
     }
 
@@ -409,7 +424,12 @@ public actor SQLiteRelayStorage: RelayStorage {
             }
             try writeMeta(Self.authTokenKey, newTokenHash)
             try writeMeta(Self.epochKey, newEpoch)
-            try Self.exec(db, "DELETE FROM envelopes; DELETE FROM pairing; DELETE FROM devices;")
+            // Image and file blobs go too: they're sealed under the old vault key, and a chunk is never overwritten,
+            // so a remaining device's re-upload under the new key would otherwise be ignored.
+            try Self.exec(db, """
+                DELETE FROM envelopes; DELETE FROM pairing; DELETE FROM devices;
+                DELETE FROM blob_chunks; DELETE FROM blobs;
+                """)
             let put = try Statement(db, "INSERT OR REPLACE INTO devices(device_id, public_key, sealed) VALUES(?, ?, ?)")
             for record in devices {
                 try put.reset()

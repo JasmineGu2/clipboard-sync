@@ -70,16 +70,23 @@ public protocol RelayStorage: Actor {
     /// Returns the blob once and deletes it. nil when missing or expired.
     func takePairing(id: String, now: Int64) throws -> Data?
 
+    // Every blob method takes the token hash its request was authorized with and refuses (`AuthChanged`) when the
+    // stored hash differs, checked in the same storage call: a request authorized just before a revoke must not
+    // touch blobs after it. An upload that slipped through would plant a chunk under the old vault key, and since
+    // the first copy of a chunk is kept, the re-upload under the new key would be ignored. nil skips the check.
+
     /// Stores one sealed blob chunk. The first chunk of a blob fixes its chunk count. Refuses (`.full`) when the
     /// blob bytes stored would pass `maxTotalBytes`.
-    func putBlobChunk(blobID: String, index: Int, count: Int, data: Data, now: Int64, maxTotalBytes: Int64) throws
-        -> BlobChunkPutResult
+    func putBlobChunk(
+        blobID: String, index: Int, count: Int, data: Data, now: Int64, maxTotalBytes: Int64,
+        requiringTokenHash tokenHash: String?
+    ) throws -> BlobChunkPutResult
     /// The blob's chunk count and the indexes stored, ascending; nil when no chunk of it is stored.
-    func blobStatus(blobID: String) throws -> (chunkCount: Int, received: [Int])?
+    func blobStatus(blobID: String, requiringTokenHash tokenHash: String?) throws -> (chunkCount: Int, received: [Int])?
     /// One stored chunk's bytes, or nil.
-    func blobChunk(blobID: String, index: Int) throws -> Data?
+    func blobChunk(blobID: String, index: Int, requiringTokenHash tokenHash: String?) throws -> Data?
     /// Removes a blob and all its chunks. Removing a missing blob is not an error.
-    func deleteBlob(blobID: String) throws
+    func deleteBlob(blobID: String, requiringTokenHash tokenHash: String?) throws
     /// Total bytes of every stored chunk.
     func blobBytesStored() throws -> Int64
 
@@ -102,7 +109,8 @@ public protocol RelayStorage: Actor {
     func devices() throws -> [DeviceRecord]
     /// Handoff blobs for one device, oldest first.
     func handoffs(deviceID: String) throws -> [Data]
-    /// Revocation, in one transaction: stores `newTokenHash`, deletes every envelope and pairing blob, makes a new
+    /// Revocation, in one transaction: stores `newTokenHash`, deletes every envelope, pairing blob and image or file
+    /// blob (all sealed under the old vault key; remaining devices re-upload what they hold), makes a new
     /// epoch, replaces the device table with `devices`, deletes handoffs for devices not in it, appends `handoffs`,
     /// and keeps at most `maxHandoffsPerDevice` per device (the newest). Returns the new epoch.
     /// With `expectedDeviceIDs`, throws `DeviceListChanged` (and changes nothing) unless the stored device IDs are
@@ -111,6 +119,29 @@ public protocol RelayStorage: Actor {
         newTokenHash: String, devices: [DeviceRecord], handoffs: [Handoff], maxHandoffsPerDevice: Int,
         expectedDeviceIDs: [String]?
     ) throws -> String
+}
+
+extension RelayStorage {
+    /// The blob methods without a token check, for tests and tools that talk to storage directly.
+    public func putBlobChunk(
+        blobID: String, index: Int, count: Int, data: Data, now: Int64, maxTotalBytes: Int64
+    ) throws -> BlobChunkPutResult {
+        try putBlobChunk(
+            blobID: blobID, index: index, count: count, data: data, now: now, maxTotalBytes: maxTotalBytes,
+            requiringTokenHash: nil)
+    }
+
+    public func blobStatus(blobID: String) throws -> (chunkCount: Int, received: [Int])? {
+        try blobStatus(blobID: blobID, requiringTokenHash: nil)
+    }
+
+    public func blobChunk(blobID: String, index: Int) throws -> Data? {
+        try blobChunk(blobID: blobID, index: index, requiringTokenHash: nil)
+    }
+
+    public func deleteBlob(blobID: String) throws {
+        try deleteBlob(blobID: blobID, requiringTokenHash: nil)
+    }
 }
 
 /// The auth hash changed between a request's auth check and its write (a revoke landed in between).

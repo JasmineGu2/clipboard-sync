@@ -18,16 +18,28 @@ struct SimRelay {
     private(set) var log: [Entry] = []
     /// Blobs the relay holds: a create op's blob arrives with the op and leaves only by garbage collection.
     var blobs: Set<BlobID> = []
+    /// Which vault key generation sealed each blob in `blobs` (entries for blobs no longer held mean nothing).
+    /// Only tracked with `RevokeBlobMode`; the first upload of a blob wins, like the relay's first-copy rule.
+    var blobGeneration: [BlobID: Int] = [:]
     private var known: Set<OpID> = []
 
     var latestSeq: Int64 { log.last?.seq ?? 0 }
 
-    /// Returns how many ops were new.
-    mutating func append(_ ops: [Op]) -> Int {
+    /// Returns how many ops were new. A new create op's blob lands with it. With `uploads` (RevokeBlobMode), a
+    /// create op's blob lands only when `uploads` says the pusher sends it, also for an op the relay already has:
+    /// the upload is separate from the op, so a re-push can bring a wiped blob back.
+    mutating func append(_ ops: [Op], uploads: ((Op, BlobID) -> Bool)? = nil, generation: Int = 0) -> Int {
         var inserted = 0
-        for op in ops where known.insert(op.id).inserted {
+        for op in ops {
+            let isNew = known.insert(op.id).inserted
+            if case .create(let content) = op.kind, let blob = content.blob,
+               uploads.map({ $0(op, blob.id) }) ?? isNew,
+               blobs.insert(blob.id).inserted
+            {
+                blobGeneration[blob.id] = generation
+            }
+            guard isNew else { continue }
             log.append(Entry(seq: latestSeq + 1, op: op))
-            if case .create(let content) = op.kind, let blob = content.blob { blobs.insert(blob.id) }
             inserted += 1
         }
         return inserted

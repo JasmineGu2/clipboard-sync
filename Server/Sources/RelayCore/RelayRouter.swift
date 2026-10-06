@@ -155,8 +155,11 @@ public func buildRelayRouter(
 
     // MARK: Blobs (F11, F12). The relay stores sealed chunks as sent and never learns which item they belong to.
 
+    // Each route passes the token hash it was authorized with down to storage, which re-checks it in the same
+    // call (like push): a request authorized just before a revoke must not read or write blobs after it.
+
     router.put("v1/blobs/:id/chunks/:index") { request, context -> Response in
-        try await auth.authorize(request)
+        let tokenHash = try await auth.authorize(request)
         let id = try blobID(context)
         let index = try chunkIndex(context)
         guard let raw = request.uri.queryParameters.get("count"), let count = Int(raw),
@@ -169,9 +172,11 @@ public func buildRelayRouter(
         guard body.readableBytes >= WireLimits.blobChunkOverheadBytes else {
             throw HTTPError(.badRequest, message: "a chunk is at least \(WireLimits.blobChunkOverheadBytes) bytes")
         }
-        let result = try await storage.putBlobChunk(
-            blobID: id, index: index, count: count, data: Data(body.readableBytesView), now: config.now(),
-            maxTotalBytes: config.maxBlobStorageBytes)
+        let result = try await refusingChangedToken {
+            try await storage.putBlobChunk(
+                blobID: id, index: index, count: count, data: Data(body.readableBytesView), now: config.now(),
+                maxTotalBytes: config.maxBlobStorageBytes, requiringTokenHash: tokenHash)
+        }
         switch result {
         case .stored, .alreadyStored: return Response(status: .noContent)
         case .countMismatch(let existing):
@@ -181,17 +186,23 @@ public func buildRelayRouter(
     }
 
     router.get("v1/blobs/:id") { request, context -> Response in
-        try await auth.authorize(request)
+        let tokenHash = try await auth.authorize(request)
         let id = try blobID(context)
-        guard let status = try await storage.blobStatus(blobID: id) else { throw HTTPError(.notFound) }
+        let found = try await refusingChangedToken {
+            try await storage.blobStatus(blobID: id, requiringTokenHash: tokenHash)
+        }
+        guard let status = found else { throw HTTPError(.notFound) }
         return try jsonResponse(BlobStatus(blobID: id, chunkCount: status.chunkCount, received: status.received))
     }
 
     router.get("v1/blobs/:id/chunks/:index") { request, context -> Response in
-        try await auth.authorize(request)
+        let tokenHash = try await auth.authorize(request)
         let id = try blobID(context)
         let index = try chunkIndex(context)
-        guard let data = try await storage.blobChunk(blobID: id, index: index) else { throw HTTPError(.notFound) }
+        let found = try await refusingChangedToken {
+            try await storage.blobChunk(blobID: id, index: index, requiringTokenHash: tokenHash)
+        }
+        guard let data = found else { throw HTTPError(.notFound) }
         return Response(
             status: .ok,
             headers: [.contentType: "application/octet-stream"],
@@ -199,8 +210,9 @@ public func buildRelayRouter(
     }
 
     router.delete("v1/blobs/:id") { request, context -> Response in
-        try await auth.authorize(request)
-        try await storage.deleteBlob(blobID: try blobID(context))
+        let tokenHash = try await auth.authorize(request)
+        let id = try blobID(context)
+        try await refusingChangedToken { try await storage.deleteBlob(blobID: id, requiringTokenHash: tokenHash) }
         return Response(status: .noContent)
     }
 
@@ -272,6 +284,16 @@ public func buildRelayRouter(
 }
 
 // MARK: - Helpers
+
+/// Runs a storage call that re-checks the request's token, turning `AuthChanged` (a revoke landed after the
+/// request was authorized) into 401, the answer the request would have got a moment later.
+private func refusingChangedToken<T>(_ body: () async throws -> T) async throws -> T {
+    do {
+        return try await body()
+    } catch is AuthChanged {
+        throw HTTPError(.unauthorized)
+    }
+}
 
 /// Blob IDs are canonical UUID strings, compared as sent (clients send upper case).
 private func blobID(_ context: RelayRequestContext) throws -> String {

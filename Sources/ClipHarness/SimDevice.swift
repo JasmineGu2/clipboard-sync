@@ -47,6 +47,9 @@ struct SimDevice {
     var recentItems: [ItemID] = []
     /// See `DeviceDisk.hidden`. Always empty unless expiry is `.hideLocally`.
     var hidden: Set<ItemID> = []
+    /// Blobs in this device's blob cache: ones it created and ones it downloaded. Cache files are fsynced before
+    /// they're published, so a crash keeps them (BlobCache).
+    var heldBlobs: Set<BlobID> = []
 
     var disk: DeviceDisk
 

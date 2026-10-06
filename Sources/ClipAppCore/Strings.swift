@@ -97,7 +97,7 @@ public enum Strings {
     public static let deviceThis = "This device"
     public static let actionRemoveDevice = "Remove"
     public static let removeDeviceTitle = "Remove {device}?"
-    public static let removeDeviceMessage = "It stops syncing and can't read anything copied from now on. Your other devices switch to a new key the next time they sync. Anything already on it stays there."
+    public static let removeDeviceMessage = "It stops syncing and can't read anything copied from now on. Your other devices switch to a new key the next time they sync. Anything already on it stays there. Images and files that only it had keep their preview but can't be downloaded any more."
     public static let removeDeviceConfirm = "Remove device"
     public static let deviceRemoved = "{device} was removed."
 
@@ -129,7 +129,7 @@ public enum Strings {
     public static let errorNotSetUp = "Open ClipSync and finish setup first."
     public static let errorFileTooLarge = "That file is too large to sync. The limit is {limit}."
     public static let errorUnreadableFile = "Couldn't read that file."
-    public static let errorNotUploadedYet = "This is still uploading from the other device. Try again in a moment."
+    public static let errorNotUploadedYet = "This isn't on the relay yet. Try again in a moment. If the device that sent it was removed, only the preview is left."
     public static let errorDownloadFailed = "The download didn't match what was sent. Try again."
     public static let errorUnknown = "Something went wrong. Try again."
     public static let errorRemovedFromVault = "This device was removed from your vault, so it no longer syncs."

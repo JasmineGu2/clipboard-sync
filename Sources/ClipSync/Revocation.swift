@@ -196,12 +196,19 @@ extension SyncEngine {
     }
 
     /// Saves `key`, then uses it for everything. The epoch change on the next response re-pushes the history.
+    ///
+    /// Blobs too: the relay wiped them with the log, so the epoch change's `markAllOutbound` queues every visible
+    /// item's blob for upload, and the new transferer seals them under the new key. A device without a blob's file
+    /// drops that job; if no remaining device has it, the item keeps its thumbnail and its download says it's
+    /// not on the relay. An upload or download still running on the old transferer gets 401 and is retried.
     private func adopt(_ key: VaultKey, membership: Membership) throws {
         try membership.saveVaultKey(key)
         vaultKey = key
         cipher = OpCipher(vaultKey: key)
         transport = membership.makeTransport(key.authToken)
+        transferer = Self.makeTransferer(cache: blobCache, transport: transport, vaultKey: key, meter: transferMeter)
         registeredUnder = nil
+        wakeBlobs()
     }
 
     /// Puts this device's record on the relay once per vault key, so other devices can hand it a new key.

@@ -504,6 +504,13 @@ struct Revoke: AsyncParsableCommand {
             throw CLIError("Not revoked: \(describe(error))")
         }
         print("revoked \(target.name). This device now uses a new vault key.")
+        // The relay dropped every image and file with the log; send this device's copies again under the new key.
+        do {
+            let sent = try await client.uploadPending()
+            if sent > 0 { print("uploaded \(sent) file\(sent == 1 ? "" : "s") again under the new key") }
+        } catch {
+            warn("re-upload stopped (\(describe(error))); it resumes on the next `clipctl sync` or `watch`")
+        }
         print("Your other devices switch to it the next time they sync. Relay pin is now \(await client.engine.currentVaultKey.authTokenSHA256).")
     }
 

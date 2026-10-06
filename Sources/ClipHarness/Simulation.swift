@@ -43,6 +43,10 @@ struct Simulation {
     private var revoked: Int?
     /// Bumped by each revoke; a device whose disk has an older value recovers on its next request.
     private var relayGeneration = 0
+    /// Ops on the relay when it was revoked: their blobs had been uploaded already (`RevokeBlobMode.opsOnly`).
+    private var opsOnRelayAtRevoke: Set<OpID> = []
+    /// Images and files across a revoke are modelled (see `RevokeBlobMode`).
+    private var modelsRevokeBlobs: Bool { config.revoke != .off && config.blobGC != .off }
 
     // Short labels for traces, and a stable order for random picks (dictionaries iterate in random order).
     private var itemLabels: [ItemID: Int] = [:]
@@ -166,6 +170,7 @@ struct Simulation {
         }
 
         let op = devices[d].record(kind, item: item, opID: OpID(rng.uuid()))
+        if case .create(let content) = kind, let blob = content.blob { devices[d].heldBlobs.insert(blob.id) }
         try noteIssued(op, by: d)
     }
 
@@ -219,6 +224,10 @@ struct Simulation {
     /// Deletes blobs from the relay by the configured rule (see `BlobGCMode`).
     private mutating func blobGCSweep(_ d: Int) {
         guard devices[d].online else { return }
+        if modelsRevokeBlobs {
+            guard d != revoked else { return }  // 401
+            recoverFromRevokeIfNeeded(d)
+        }
         let items = devices[d].store.items.values
         let before = relay.blobs.count
         switch config.blobGC {
@@ -246,7 +255,14 @@ struct Simulation {
             log("\(devices[d].name) push [\(names)] request LOST")
             return
         }
-        let inserted = relay.append(batch)
+        let inserted: Int
+        if modelsRevokeBlobs {
+            let blobsBefore = relay.blobs.count
+            inserted = relay.append(batch, uploads: uploadRule(d), generation: relayGeneration)
+            if revoked != nil { stats.blobReuploads += relay.blobs.count - blobsBefore }
+        } else {
+            inserted = relay.append(batch)
+        }
         stats.duplicatePushes += batch.count - inserted
         if faulty, rng.chance(config.pushResponseDropRate) {
             stats.pushResponseDrops += 1
@@ -270,6 +286,7 @@ struct Simulation {
             return nil
         }
         devices[d].applyPage(page.entries)
+        if modelsRevokeBlobs { fetchBlobs(d, page.entries) }
         let device = devices[d]
         log("\(device.name) pull after=\(before) limit=\(limit) -> [\(page.entries.map { label($0.op) }.joined(separator: ","))]"
             + " cursor=\(device.cursor)\(page.hasMore ? " hasMore" : "")")
@@ -410,7 +427,15 @@ struct Simulation {
         while let page = try pull(r, limit: 50, faulty: false), page.hasMore {}
         revoked = v
         relayGeneration += 1
+        let wiped = relay
         relay = SimRelay()
+        if modelsRevokeBlobs {
+            opsOnRelayAtRevoke = Set(wiped.log.map(\.op.id))
+            if config.revokeBlobs == .keepRelayBlobs {
+                relay.blobs = wiped.blobs
+                relay.blobGeneration = wiped.blobGeneration
+            }
+        }
         stats.revokes += 1
         recoverFromRevokeIfNeeded(r)
     }
@@ -474,6 +499,66 @@ struct Simulation {
         for device in remaining where device.store.items != reference.items || device.store.seenOps != reference.seenOps {
             throw fail("\(device.name) differs from the reference replica: "
                 + diff(device.name, device.store.items, "reference", reference.items))
+        }
+        if modelsRevokeBlobs { try checkBlobsAfterRevoke(remaining) }
+    }
+
+    // MARK: - Images and files across a revoke (RevokeBlobMode)
+
+    /// Whether device `d`'s push of an op sends its blob: only a device holding the file can, and in `opsOnly` a
+    /// blob that was already up before the revoke isn't queued again.
+    private func uploadRule(_ d: Int) -> (Op, BlobID) -> Bool {
+        let held = devices[d].heldBlobs
+        let skip = config.revokeBlobs == .opsOnly ? opsOnRelayAtRevoke : []
+        return { op, blob in held.contains(blob) && !skip.contains(op.id) }
+    }
+
+    /// After a pull, the device downloads some of the new items' blobs. A download works only when the relay has
+    /// the blob under the vault key the device holds now; otherwise it fails (missing, or doesn't decrypt).
+    private mutating func fetchBlobs(_ d: Int, _ entries: [SimRelay.Entry]) {
+        for entry in entries {
+            guard case .create(let content) = entry.op.kind, let blob = content.blob,
+                  !devices[d].heldBlobs.contains(blob.id), rng.chance(config.blobFetchRate)
+            else { continue }
+            guard relay.blobs.contains(blob.id), relay.blobGeneration[blob.id] == relayGeneration else {
+                log("\(devices[d].name) can't fetch the blob of \(label(entry.op.itemID))")
+                continue
+            }
+            devices[d].heldBlobs.insert(blob.id)
+            stats.blobFetches += 1
+        }
+    }
+
+    /// The revoke's promise for blobs: a remaining device that holds a visible item's blob gets it back onto the
+    /// relay under the new key, nothing on the relay is still under the old key, and after a final sweep the relay
+    /// holds exactly the visible items' blobs that some remaining device holds (the rest stay thumbnail-only).
+    private mutating func checkBlobsAfterRevoke(_ remaining: [SimDevice]) throws(HarnessFailure) {
+        var held = Set<BlobID>()
+        for device in remaining { held.formUnion(device.heldBlobs) }
+        let visible = remaining[0].store.items.values.filter(\.isVisible)
+            .sorted { (itemLabels[$0.id] ?? .max) < (itemLabels[$1.id] ?? .max) }
+        for item in visible {
+            guard let blob = item.content?.blob?.id, held.contains(blob) else { continue }
+            let holder = remaining.first { $0.heldBlobs.contains(blob) }?.name ?? "?"
+            guard relay.blobs.contains(blob) else {
+                throw fail("\(holder) holds the blob of visible item \(label(item.id)), but it never came back to the "
+                    + "relay after the revoke")
+            }
+            guard relay.blobGeneration[blob] == relayGeneration else {
+                throw fail("the relay holds the blob of \(label(item.id)) under the old vault key: remaining devices "
+                    + "can't open it, and \(holder)'s re-upload was ignored")
+            }
+        }
+        if let stale = relay.blobs.sorted(by: { $0.description < $1.description })
+            .first(where: { relay.blobGeneration[$0] != relayGeneration })
+        {
+            throw fail("the relay still holds blob \(stale) under the old vault key after the revoke")
+        }
+        for i in devices.indices where i != revoked { blobGCSweep(i) }
+        let wanted = Set(visible.compactMap { $0.content?.blob?.id }).intersection(held)
+        if relay.blobs != wanted {
+            throw fail("after a final sweep the relay holds \(relay.blobs.count) blobs; visible items held by a "
+                + "remaining device use \(wanted.count)")
         }
     }
 

@@ -76,7 +76,9 @@ public actor SyncEngine {
     /// The local copies of image and file payloads (nil: this engine syncs text only).
     public nonisolated let blobCache: BlobCache?
     /// Moves blobs to and from the relay; nil without a blob cache or a transport with blob routes.
-    public nonisolated let transferer: BlobTransferer?
+    /// Replaced when a revoke swaps the vault key (F13): its chunk keys and token come from the key.
+    public internal(set) var transferer: BlobTransferer?
+    let transferMeter: TransferMeter
     private var uploadTask: Task<Int, Error>?
     private var blobWaiter: CheckedContinuation<Void, Never>?
     private var blobWorkPending = false
@@ -118,11 +120,9 @@ public actor SyncEngine {
         self.vaultKey = vaultKey
         self.membership = membership
         self.blobCache = blobCache
-        if let blobCache, let blobTransport = transport as? any BlobTransport {
-            self.transferer = BlobTransferer(cache: blobCache, transport: blobTransport, vaultKey: vaultKey, meter: transferMeter)
-        } else {
-            self.transferer = nil
-        }
+        self.transferMeter = transferMeter
+        self.transferer = Self.makeTransferer(
+            cache: blobCache, transport: transport, vaultKey: vaultKey, meter: transferMeter)
         self.cipher = OpCipher(vaultKey: vaultKey)
         self.transport = transport
         self.device = device
@@ -305,12 +305,30 @@ public actor SyncEngine {
 
     /// F12: downloads an image or file item's payload on demand (resuming an earlier attempt) and returns its
     /// file in the cache.
+    ///
+    /// On 401 the vault key may have changed (F13): another device revoked one, or this one did while the download
+    /// ran. A sync picks up the new key (or finds this device was removed, which is thrown), then the download
+    /// resumes once with the new key. The partial file is plaintext, so it carries over.
     public func fetchBlob(for item: ItemID, progress: BlobProgressHandler? = nil) async throws -> URL {
-        guard let transferer else { throw SyncError.blobsUnavailable }
+        guard let current = transferer else { throw SyncError.blobsUnavailable }
         guard let state = try db.item(item), state.isVisible, let ref = state.content?.blob else {
             throw BlobTransferError.notABlobItem
         }
-        return try await transferer.download(ref, item: item, progress: progress)
+        do {
+            return try await current.download(ref, item: item, progress: progress)
+        } catch TransportError.unauthorized where membership != nil {
+            if transferer === current { try await syncOnce() }
+            guard let next = transferer, next !== current else { throw TransportError.unauthorized }
+            return try await next.download(ref, item: item, progress: progress)
+        }
+    }
+
+    /// A transferer for this key and transport, or nil without a blob cache or blob routes.
+    static func makeTransferer(
+        cache: BlobCache?, transport: any SyncTransport, vaultKey: VaultKey, meter: TransferMeter
+    ) -> BlobTransferer? {
+        guard let cache, let blobTransport = transport as? any BlobTransport else { return nil }
+        return BlobTransferer(cache: cache, transport: blobTransport, vaultKey: vaultKey, meter: meter)
     }
 
     /// Uploads every queued blob, each resuming from what the relay already has. Returns how many were sent.
@@ -421,7 +439,7 @@ public actor SyncEngine {
         }
     }
 
-    private func wakeBlobs() {
+    func wakeBlobs() {
         blobWorkPending = true
         blobWaiter?.resume()
         blobWaiter = nil

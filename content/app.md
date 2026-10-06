@@ -109,7 +109,7 @@ The Mac menu and the iPhone's settings screen. `{days}` is a number above 1.
 - `deviceThis`: This device
 - `actionRemoveDevice`: Remove
 - `removeDeviceTitle`: Remove {device}?
-- `removeDeviceMessage`: It stops syncing and can't read anything copied from now on. Your other devices switch to a new key the next time they sync. Anything already on it stays there.
+- `removeDeviceMessage`: It stops syncing and can't read anything copied from now on. Your other devices switch to a new key the next time they sync. Anything already on it stays there. Images and files that only it had keep their preview but can't be downloaded any more.
 - `removeDeviceConfirm`: Remove device
 - `deviceRemoved`: {device} was removed.
 
@@ -141,7 +141,7 @@ The Mac menu and the iPhone's settings screen. `{days}` is a number above 1.
 - `errorNotSetUp`: Open ClipSync and finish setup first.
 - `errorFileTooLarge`: That file is too large to sync. The limit is {limit}.
 - `errorUnreadableFile`: Couldn't read that file.
-- `errorNotUploadedYet`: This is still uploading from the other device. Try again in a moment.
+- `errorNotUploadedYet`: This isn't on the relay yet. Try again in a moment. If the device that sent it was removed, only the preview is left.
 - `errorDownloadFailed`: The download didn't match what was sent. Try again.
 - `errorUnknown`: Something went wrong. Try again.
 - `errorRemovedFromVault`: This device was removed from your vault, so it no longer syncs.

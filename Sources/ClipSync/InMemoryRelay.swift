@@ -9,7 +9,7 @@ import Foundation
 ///
 /// Auth is off until `pin(tokenSHA256:)` or a revoke sets a token hash; then only `client(token:)` views carrying
 /// that token get through (the relay's own `SyncTransport` methods send no token). Device records, revocation and
-/// handoffs (F13) follow the real relay too.
+/// handoffs (F13) follow the real relay too, and so do blob routes: a revoke wipes the blobs with the log.
 public actor InMemoryRelay: SyncTransport, BlobTransport {
     public let maxPullLimit: Int
     public let pairingTTL: TimeInterval
@@ -200,6 +200,26 @@ public actor InMemoryRelay: SyncTransport, BlobTransport {
     // MARK: BlobTransport (mirrors the relay's blob routes)
 
     public func putBlobChunk(blobID: String, index: Int, count: Int, data: Data) async throws {
+        try await putBlobChunk(blobID: blobID, index: index, count: count, data: data, token: nil)
+    }
+
+    public func blobStatus(blobID: String) async throws -> BlobStatus? {
+        try await blobStatus(blobID: blobID, token: nil)
+    }
+
+    public func blobChunk(blobID: String, index: Int) async throws -> Data? {
+        try await blobChunk(blobID: blobID, index: index, token: nil)
+    }
+
+    public func deleteBlob(blobID: String) async throws {
+        try await deleteBlob(blobID: blobID, token: nil)
+    }
+
+    // Blob routes with a token. Each call is one step on this actor, so the token check and the read or write are
+    // atomic with a revoke, like the relay's re-check inside the storage call.
+
+    func putBlobChunk(blobID: String, index: Int, count: Int, data: Data, token: String?) async throws {
+        try authorize(token)
         if let remaining = blobPutsBeforeFailure {
             guard remaining > 0 else { throw TransportError.network("simulated dropped upload") }
             blobPutsBeforeFailure = remaining - 1
@@ -217,13 +237,15 @@ public actor InMemoryRelay: SyncTransport, BlobTransport {
         blobs[blobID] = blob
     }
 
-    public func blobStatus(blobID: String) async throws -> BlobStatus? {
+    func blobStatus(blobID: String, token: String?) async throws -> BlobStatus? {
+        try authorize(token)
         guard WireLimits.isValidBlobID(blobID) else { throw TransportError.badRequest("blob id must be a UUID") }
         guard let blob = blobs[blobID] else { return nil }
         return BlobStatus(blobID: blobID, chunkCount: blob.count, received: blob.chunks.keys.sorted())
     }
 
-    public func blobChunk(blobID: String, index: Int) async throws -> Data? {
+    func blobChunk(blobID: String, index: Int, token: String?) async throws -> Data? {
+        try authorize(token)
         if let remaining = blobGetsBeforeFailure {
             guard remaining > 0 else { throw TransportError.network("simulated dropped download") }
             blobGetsBeforeFailure = remaining - 1
@@ -233,7 +255,8 @@ public actor InMemoryRelay: SyncTransport, BlobTransport {
         return blobs[blobID]?.chunks[index]
     }
 
-    public func deleteBlob(blobID: String) async throws {
+    func deleteBlob(blobID: String, token: String?) async throws {
+        try authorize(token)
         guard WireLimits.isValidBlobID(blobID) else { throw TransportError.badRequest("blob id must be a UUID") }
         blobs[blobID] = nil
     }
@@ -282,6 +305,7 @@ public actor InMemoryRelay: SyncTransport, BlobTransport {
         log = []
         seenOpIDs = []
         pairings = [:]
+        blobs = [:]  // sealed under the old vault key; remaining devices re-upload what they hold
         devices = Dictionary(uniqueKeysWithValues: request.devices.map { ($0.deviceID, $0) })
         handoffs = handoffs.filter { listed.contains($0.deviceID) }
             + request.handoffs.map { (deviceID: $0.deviceID, blob: $0.blob) }
@@ -381,7 +405,7 @@ public actor InMemoryRelay: SyncTransport, BlobTransport {
 }
 
 /// One device's view of an `InMemoryRelay`: every request carries `token`, like `HTTPTransport`.
-public struct InMemoryRelayClient: SyncTransport {
+public struct InMemoryRelayClient: SyncTransport, BlobTransport {
     public let relay: InMemoryRelay
     public let token: String?
 
@@ -415,5 +439,21 @@ public struct InMemoryRelayClient: SyncTransport {
 
     public func handoffs(deviceID: String) async throws -> [Data] {
         try await relay.handoffs(deviceID: deviceID)
+    }
+
+    public func putBlobChunk(blobID: String, index: Int, count: Int, data: Data) async throws {
+        try await relay.putBlobChunk(blobID: blobID, index: index, count: count, data: data, token: token)
+    }
+
+    public func blobStatus(blobID: String) async throws -> BlobStatus? {
+        try await relay.blobStatus(blobID: blobID, token: token)
+    }
+
+    public func blobChunk(blobID: String, index: Int) async throws -> Data? {
+        try await relay.blobChunk(blobID: blobID, index: index, token: token)
+    }
+
+    public func deleteBlob(blobID: String) async throws {
+        try await relay.deleteBlob(blobID: blobID, token: token)
     }
 }

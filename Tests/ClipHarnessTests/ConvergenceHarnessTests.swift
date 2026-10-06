@@ -244,4 +244,53 @@ final class ConvergenceHarnessTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(caught, 15, "only \(caught)/20 seeds caught the lossy revoke")
     }
+
+    // MARK: - Images and files across a revoke (F13 x F11/F12)
+
+    /// The relay wipes blobs with the log and each remaining device re-uploads what it holds under the new key:
+    /// every visible item whose blob a remaining device holds is back on the relay, nothing is left under the old
+    /// key, and blob GC still converges.
+    func testRevokeWithBlobsReuploadsWhatRemainingDevicesHold() {
+        var total = HarnessStats()
+        for seed in UInt64(1)...50 {
+            var config = HarnessConfig(seed: seed)
+            config.revoke = .repushAll
+            config.blobGC = .deadItemsOnly
+            config.revokeBlobs = .reuploadHeld
+            let result = runSimulation(config)
+            total = total + result.stats
+            XCTAssertTrue(result.converged, result.failure ?? "seed \(seed)")
+        }
+        XCTAssertGreaterThan(total.blobFetches, 0, "devices should download blobs, so non-creators hold some")
+        XCTAssertGreaterThan(total.blobReuploads, 0)
+    }
+
+    /// Keeping relay blobs through the revoke leaves old-key chunks that block the re-upload (the first copy of a
+    /// chunk is kept). The harness must notice.
+    func testHarnessCatchesBlobsKeptThroughARevoke() {
+        assertCaught(.keepRelayBlobs, mentioning: "under the old vault key")
+    }
+
+    /// Re-pushing only ops loses blobs the remaining devices hold. The harness must notice.
+    func testHarnessCatchesARevokeThatDoesntReuploadBlobs() {
+        assertCaught(.opsOnly, mentioning: "never came back to the relay")
+    }
+
+    private func assertCaught(_ mode: RevokeBlobMode, mentioning text: String, line: UInt = #line) {
+        var caught = 0
+        var example: String?
+        for seed in UInt64(1)...20 {
+            var config = HarnessConfig(seed: seed)
+            config.revoke = .repushAll
+            config.blobGC = .deadItemsOnly
+            config.revokeBlobs = mode
+            let result = runSimulation(config)
+            if !result.converged {
+                caught += 1
+                example = example ?? result.failure
+            }
+        }
+        XCTAssertGreaterThanOrEqual(caught, 15, "only \(caught)/20 seeds caught \(mode.rawValue)", line: line)
+        XCTAssertTrue(example?.contains(text) ?? false, example ?? "", line: line)
+    }
 }

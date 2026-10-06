@@ -108,6 +108,11 @@ of the relay's disk. Behind the scenes this device makes a new vault key, the re
 log, and every other device gets the new key the next time it syncs. You don't have to do anything on them.
 They push their history back to the relay under the new key, so nothing they had is lost.
 
+Images and files go the same way. The relay drops their encrypted chunks along with the log, because they were
+sealed under the old key, and each device uploads the files it has again under the new one (`revoke` does it
+for this device; the others do it on their next `sync` or in `watch`). A file that only the lost device ever
+had keeps its preview, but nobody can download it any more.
+
 What it can't undo: anything already on the lost device stays there, including its history.
 
 A device only shows in `devices` once it has synced with this version of clipctl. A device that isn't listed

@@ -6,7 +6,7 @@
 - All of F1–F16 are built (F17, the Apple Watch, was dropped): the core (F1–F10), images and files (F11, F12), revoke (F13), expiry (F14), pause (F15), direct sync while the relay is down (F16). Also the Windows tray app (M3), relay hardening (stale-upload purge, O(1) storage total, chunk download cap, N10 bind check, N12 blob crash test), Apple polish (Set up again after removal, key fingerprints and join dates, Mac ⌃⌘V picker, measurement mode).
 - Direct sync: the Mac app and the Windows tray app listen on their Tailscale address (port 8790), `clipctl watch --peer-port N` too; the iPhone only dials. Device records seal name, join date and listen address. Design §7.
 - Check on the Mac (t33-direct after merging master): 357 package tests, 76 relay tests; harness 500/500 plain, `--revoke repushAll`, `--peer logCursors`, and peer + revoke + blob GC + revoke-blobs together; `scripts/e2e-direct.sh` and `scripts/e2e-revoke-blobs.sh` pass; ClipSyncMac, ClipSynciOS and ClipShare build.
-- Never compiled: anything Windows (tray app, Winsock peer code, `ClipWindows`); CI's Windows job is the first compile. Never run: direct sync between real devices, images/files/revoke in the Apple apps.
+- Windows compiles (2026-10-06): tray app, Winsock peer code and `ClipWindows` build on the PC and in CI. 345 tests pass on Windows and on Linux (WSL, Swift 6.3.3); CI green on all four jobs. The first compile found a real bug: SO_REUSEADDR on Windows let two listeners share port 8790 (docs/decisions.md). Never run: direct sync between real devices, images/files/revoke in the Apple apps.
 
 ## Where things stood (2026-10-01)
 - M1 works end to end: `scripts/e2e.ps1` (relay in WSL + two clipctl devices) passes; A→B p50 ≈ 100 ms on localhost.
@@ -45,7 +45,7 @@
 5. Cleanup: 17 merged worktree folders (swift-t02 to swift-t25) plus branch t26-expiry on the Windows machine. OK to `git worktree remove` them?
 
 ## Next build tasks
-- Push and watch CI's Windows job; fix what the first Windows compile finds (tray app, Winsock, `ClipWindows`).
+- Run the tray app on the PC (`swift run ClipSyncWin`) and pair it with the Mac.
 - Check the README makes the seed-488 harness bug findable within a minute (PRD outreach goal). Run the nightly workflow once by hand: `gh workflow run nightly.yml`.
 - Show the relay pin in the apps.
 

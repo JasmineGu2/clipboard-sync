@@ -272,3 +272,8 @@
 - **Decision:** The watch app, the iPhone's WatchConnectivity link and the pinned-items mirror in ClipAppCore are removed. The sources are kept in `_to_delete/watch-2026-10-06/`.
 - **Why:** Jazz asked for it to go. A watch can't paste anywhere, so it adds little to daily use. It also needs a 5 GB watchOS download to build, and it would put pinned items in plaintext on a second device.
 - **Alternatives:** Keep it opt-in and unbuilt (more code to maintain, and a threat-model entry, for a feature nobody runs).
+
+## 2026-10-06: No SO_REUSEADDR on Windows for peer listeners
+- **Decision:** `ClipPeerSocket` sets SO_REUSEADDR on macOS and Linux only.
+- **Why:** On Windows the flag lets a second socket bind a port another socket is actively listening on, so the tray app and `clipctl watch` could both take 8790 and split incoming peers between them. `testATakenPortFailsAtBind` failed on the first Windows run. Windows' default bind already allows rebinding while old connections sit in TIME_WAIT, which is the only reason the flag is set elsewhere.
+- **Alternatives:** SO_EXCLUSIVEADDRUSE (also blocks other users' sockets, but can refuse a restart while connections linger in TIME_WAIT).

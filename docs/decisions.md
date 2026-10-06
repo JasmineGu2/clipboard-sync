@@ -107,3 +107,43 @@
 - **Why:** Jazz wants to copy on one device and press paste on another, like Universal Clipboard but across Windows too. Using the history's own order (newest by create timestamp) means a late-arriving older copy never replaces a newer local one, a backlog after being offline writes once, and edits never write. The first check after start only records a baseline, so launching never overwrites the clipboard. Writes carry the existing own-content marker, so watchers don't capture them again.
 - **Limits:** iOS only lets apps write the clipboard while open, so the iPhone receives when the app is in front. Ordering uses each device's clock (as the history list already does), so a device whose clock is far off can order wrongly.
 - **Alternatives:** A hotkey picker only (Ctrl-Cmd-V; still worth adding for older items, but it doesn't give paste-anywhere); applying every incoming item (backlogs would flash through the clipboard and an older item could replace a newer local copy); off by default (Jazz asked for this as the main way to use the app).
+
+## 2026-10-05: Images and files are blobs outside the op log, referenced from the create op
+- **Decision:** An image or file item's create op carries a `BlobRef` (blob ID, size, SHA-256, chunk size, MIME type) and an optional thumbnail. The bytes live in a local blob cache and in chunks on new relay routes (`/v1/blobs/...`), never in the op log.
+- **Why:** The op log is pulled in full by every device, so 50 MB in it would mean every device downloads every file, and the 256 KiB per-op cap would need chunk ops. Keeping the reference in `ItemContent`, which is set once, means no merge rule changes: the create's first-writer rule already covers it, and the harness needs no new merge mutation. Text ops encode byte for byte as before, so the OpCipher vector still holds.
+- **Alternatives:** Chunks as ops in the log (every device pulls every byte; the log grows forever). A separate `attachBlob` op (a second op to merge for no gain, since content never changes). Content-addressed blob IDs, the SHA-256 as the ID (free dedupe, but the relay would see which devices hold the same file, and a known file's hash would identify it).
+
+## 2026-10-05: Blob chunks use a per-blob key, a random nonce, and AAD naming item, blob, index, count and size
+- **Decision:** `BlobCipher` seals each 1 MiB chunk with AES-256-GCM under HKDF(vault, salt "clip.v1", info "clip.blob.v1|<blobID>"), a fresh random 96-bit nonce, and AAD `clip.blob.v1|<itemID>|<blobID>|<index>|<count>|<size>`. After opening, the plaintext length must match the chunk's position. The receiver takes count and size from the encrypted op.
+- **Why:** The AAD rules out every move the PRD asks about (N8): another blob or item, another index, a truncated tail, a short chunk. A per-blob key keeps each key's nonce count to at most 512, so random nonces are nowhere near their limit, and a chunk can't even be tried under another blob's key. Random nonces match OpCipher, and a retried chunk is never sealed twice with the same nonce, whatever happens to the cached file between attempts. The vector comes from Python `cryptography` (`scripts/kat/blobcipher_kat.py`), not from Swift.
+- **Alternatives:** A counter nonce (the index) with the per-blob key, like the STREAM construction (saves 12 bytes per chunk and makes retries identical, but reuses a nonce if the cached file ever changes between attempts). A random content key stored in the op (same strength, one more secret in the database). The vault's data key for everything (one key with an unbounded nonce count).
+
+## 2026-10-05: 1 MiB chunks, 512 MiB per blob, 32 KiB thumbnails in the op
+- **Decision:** Chunks are 1 MiB of plaintext; a blob is at most 512 chunks (512 MiB). Thumbnails are JPEGs of at most 256 px and 32 KiB, inside the encrypted create op. The Mac watcher captures images up to 50 MB and copied files up to 100 MB each (10 per copy); `clipctl send-file` takes up to 512 MB. The relay caps all blob chunks together at 20 GiB (507 past it).
+- **Why:** 1 MiB keeps memory at a couple of chunks per transfer (N6) and loses at most 1 MiB on an interrupted transfer (N5), while 50 chunks for 50 MB keeps per-request overhead small. 512 chunks keeps the resume list small and covers screenshots, photos, PDFs and short videos. A thumbnail in the op shows on every device the moment the item syncs, without another request, and 32 KiB is about 43 KiB of base64, far under the 256 KiB op cap. The watcher caps stop a Finder copy of a large video from quietly uploading it.
+- **Alternatives:** 256 KiB chunks (4 times the requests, little memory gain) or 4 MiB (4 times the memory and the loss on interruption). Thumbnails as a second small blob (one more download before the history can show it). No size cap (the relay is a small VM).
+
+## 2026-10-05: The item syncs first, the payload uploads after, separately from text
+- **Decision:** `addFile` records the item and queues the upload in one transaction. The op goes out with the normal sync; the upload runs in its own task (`uploadPendingBlobs`, or beside the op loop in `run()`). A download that reaches a chunk the sender hasn't uploaded stops with "not uploaded yet" and keeps what it has.
+- **Why:** Other devices see the item and its thumbnail at once, and a 500 MB upload never holds up text sync. Queueing in the same transaction means a crash can't leave an item whose payload nobody will upload (N12).
+- **Alternatives:** Upload first, then push the op (the item appears late everywhere, and text queues behind big files). Upload inside `syncOnce` (one slow file blocks every sync).
+
+## 2026-10-05: Blob chunks live in the relay's SQLite file
+- **Decision:** `blobs` and `blob_chunks` tables next to the op log, chunks as SQLite blobs.
+- **Why:** One file to back up, transactions for free (a chunk and its blob row land together), and no file-name handling on the server. At 1 MiB per chunk SQLite is comfortable.
+- **Alternatives:** One file per chunk on disk (no SQLite overhead, but crash safety and cleanup by hand, and a second thing to back up). Object storage (not on a single VM on a tailnet).
+
+## 2026-10-05: Blob garbage collection deletes only blobs of deleted items
+- **Decision:** `collectGarbage` removes cache files of dead blobs (items deleted or expired) and cache files nothing points at that are over a day old. On the relay, each device deletes each dead blob it knows about once. An upload that finishes after its item was deleted deletes what it sent. A relay-side age limit for orphans is a follow-up.
+- **Why:** Deletes are sticky, so a dead blob is never needed again. The harness proves the narrow rule matters: `--blob-gc deadItemsOnly` converges 500/500 (also with expiry on), while `--blob-gc unreferencedOnRelay`, which deletes whatever no visible item uses, fails 487/500 because it deletes blobs of items a device hasn't pulled yet.
+- **Alternatives:** Mark and sweep against a relay listing (the unsafe rule above). Reference counting on the relay (the relay can't read which items use which blob). Never collecting (the relay fills up).
+
+## 2026-10-05: Each chunk read drains its own autorelease pool (N6, measured)
+- **Decision:** `BlobCache.readChunk`, the import, export and re-hash loops, and the start of every HTTP task run inside `withAutoreleasePool` (an autorelease pool on Apple platforms, nothing elsewhere).
+- **Why:** The 200 MB test's footprint sampler showed the process growing by the whole file (+203 MiB) while the transfer's own buffers peaked at 2 MiB. `FileHandle.read` and `Data(contentsOf:)` hand back buffers through the autorelease pool, and an async transfer's pool wasn't drained between chunks. With a pool per chunk the growth is 2 to 9 MiB.
+- **Alternatives:** Reading with POSIX `read` into a reused buffer (no pool, but more code, and Windows needs its own path).
+
+## 2026-10-05: Remote images don't land on the clipboard by themselves
+- **Decision:** `LatestClipFollower` stays text-only. Copying an image or file item downloads it, then writes the file URL and, for images, the image data.
+- **Why:** Following every image would download every image on every device as it arrives, on cellular too. A click is a small price for that.
+- **Alternatives:** Auto-download images under a size limit (worth trying once real usage shows how often images are pasted elsewhere).

@@ -64,8 +64,8 @@ From the requirements in [docs/prd.md](docs/prd.md). "Written, not built" means 
 | F8 | End-to-end encrypted | Done | |
 | F9 | Skip concealed content | Partly | Windows done and smoke-tested. Mac written, not built. iPhone has no background capture. |
 | F10 | Pair with a code | Done | Tested end to end with clipctl. Apple flow written, not built. |
-| F11 | Images | Not yet | M4 |
-| F12 | Files | Not yet | M4 |
+| F11 | Images | Partly | Thumbnails ride in the encrypted item; full image on demand. `clipctl send-file`, Mac capture, iPhone paste button and share sheet. Apple code builds; not tried on devices. |
+| F12 | Files | Partly | Downloaded on demand, resumable, SHA-256 checked. End to end with clipctl on the Mac (`scripts/e2e-blobs.sh`). Apple code builds; not tried on devices. |
 | F13 | Revoke a lost device | Partly | The relay's token rotation route exists. The client flow doesn't. |
 | F14 | Unpinned items expire | Partly | Synced deletes, harness-checked. `clipctl expire` and `watch --expire-days`. Apple setting not built. |
 | F15 | Pause capture | Partly | clipctl (a `paused` file), smoke-tested. Mac menu written, not built. |
@@ -75,8 +75,8 @@ From the requirements in [docs/prd.md](docs/prd.md). "Written, not built" means 
 | N2 | 10k search under 50 ms | Partly | Measured on Windows only |
 | N3 | iPhone launch under 500 ms | Not yet | Not measured |
 | N4 | Mac idle energy "Low" | Not yet | Not measured |
-| N5 | Resumable transfers | Not yet | Blobs not built (M4) |
-| N6 | Bounded memory for large files | Not yet | Blobs not built (M4) |
+| N5 | Resumable transfers | Done | Upload and download killed with `kill -9` midway, both resume at the next chunk. See below. |
+| N6 | Bounded memory for large files | Done | Two chunks of transfer buffers; process memory flat from 20 MB to 400 MB files. See below. |
 | N7 | Server stores only ciphertext | Done | |
 | N8 | AES-256-GCM bound to item and op IDs | Done | Tamper tests cover swapped IDs and moved payloads |
 | N9 | Keys in Keychain or DPAPI | Partly | DPAPI done. Keychain written, not built. clipctl on macOS and Linux has an opt-in plain-file key for testing. |
@@ -95,8 +95,8 @@ All measured on Windows 11 with WSL Ubuntu 24.04, debug builds unless noted.
 | N2 | under 50 ms | median about 14 ms over 20 queries, 10,000 items | A ClipStore perf test on Windows (it asserts the median is under 50 ms) | iPhone and Mac. Release builds. |
 | N3 | under 500 ms | not measured | | Needs the iPhone app built |
 | N4 | Energy Impact "Low" | not measured | | Needs the Mac app built |
-| N5 | resume from last verified chunk | not built | | M4 |
-| N6 | memory bounded by a few chunks | not built | | M4 |
+| N5 | resume from last verified chunk | 50 MB file (50 chunks): upload killed after chunk 27 resumed at chunk 28; download killed after chunk 37 resumed at 37; SHA-256 matched. Same at 200 MB (resumed at 101 and 150). | `scripts/e2e-blobs.sh` on macOS 14.6: relay on a spare port, two clipctl clients over localhost, debug builds | Not over Tailscale, not on an iPhone |
+| N6 | memory bounded by a few chunks | Transfer buffers peak at 2.00 MiB (one plaintext and one sealed chunk) for a 200 MB file. clipctl peak footprint: download 11 to 16 MiB, upload 26 to 30 MiB, for files from 20 MB to 200 MB (baseline 4 MiB); live heap mid-upload 6.9 MB. | `BlobTransferTests.testTwoHundredMegabytesStayWithinAFewChunks` (also samples process footprint); `/usr/bin/time -l` and `heap` on clipctl | iPhone |
 
 Other numbers from the same runs:
 

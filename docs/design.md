@@ -75,6 +75,9 @@ Only swift-crypto primitives (same API as CryptoKit).
   the new device GETs it once. 160 bits of code entropy make offline guessing useless, so no PAKE is needed.
 - **Keys at rest (N9)**: the `KeyStore` protocol. Keychain on Apple (apps/Apple), DPAPI on Windows (clipctl),
   `InMemoryKeyStore` for tests. No plain-file key store ships.
+- **Blob chunks (F11, F12)**: per blob, key = HKDF(vault, info "clip.blob.v1|" + blobID). Each 1 MiB chunk is
+  `AES.GCM.seal(chunk, blobKey, nonce: random, authenticating: "clip.blob.v1|" + itemID + "|" + blobID + "|" +
+  index + "|" + count + "|" + size)`. See §6.
 - **Revocation (F13, M4)**: make a new vault key, re-encrypt-forward, and hand it to the remaining devices by pairing.
 
 ## 4. Module APIs (the contract parallel tasks build against)
@@ -87,6 +90,7 @@ Only swift-crypto primitives (same API as CryptoKit).
 **ClipCrypto**
 - `VaultKey.generate()`, `VaultKey(rawBytes:)`, `.rawBytes`, `.authToken`
 - `OpCipher(vaultKey:)`: `seal(_ op: Op, device: DeviceID) throws -> Envelope`, `open(_ e: Envelope) throws -> Op`
+- `BlobCipher(vaultKey:item:blob:)`: `seal(_ chunk: Data, index:) throws -> Data`, `open(_ sealed: Data, index:) throws -> Data`
 - `PairingCode.generate()`, `PairingCode(string:)` (tolerates spaces, dashes, lower case, I/L/O confusion),
   `.display`, `.pairingID`, `wrap(_ key: VaultKey) throws -> Data`, `unwrap(_ blob: Data) throws -> VaultKey`
 - `protocol KeyStore`, `InMemoryKeyStore`, `enum CryptoError`
@@ -98,15 +102,23 @@ Only swift-crypto primitives (same API as CryptoKit).
 - `items(limit:offset:) -> [ItemState]` (visible, newest first), `item(_:)`, `search(_:limit:) -> [ItemState]`
 - `pendingOutbound(limit:) -> [Op]`, `markSent(_ ids: [OpID])`
 - `syncCursor() -> Int64`, `setSyncCursor(_:)`, `meta(_:)`, `setMeta(_:_:)`
+- Blobs (schema v4): `insert(_:outbound:blobUploads:)`, `pendingBlobUploads()`, `finishBlobUpload(_:)`,
+  `liveBlobIDs()`, `deadBlobIDs(uncollectedOnly:)`, `markRelayCollected(_:)`, `item(forBlob:)`
+- `BlobCache(directory:)`: `importFile(at:as:maxBytes:)`, `importData`, `readChunk`, `beginDownload(_:) -> BlobDownload`
+  (`append`, `finish`), `export(_:to:)`, `collectGarbage(live:dead:orphanAge:)`
 - Crash safety (N12): WAL + every mutation in a transaction; the cursor moves in the same transaction as the
   ops it covers.
 
 **ClipSync**
 - `protocol SyncTransport`: `push`, `pull(after:limit:wait:)`, `putPairing(id:blob:)`, `takePairing(id:)`
+- `protocol BlobTransport`: `putBlobChunk`, `blobStatus`, `blobChunk`, `deleteBlob` (HTTPTransport, InMemoryRelay)
+- `actor BlobTransferer`: `upload(_:item:progress:)`, `download(_:item:progress:)`, `meter` (N6)
 - `HTTPTransport(baseURL:token:)` (URLSession/FoundationNetworking), `InMemoryRelay` (tests and harness)
 - `actor SyncEngine(db:cipher:transport:device:deviceName:)`:
   `addText(_:) -> ItemID`, `setPinned/setTitle/setTag/delete`, `syncOnce()`, `run()` (push, then long-poll pull,
   with exponential backoff and jitter), `changes: AsyncStream<Void>`
+- Blobs: `init(..., blobCache:)`, `addFile(at:kind:name:contentType:thumbnail:)`, `addData(...)`, `fetchBlob(for:)`,
+  `localFile(for:)`, `uploadPendingBlobs()`, `collectGarbage()`. `run()` also uploads and collects in a side task.
 - Cursor: the seq of the last envelope applied, stored in db meta and moved in the same transaction as its ops.
 - Relay reset: the engine stores the last relay epoch it saw in db meta (`relay_epoch`). The first epoch is just
   stored. A different one on any push or pull response means the relay lost its log. Recovery is
@@ -127,3 +139,77 @@ It binds to the Tailscale address only (N10).
 - Windows: skip when the clipboard has the `ExcludeClipboardContentFromMonitorProcessing` or
   `CanIncludeInClipboardHistory`=0 formats (used by password managers and Windows itself).
 - iOS: there's no background capture; the user sends explicitly.
+- Images and copied files (F11, F12) follow the same rules: `CaptureFilter.decide(_:fileSize:)` checks the privacy
+  and own-write markers before anything else, and the Mac reader doesn't read file URLs or image bytes when a
+  marker is present.
+
+## 6. Images and files (F11, F12)
+
+**The shape.** An image or file item is an ordinary item whose create op carries a `BlobRef`: blob ID, size,
+SHA-256 of the plaintext, chunk size and MIME type, plus an optional thumbnail. The bytes themselves never enter
+the op log. They live in a local blob cache (one file per blob) and, encrypted in 1 MiB chunks, on the relay's
+blob routes. The item shows up everywhere as soon as its op syncs; the full payload downloads only when someone
+copies it.
+
+```
+ create op (encrypted, in the log)          relay blob routes (outside the log)
+ { kind: image, text: "shot.png",           PUT /v1/blobs/<id>/chunks/<i>?count=n
+   blob: { id, size, sha256, chunkSize },    GET /v1/blobs/<id>            (which chunks are there)
+   thumbnail: <=32 KiB JPEG }                GET /v1/blobs/<id>/chunks/<i>
+                                             DELETE /v1/blobs/<id>
+```
+
+**No merge change.** The reference is part of `ItemContent`, which is set once by the create op and never edited.
+So blobs add no merge rule, and every convergence argument in §2 still holds. The encoder leaves out `blob` and
+`thumbnail` when they're nil, so text ops keep their exact bytes (the OpCipher known-answer vector is unchanged).
+
+**Thumbnails ride in the op.** A JPEG of at most 256 px and 32 KiB (`ItemContent.maxThumbnailBytes`) goes inside
+the encrypted create op, so the history can show it at once on every device without another round trip. As
+base64 JSON that's about 43 KiB, well under the 256 KiB per-op cap. A larger thumbnail is dropped, never fatal.
+Platform code makes it (`ThumbnailMaker`; ImageIO on Apple, none elsewhere yet).
+
+**Chunks.** 1 MiB of plaintext per chunk, at most 512 chunks, so the largest blob is 512 MiB
+(`WireLimits.maxBlobBytes`). Each chunk is sealed as in §3, under a key derived for that blob alone. The AAD names
+the item, the blob, the chunk's index, the chunk count and the size, and the receiver takes the count and size
+from the encrypted op, not from the relay. So a chunk can't be moved to another blob or item, reordered, or
+dropped from the end, and after opening, the plaintext length must match its position (only the last chunk may be
+short). An empty file is one empty chunk, so even that is authenticated.
+
+**Upload.** `addFile` streams the file into the cache (temp file, hashed on the way, fsync, rename), records the
+create op and queues an upload job in the same SQLite transaction. The op is pushed with the normal sync, so other
+devices see the item straight away. The upload runs separately (`uploadPendingBlobs`, or a side task of `run()`),
+so a large file never holds up text. It asks the relay which chunks it already has and sends only the rest. That's
+the resume (N5). Until the upload finishes, a download stops at the first missing chunk with "not uploaded yet",
+keeping what it has.
+
+**Download.** `fetchBlob` opens (or resumes) `<blob>.partial`: an earlier attempt is cut back to its last whole
+chunk and re-hashed, one chunk at a time. Each new chunk is opened (GCM checks it) before it's written and
+fsynced. When all chunks are in, the size and SHA-256 must match the op; only then is the file renamed into place
+(N12). A mismatch removes the partial file so the next attempt starts clean. Two requests for the same blob share
+one download.
+
+**Memory (N6).** Every step holds one chunk at a time: one plaintext and one sealed chunk per transfer. A test
+streams 200 MB up and back and checks the transfer's own buffers (peak 2.0 MiB) and, on Apple platforms, the
+process footprint sampled every 5 ms. That check found a real problem: `FileHandle.read` returns buffers that go
+to the autorelease pool, and an async transfer's pool wasn't drained between chunks, so the process grew by the
+whole file (+203 MiB). Each chunk read now drains its own pool (+2 to 9 MiB).
+
+**Garbage collection.** A blob is dead once its item is deleted or expired. Deletes are sticky, so a dead blob is
+never needed again on any device. `collectGarbage` removes dead blobs' cache files, plus files nothing points at
+that are over a day old (an import whose op never got recorded, or a crashed write). On the relay, each device
+deletes each dead blob once (`blob_relay_gc` remembers). The rule is deliberately narrow: only blobs of items this
+device knows are deleted. The tempting alternative, deleting every relay blob that no visible item uses, also
+deletes blobs of items a device hasn't pulled yet. The harness shows it: `--blob-gc deadItemsOnly` converges
+500/500, `--blob-gc unreferencedOnRelay` fails 487/500 with "visible item's blob was garbage-collected".
+If an item is deleted while its upload is still running, the uploader deletes what it just sent.
+
+**Relay reset.** The relay's blobs go with its log. `markAllOutbound` also queues every visible item's blob for
+upload, and any device that holds a copy puts it back. A device without one drops the job.
+
+**Capture.** The Mac watcher hands whole clips to the history: copied files win over text (Finder also puts the
+file name as text), and text wins over an image (Office puts a picture of copied cells next to the text). Images
+over 50 MB and files over 100 MB are skipped by the watcher; `clipctl send-file` takes up to 512 MB on purpose.
+Copying an image or file item downloads it first, then puts a copy named like the item on the clipboard: the file
+URL for Finder plus, for images, the image data. Another device's newest image doesn't land on the clipboard by
+itself (`LatestClipFollower` is text-only), because that would mean downloading every image on every device.
+

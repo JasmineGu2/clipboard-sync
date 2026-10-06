@@ -61,6 +61,13 @@ All bodies are JSON and `Data` fields are base64. The types live in `Sources/Cli
 | `PUT /v1/pairing/{id}` | yes | body `PairingBlob`, returns 204. `id` is 32 lowercase hex chars. Body capped at 100 KiB before decoding, blob at 64 KiB (413). Expires after 10 minutes. Never overwrites: an ID that's already live gets 409. At most 100 live blobs (expired ones are purged first); beyond that, 429. |
 | `GET /v1/pairing/{id}` | no | returns the `PairingBlob` once, then deletes it. 404 if missing or expired. No token, because the new device doesn't have one yet; the unguessable ID is the capability. |
 | `POST /v1/auth/rotate` | yes | body `RotateTokenRequest { newTokenSHA256 }` (64 hex chars), returns 204. Replaces the stored token hash; the old token gets 401 from then on. |
+| `PUT /v1/blobs/{id}/chunks/{index}?count=n` | yes | Raw bytes (`application/octet-stream`): one sealed chunk of an image or file, opaque to the relay. 204, also when that chunk is already stored (the first copy is kept). `id` is a UUID, `index` 0...511, `count` 1...512 and fixed by the blob's first chunk (409 if it differs; 400 if `index >= count`). Body capped at 1 MiB + 28 bytes before reading (413), at least 28 bytes (400). 507 when all stored chunks would pass 20 GiB (`RelayConfig.maxBlobStorageBytes`). |
+| `GET /v1/blobs/{id}` | yes | `BlobStatus { blobID, chunkCount, received }`: which chunks are stored. Uploads resume by sending the rest. 404 when none are. |
+| `GET /v1/blobs/{id}/chunks/{index}` | yes | The chunk's bytes, or 404 when it isn't uploaded (yet). |
+| `DELETE /v1/blobs/{id}` | yes | Removes the blob and its chunks; 204 even when there was nothing. Devices call it for blobs of deleted items. |
+
+Blob chunks live in the same SQLite file as the op log, in `blobs` and `blob_chunks` tables, and never mix with
+it: pulls don't see them. See docs/design.md §6.
 
 ### Auth
 

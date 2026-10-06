@@ -31,7 +31,7 @@ public enum FileTypes {
     ]
 
     public static func contentType(forName name: String) -> String? {
-        let ext = (name as NSString).pathExtension.lowercased()
+        let ext = URL(fileURLWithPath: name).pathExtension.lowercased()
         return byExtension[ext]
     }
 

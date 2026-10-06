@@ -495,7 +495,7 @@ final class FootprintSampler: @unchecked Sendable {
         Thread.detachNewThread { [self] in
             while lock.withLock({ running }) {
                 if let now = Self.footprint() { lock.withLock { peak = max(peak, now) } }
-                usleep(5_000)
+                Thread.sleep(forTimeInterval: 0.005)
             }
             done.signal()
         }

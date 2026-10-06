@@ -1,4 +1,5 @@
 import ArgumentParser
+import ClipAppCore
 import ClipCore
 import ClipCrypto
 import ClipStore
@@ -13,7 +14,7 @@ struct ClipCtl: AsyncParsableCommand {
         abstract: "End-to-end encrypted clipboard history, from the command line.",
         discussion: "Full guide: content/clipctl.md",
         subcommands: [
-            Init.self, Pair.self, Add.self, List.self, Search.self, Copy.self,
+            Init.self, Pair.self, Add.self, SendFile.self, List.self, Search.self, Copy.self, Get.self,
             Pin.self, Unpin.self, Rename.self, Tag.self, Untag.self, Delete.self, Expire.self,
             Sync.self, Status.self, Watch.self,
         ]
@@ -131,6 +132,83 @@ struct Add: AsyncParsableCommand {
     }
 }
 
+struct SendFile: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "send-file",
+        abstract: "Add an image or file to the history and upload it (encrypted, in 1 MiB chunks).")
+    @OptionGroup var global: GlobalOptions
+    @Argument(help: "The file to send.") var path: String
+    @Option(help: "Name shown on other devices (default: the file's name).") var name: String?
+
+    func run() async throws {
+        let url = URL(fileURLWithPath: path)
+        var isFolder: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isFolder), !isFolder.boolValue else {
+            throw CLIError("No file at \(path).")
+        }
+        let client = try Client.open(global)
+        let shownName = name ?? url.lastPathComponent
+        let type = FileTypes.contentType(forName: shownName)
+        let kind = FileTypes.kind(forContentType: type)
+        let thumbnail = kind == .image
+            ? platformThumbnailMaker().thumbnail(forFileAt: url, maxBytes: ItemContent.maxThumbnailBytes) : nil
+        let id: ItemID
+        do {
+            id = try await client.engine.addFile(at: url, kind: kind, name: shownName, contentType: type, thumbnail: thumbnail)
+        } catch {
+            throw CLIError("Not added: \(describe(error))")
+        }
+        let blob = try client.db.item(id)?.content?.blob
+        print("added \(shortID(id)) [\(kind.rawValue) \(FileTypes.sizeText(blob?.size ?? 0))]"
+              + (thumbnail.map { " with a \($0.count)-byte thumbnail" } ?? ""))
+        await client.syncAfterChange()
+        do {
+            let sent = try await client.uploadPending()
+            print("uploaded \(sent) file\(sent == 1 ? "" : "s")")
+        } catch {
+            warn("upload stopped (\(describe(error))); it resumes on the next `clipctl sync` or `watch`")
+        }
+    }
+}
+
+struct Get: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Download an image or file (resuming an earlier try) and save it, or print a text item.")
+    @OptionGroup var global: GlobalOptions
+    @Argument(help: "The start of the item's ID.") var id: String
+    @Option(help: "Where to save it (default: the item's name, in the current folder).") var out: String?
+    @Flag(help: "Replace the file at --out if it exists.") var force = false
+
+    func run() async throws {
+        let client = try Client.open(global)
+        let item = try client.item(prefix: id)
+        guard let content = item.content, let blob = content.blob else {
+            let text = item.content?.text ?? ""
+            if let out {
+                try Data(text.utf8).write(to: URL(fileURLWithPath: out), options: .atomic)
+                print("saved \(out)")
+            } else {
+                print(text)
+            }
+            return
+        }
+        let destination = URL(fileURLWithPath: out ?? FileTypes.safeFileName(content.text, fallback: shortID(item.id)))
+        if FileManager.default.fileExists(atPath: destination.path), !force {
+            throw CLIError("\(destination.path) exists. Pass --force to replace it, or choose another --out.")
+        }
+        let cached: URL
+        do {
+            cached = try await client.engine.fetchBlob(for: item.id, progress: chunkProgress("download"))
+        } catch {
+            throw CLIError("Download failed: \(describe(error))")
+        }
+        try client.engine.blobCache?.export(blob.id, to: destination)
+        let hex = blob.sha256.map { String(format: "%02x", $0) }.joined()
+        print("saved \(destination.path) (\(FileTypes.sizeText(blob.size)), SHA-256 \(hex.prefix(16))… verified)")
+        _ = cached
+    }
+}
+
 struct List: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Show recent items, newest first.")
     @OptionGroup var global: GlobalOptions
@@ -163,7 +241,11 @@ struct Copy: AsyncParsableCommand {
 
     func run() async throws {
         let client = try Client.open(global)
-        let text = try client.item(prefix: id).content?.text ?? ""
+        let item = try client.item(prefix: id)
+        if item.content?.blob != nil {
+            throw CLIError("That's an image or file. Save it with `clipctl get \(shortID(item.id)) --out <path>`.")
+        }
+        let text = item.content?.text ?? ""
         #if os(Windows)
         try WindowsClipboard.write(text)
         print("copied \(preview(text))")
@@ -313,6 +395,19 @@ struct Sync: AsyncParsableCommand {
             throw CLIError("Sync failed: \(describe(error))")
         }
         print("synced. \(try client.db.count()) items, cursor \(try client.db.syncCursor())")
+        let pending = try client.db.pendingBlobUploads().count
+        if pending > 0 {
+            do {
+                let sent = try await client.uploadPending()
+                print("uploaded \(sent) file\(sent == 1 ? "" : "s")")
+            } catch {
+                throw CLIError("Upload failed: \(describe(error)). It resumes on the next sync.")
+            }
+        }
+        let collected = await client.engine.collectGarbage()
+        if collected.localFiles + collected.relayBlobs > 0 {
+            print("freed \(collected.localFiles) local file(s) and \(collected.relayBlobs) relay blob(s) of deleted items")
+        }
     }
 }
 
@@ -324,6 +419,7 @@ struct Status: AsyncParsableCommand {
         let client = try Client.open(global)
         let db = client.db
         let pending = try db.pendingOutbound(limit: Int(Int32.max)).count
+        let uploads = try db.pendingBlobUploads(limit: Int(Int32.max)).count
         let rows: [(String, String)] = [
             ("Home", client.home.url.path),
             ("Server", client.config.serverURL),
@@ -331,6 +427,7 @@ struct Status: AsyncParsableCommand {
             ("Key", keyStoreLabel()),
             ("Items", String(try db.count())),
             ("Pending", "\(pending) change\(pending == 1 ? "" : "s") waiting to push"),
+            ("Uploads", "\(uploads) file\(uploads == 1 ? "" : "s") waiting to upload"),
             ("Cursor", String(try db.syncCursor())),
             ("Last sync", try db.meta(Client.lastSyncKey) ?? "never"),
             ("Last error", try db.meta(Client.lastErrorKey) ?? "none"),

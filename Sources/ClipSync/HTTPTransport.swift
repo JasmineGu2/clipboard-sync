@@ -1,3 +1,4 @@
+import ClipStore
 import ClipWire
 import Foundation
 #if canImport(FoundationNetworking)
@@ -202,6 +203,9 @@ public struct HTTPTransport: SyncTransport {
         let box = DataTaskBox()
         let result: (Data, Int) = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(Data, Int), Error>) in
+                // A pool around starting the task: bridging a 1 MiB body to NSURLRequest autoreleases a copy, and
+                // a transfer's async context doesn't drain its pool between chunks (N6, see BlobCache.readChunk).
+                withAutoreleasePool {
                 let task = session.dataTask(with: request) { data, response, error in
                     if let error {
                         continuation.resume(throwing: TransportError.network(error.localizedDescription))
@@ -212,6 +216,7 @@ public struct HTTPTransport: SyncTransport {
                     }
                 }
                 box.start(task)
+                }
             }
         } onCancel: {
             box.cancel()

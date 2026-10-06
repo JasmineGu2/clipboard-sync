@@ -45,7 +45,7 @@ let package = Package(
         ]),
         .target(name: "ClipSync", dependencies: ["ClipCore", "ClipCrypto", "ClipStore", "ClipWire"]),
         .executableTarget(name: "clipctl", dependencies: [
-            "ClipSync",
+            "ClipSync", "ClipAppCore",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ]),
         // Randomized convergence simulation; the executable is a thin CLI over it.

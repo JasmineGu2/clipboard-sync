@@ -52,6 +52,8 @@ struct HomeFolder: Sendable {
 
     var configURL: URL { url.appendingPathComponent("config.json") }
     var databaseURL: URL { url.appendingPathComponent("clips.sqlite") }
+    /// Local copies of image and file payloads, one file per blob.
+    var blobsURL: URL { url.appendingPathComponent("blobs", isDirectory: true) }
     /// F15: while this file exists, `watch` doesn't capture.
     var pausedURL: URL { url.appendingPathComponent("paused") }
     var isPaused: Bool { FileManager.default.fileExists(atPath: pausedURL.path) }
@@ -161,7 +163,8 @@ struct Client: Sendable {
         let db = try ClipDatabase(url: home.databaseURL)
         let engine = try SyncEngine(
             db: db, vaultKey: key, transport: transport,
-            device: DeviceID(config.deviceID), deviceName: config.deviceName)
+            device: DeviceID(config.deviceID), deviceName: config.deviceName,
+            blobCache: try BlobCache(directory: home.blobsURL))
         return Client(home: home, config: config, key: key, db: db, transport: transport, engine: engine)
     }
 
@@ -201,6 +204,12 @@ struct Client: Sendable {
         } catch {
             warn("offline, saved locally and will sync later (\(describe(error)))")
         }
+    }
+
+    /// Uploads queued images and files, printing one line per chunk to stderr. No timeout: a large file takes
+    /// as long as it takes, and an interrupted upload resumes from the relay's chunks next time.
+    func uploadPending() async throws -> Int {
+        try await engine.uploadPendingBlobs(progress: chunkProgress("upload"))
     }
 
     /// Finds a visible item by the start of its ID (case-insensitive, dashes optional).

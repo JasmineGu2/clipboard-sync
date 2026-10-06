@@ -7,3 +7,6 @@ DerivedData/
 
 # Local relay data and logs
 .relay/
+
+# Blob end-to-end runs (scripts/e2e-blobs.sh)
+.e2e/

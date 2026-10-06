@@ -31,7 +31,9 @@ Dashes and case don't matter when you type the code.
 | `clipctl add <text>` | Add text. `clipctl add -` reads it from stdin, so `Get-Content notes.txt -Raw \| clipctl add -` works. |
 | `clipctl list [--limit 20] [--json]` | Newest items first. |
 | `clipctl search <words> [--json]` | Searches text, titles and tags. Each word matches as a prefix. |
-| `clipctl copy <id>` | Puts the item back on your clipboard. |
+| `clipctl send-file <path> [--name <shown name>]` | Adds an image or file and uploads it, encrypted, in 1 MiB chunks. Images get a small thumbnail (macOS). Up to 512 MB. |
+| `clipctl get <id> [--out <path>] [--force]` | Downloads an image or file and saves it (default: its name, in the current folder). Prints a text item instead. |
+| `clipctl copy <id>` | Puts a text item back on your clipboard. |
 | `clipctl pin <id>` / `unpin <id>` | Pinned items show a `*`. |
 | `clipctl rename <id> <title>` | Shows the title instead of a preview. `--clear` removes it. |
 | `clipctl tag <id> <tag>` / `untag <id> <tag>` | Tags show as `#tag`. |
@@ -49,7 +51,21 @@ A list line looks like this:
 * 3f2a9c1e  2m ago    Desk PC  #work  "Greeting"
 ```
 
-That's the pin marker, short ID, age, the device it came from, tags, then the title or the first 60 characters of the text.
+That's the pin marker, short ID, age, the device it came from, tags, then the title or the first 60 characters of the text. Images and files show their kind and size before the name:
+
+```
+  b7c01d22  5m ago    Mac  [image 2.4 MB] Screenshot.png
+```
+
+## Images and files
+
+`send-file` copies the file into `<home>/blobs`, records the item (with its size, SHA-256 and, for images, a thumbnail), syncs it, then uploads the file in encrypted 1 MiB chunks. Other devices see the item straight away; the file itself only downloads when someone asks for it with `get` (or clicks it in an app).
+
+Both directions pick up where they stopped. If an upload is cut off (Ctrl+C, a crash, Wi-Fi drops), `clipctl sync` or `watch` sends only the chunks the relay doesn't have yet. If a download is cut off, running `get` again continues from the last chunk that was saved and checked. A download only becomes a file once its SHA-256 matches what the sender recorded, so a half-finished or damaged download is never mistaken for the real thing.
+
+Each transfer prints one progress line per chunk to stderr, like `upload 5235af7c 26/50`, and `(resumed at chunk 28)` when it picked up an earlier try. `get` on an item whose sender hasn't finished uploading says so; try again later.
+
+Deleting or expiring an image or file frees it: `sync` removes the local copy and asks the relay to delete its chunks. `status` shows how many files are waiting to upload.
 
 Commands that change something (add, pin, rename, tag, delete) sync right after. If the relay doesn't answer within 8 seconds you get a warning, and the change stays saved locally and goes out on the next sync.
 

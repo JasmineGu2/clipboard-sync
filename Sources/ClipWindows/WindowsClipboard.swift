@@ -76,6 +76,36 @@ public enum WindowsClipboard {
 
     /// Puts text on the clipboard, marked so monitors (our own watcher included) don't capture it again.
     public static func write(_ text: String) throws {
+        let units = Array(text.utf16) + [0]
+        try replaceContents {
+            try set(UINT(CF_UNICODETEXT), bytes: units.count * 2) { destination in
+                units.withUnsafeBytes { source in destination.copyMemory(from: source.baseAddress!, byteCount: source.count) }
+            }
+        }
+    }
+
+    /// Puts a file on the clipboard as CF_HDROP, like copying it in Explorer, so pasting into Explorer or a chat
+    /// app pastes the file. Marked the same way as text.
+    public static func write(fileAt url: URL) throws {
+        let path = url.withUnsafeFileSystemRepresentation { $0.map { String(cString: $0) } } ?? url.path
+        // DROPFILES, then the path list: each path NUL-terminated, the list ended by one more NUL.
+        let units = Array(path.replacingOccurrences(of: "/", with: "\\").utf16) + [0, 0]
+        let header = MemoryLayout<DROPFILES>.size
+        try replaceContents {
+            try set(UINT(CF_HDROP), bytes: header + units.count * 2) { destination in
+                var drop = DROPFILES()
+                drop.pFiles = DWORD(header)
+                drop.fWide = true
+                destination.storeBytes(of: drop, as: DROPFILES.self)
+                units.withUnsafeBytes { source in
+                    destination.advanced(by: header).copyMemory(from: source.baseAddress!, byteCount: source.count)
+                }
+            }
+        }
+    }
+
+    /// Empties the clipboard, lets `fill` add the content, then adds the exclude marker.
+    private static func replaceContents(_ fill: () throws -> Void) throws {
         // SetClipboardData fails after EmptyClipboard if the clipboard was opened without an owner window,
         // so own it with a message-only window.
         let window = "STATIC".withCString(encodedAs: UTF16.self) { className in
@@ -88,10 +118,7 @@ public enum WindowsClipboard {
         defer { CloseClipboard() }
         guard EmptyClipboard() else { throw WindowsError("Couldn't empty the clipboard (Windows error \(GetLastError())).") }
 
-        let units = Array(text.utf16) + [0]
-        try set(UINT(CF_UNICODETEXT), bytes: units.count * 2) { destination in
-            units.withUnsafeBytes { source in destination.copyMemory(from: source.baseAddress!, byteCount: source.count) }
-        }
+        try fill()
         if excludeFormat != 0 {
             let marker: DWORD = 1
             try set(excludeFormat, bytes: MemoryLayout<DWORD>.size) { $0.storeBytes(of: marker, as: DWORD.self) }

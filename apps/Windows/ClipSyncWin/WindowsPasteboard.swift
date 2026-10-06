@@ -1,6 +1,7 @@
 #if os(Windows)
 import ClipAppCore
 import ClipWindows
+import Foundation
 
 /// The Win32 clipboard behind ClipAppCore's `PasteboardWriter` (copies from history, receiving the newest copy
 /// from another device). `WindowsClipboard.write` adds ExcludeClipboardContentFromMonitorProcessing, so the
@@ -13,6 +14,14 @@ final class WindowsPasteboard: PasteboardWriter {
     func write(text: String) {
         do {
             try WindowsClipboard.write(text)
+        } catch {
+            onFailure?()
+        }
+    }
+
+    func write(fileAt url: URL, contentType: String?) {
+        do {
+            try WindowsClipboard.write(fileAt: url)
         } catch {
             onFailure?()
         }

@@ -82,13 +82,12 @@ enum Sock {
         #endif
     }
 
+    /// Lets a restarted listener rebind while old connections sit in TIME_WAIT. Not on Windows: there
+    /// SO_REUSEADDR also lets a second listener share a port that's in use (the tray app and `clipctl watch`
+    /// would split incoming peers), and the default bind already ignores TIME_WAIT.
     static func reuseAddress(_ s: SocketHandle) {
+        #if !os(Windows)
         var one: Int32 = 1
-        #if os(Windows)
-        _ = withUnsafePointer(to: &one) {
-            $0.withMemoryRebound(to: CChar.self, capacity: 4) { setsockopt(s, SOL_SOCKET, SO_REUSEADDR, $0, 4) }
-        }
-        #else
         _ = setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
         #endif
     }
@@ -99,7 +98,11 @@ enum Sock {
         #if canImport(Darwin)
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         #endif
+        #if os(Windows)
+        addr.sin_family = ADDRESS_FAMILY(AF_INET)
+        #else
         addr.sin_family = sa_family_t(AF_INET)
+        #endif
         addr.sin_port = UInt16(port).bigEndian
         let value = UInt32(octets[0]) << 24 | UInt32(octets[1]) << 16 | UInt32(octets[2]) << 8 | UInt32(octets[3])
         #if os(Windows)

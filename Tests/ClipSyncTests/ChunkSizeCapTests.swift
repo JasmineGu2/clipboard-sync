@@ -211,21 +211,23 @@ final class StubRelayProtocol: URLProtocol, @unchecked Sendable {
         var headers = ["Content-Type": "application/octet-stream"]
         if let declared = scenario.declaredLength { headers["Content-Length"] = String(declared) }
         let response = HTTPURLResponse(url: url, statusCode: scenario.status, httpVersion: "HTTP/1.1", headerFields: headers)!
+        // Linux Foundation marks URLProtocol non-Sendable, which overrides this class's @unchecked Sendable.
+        nonisolated(unsafe) let stub: URLProtocol = self
         let client = self.client
-        Thread.detachNewThread { [self] in
+        Thread.detachNewThread {
             defer { scenario.done() }
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(stub, didReceive: response, cacheStoragePolicy: .notAllowed)
             var offset = 0
             while offset < scenario.total, !scenario.stopped {
                 let count = min(StubScenario.piece, scenario.total - offset)
                 let piece = scenario.total <= StubScenario.piece
                     ? StubScenario.body(count) : Data(repeating: 0xAB, count: count)
-                client?.urlProtocol(self, didLoad: piece)
+                client?.urlProtocol(stub, didLoad: piece)
                 scenario.sent(count)
                 offset += count
                 Thread.sleep(forTimeInterval: 0.001)
             }
-            if !scenario.stopped { client?.urlProtocolDidFinishLoading(self) }
+            if !scenario.stopped { client?.urlProtocolDidFinishLoading(stub) }
         }
     }
 

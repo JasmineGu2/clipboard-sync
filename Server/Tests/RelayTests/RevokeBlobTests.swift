@@ -41,7 +41,7 @@ import Testing
             #expect(try await client.putChunk(0, count: 2, body: chunkBody(8), token: newToken).status == .noContent)
             let download = try await client.getChunk(0, token: newToken)
             #expect(download.status == .ok)
-            #expect(Data(buffer: download.body) == Data(repeating: 8, count: 64))
+            #expect(Data(download.body.readableBytesView) == Data(repeating: 8, count: 64))
         }
     }
 

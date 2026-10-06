@@ -45,6 +45,18 @@ public actor SQLiteRelayStorage: RelayStorage {
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                -- Blobs (F11, F12): sealed chunks, opaque to the relay. created_at is for a future age-based GC.
+                CREATE TABLE IF NOT EXISTS blobs(
+                    blob_id TEXT PRIMARY KEY,
+                    chunk_count INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS blob_chunks(
+                    blob_id TEXT NOT NULL,
+                    idx INTEGER NOT NULL,
+                    data BLOB NOT NULL,
+                    PRIMARY KEY(blob_id, idx)
+                ) WITHOUT ROWID;
                 """)
             self.relayEpoch = try Self.loadOrCreateEpoch(handle)
         } catch {
@@ -190,6 +202,84 @@ public actor SQLiteRelayStorage: RelayStorage {
         let purge = try Statement(db, "DELETE FROM pairing WHERE expires_at <= ?")
         try purge.bind(1, now)
         _ = try purge.step()
+    }
+
+    // MARK: Blobs
+
+    public func putBlobChunk(
+        blobID: String, index: Int, count: Int, data: Data, now: Int64, maxTotalBytes: Int64
+    ) throws -> BlobChunkPutResult {
+        var result = BlobChunkPutResult.stored
+        try transaction {
+            let existing = try Statement(db, "SELECT chunk_count FROM blobs WHERE blob_id = ?")
+            try existing.bind(1, blobID)
+            if try existing.step() {
+                let stored = Int(existing.int64(0))
+                guard stored == count else {
+                    result = .countMismatch(existing: stored)
+                    return
+                }
+            }
+            let has = try Statement(db, "SELECT 1 FROM blob_chunks WHERE blob_id = ? AND idx = ?")
+            try has.bind(1, blobID)
+            try has.bind(2, Int64(index))
+            if try has.step() {
+                result = .alreadyStored
+                return
+            }
+            guard try blobBytesStored() + Int64(data.count) <= maxTotalBytes else {
+                result = .full
+                return
+            }
+            let blob = try Statement(db, "INSERT OR IGNORE INTO blobs(blob_id, chunk_count, created_at) VALUES(?, ?, ?)")
+            try blob.bind(1, blobID)
+            try blob.bind(2, Int64(count))
+            try blob.bind(3, now)
+            _ = try blob.step()
+            let chunk = try Statement(db, "INSERT INTO blob_chunks(blob_id, idx, data) VALUES(?, ?, ?)")
+            try chunk.bind(1, blobID)
+            try chunk.bind(2, Int64(index))
+            try chunk.bind(3, data)
+            _ = try chunk.step()
+        }
+        return result
+    }
+
+    public func blobStatus(blobID: String) throws -> (chunkCount: Int, received: [Int])? {
+        let blob = try Statement(db, "SELECT chunk_count FROM blobs WHERE blob_id = ?")
+        try blob.bind(1, blobID)
+        guard try blob.step() else { return nil }
+        let count = Int(blob.int64(0))
+        let chunks = try Statement(db, "SELECT idx FROM blob_chunks WHERE blob_id = ? ORDER BY idx")
+        try chunks.bind(1, blobID)
+        var received: [Int] = []
+        while try chunks.step() { received.append(Int(chunks.int64(0))) }
+        return (count, received)
+    }
+
+    public func blobChunk(blobID: String, index: Int) throws -> Data? {
+        let query = try Statement(db, "SELECT data FROM blob_chunks WHERE blob_id = ? AND idx = ?")
+        try query.bind(1, blobID)
+        try query.bind(2, Int64(index))
+        guard try query.step() else { return nil }
+        return query.blob(0)
+    }
+
+    public func deleteBlob(blobID: String) throws {
+        try transaction {
+            for sql in ["DELETE FROM blob_chunks WHERE blob_id = ?", "DELETE FROM blobs WHERE blob_id = ?"] {
+                let delete = try Statement(db, sql)
+                try delete.bind(1, blobID)
+                _ = try delete.step()
+            }
+        }
+    }
+
+    public func blobBytesStored() throws -> Int64 {
+        // length() reads the size from the record header, not the blob itself.
+        let query = try Statement(db, "SELECT COALESCE(SUM(length(data)), 0) FROM blob_chunks")
+        _ = try query.step()
+        return query.int64(0)
     }
 
     // MARK: Auth

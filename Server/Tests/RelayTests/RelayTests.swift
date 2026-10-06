@@ -27,6 +27,7 @@ struct Relay {
     let notifier = PushNotifier()
     let clock = TestClock()
     var pinnedHash: String?
+    var maxBlobStorageBytes = RelayConfig().maxBlobStorageBytes
 
     init(pinnedHash: String? = nil) throws {
         storage = try .inMemory()
@@ -36,6 +37,7 @@ struct Relay {
     func run(_ body: @Sendable (any TestClientProtocol) async throws -> Void) async throws {
         var config = RelayConfig()
         config.authTokenSHA256 = pinnedHash
+        config.maxBlobStorageBytes = maxBlobStorageBytes
         let clock = self.clock
         config.now = { clock.now }
         let app = Application(router: buildRelayRouter(storage: storage, notifier: notifier, config: config))

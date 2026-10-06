@@ -12,6 +12,8 @@ public struct RelayConfig: Sendable {
     /// Most unexpired pairing blobs held at once (429 beyond it).
     public var maxLivePairings: Int = WireLimits.maxLivePairings
     public var maxIDLength: Int = WireLimits.maxIDBytes
+    /// Cap on all stored blob chunks together; a chunk that would pass it gets 507.
+    public var maxBlobStorageBytes: Int64 = 20 * 1024 * 1024 * 1024
     /// Operator-pinned SHA-256 of the bearer token (64 hex chars). Setting it turns off trust on first use.
     public var authTokenSHA256: String?
     /// Unix seconds. Injected so tests can move time forward.
@@ -38,6 +40,8 @@ public enum RelayBodyLimits {
     public static let pairing = WireLimits.maxPairingBodyBytes
     /// `{"newTokenSHA256":"<64 hex>"}` is under 100 bytes.
     public static let rotate = 1024
+    /// One sealed chunk, raw bytes.
+    public static let blobChunk = WireLimits.maxBlobChunkBodyBytes
 }
 
 /// Builds the relay's routes:
@@ -45,6 +49,7 @@ public enum RelayBodyLimits {
 /// - `POST /v1/ops`, `GET /v1/ops?after=&limit=&wait=` (bearer auth)
 /// - `PUT  /v1/pairing/{id}` (bearer auth), `GET /v1/pairing/{id}` (no auth: the new device has no token yet)
 /// - `POST /v1/auth/rotate` (bearer auth with the current token)
+/// - `PUT|GET /v1/blobs/{id}/chunks/{index}`, `GET|DELETE /v1/blobs/{id}` (bearer auth; see ClipWire)
 public func buildRelayRouter(
     storage: any RelayStorage,
     notifier: PushNotifier,
@@ -132,10 +137,78 @@ public func buildRelayRouter(
         return Response(status: .noContent)
     }
 
+    // MARK: Blobs (F11, F12). The relay stores sealed chunks as sent and never learns which item they belong to.
+
+    router.put("v1/blobs/:id/chunks/:index") { request, context -> Response in
+        try await auth.authorize(request)
+        let id = try blobID(context)
+        let index = try chunkIndex(context)
+        guard let raw = request.uri.queryParameters.get("count"), let count = Int(raw),
+              (1...WireLimits.maxBlobChunks).contains(count)
+        else {
+            throw HTTPError(.badRequest, message: "count must be 1...\(WireLimits.maxBlobChunks)")
+        }
+        guard index < count else { throw HTTPError(.badRequest, message: "index must be below count") }
+        let body = try await collectBody(request, limit: RelayBodyLimits.blobChunk)
+        guard body.readableBytes >= WireLimits.blobChunkOverheadBytes else {
+            throw HTTPError(.badRequest, message: "a chunk is at least \(WireLimits.blobChunkOverheadBytes) bytes")
+        }
+        let result = try await storage.putBlobChunk(
+            blobID: id, index: index, count: count, data: Data(body.readableBytesView), now: config.now(),
+            maxTotalBytes: config.maxBlobStorageBytes)
+        switch result {
+        case .stored, .alreadyStored: return Response(status: .noContent)
+        case .countMismatch(let existing):
+            throw HTTPError(.conflict, message: "blob already has \(existing) chunks")
+        case .full: throw HTTPError(.init(code: 507, reasonPhrase: "Insufficient Storage"), message: "the relay's blob storage is full")
+        }
+    }
+
+    router.get("v1/blobs/:id") { request, context -> Response in
+        try await auth.authorize(request)
+        let id = try blobID(context)
+        guard let status = try await storage.blobStatus(blobID: id) else { throw HTTPError(.notFound) }
+        return try jsonResponse(BlobStatus(blobID: id, chunkCount: status.chunkCount, received: status.received))
+    }
+
+    router.get("v1/blobs/:id/chunks/:index") { request, context -> Response in
+        try await auth.authorize(request)
+        let id = try blobID(context)
+        let index = try chunkIndex(context)
+        guard let data = try await storage.blobChunk(blobID: id, index: index) else { throw HTTPError(.notFound) }
+        return Response(
+            status: .ok,
+            headers: [.contentType: "application/octet-stream"],
+            body: ResponseBody(byteBuffer: ByteBuffer(bytes: data)))
+    }
+
+    router.delete("v1/blobs/:id") { request, context -> Response in
+        try await auth.authorize(request)
+        try await storage.deleteBlob(blobID: try blobID(context))
+        return Response(status: .noContent)
+    }
+
     return router
 }
 
 // MARK: - Helpers
+
+/// Blob IDs are canonical UUID strings, compared as sent (clients send upper case).
+private func blobID(_ context: RelayRequestContext) throws -> String {
+    guard let id = context.parameters.get("id"), WireLimits.isValidBlobID(id) else {
+        throw HTTPError(.badRequest, message: "blob id must be a UUID")
+    }
+    return id
+}
+
+private func chunkIndex(_ context: RelayRequestContext) throws -> Int {
+    guard let raw = context.parameters.get("index"), let index = Int(raw), index >= 0,
+          index < WireLimits.maxBlobChunks
+    else {
+        throw HTTPError(.badRequest, message: "chunk index must be 0...\(WireLimits.maxBlobChunks - 1)")
+    }
+    return index
+}
 
 func validate(_ push: PushRequest, maxIDLength: Int) throws {
     guard push.envelopes.count <= WireLimits.maxEnvelopesPerPush else {

@@ -28,6 +28,17 @@ public enum PairingPutResult: Sendable, Equatable {
     case full
 }
 
+/// Outcome of storing one blob chunk.
+public enum BlobChunkPutResult: Sendable, Equatable {
+    case stored
+    /// That chunk was already stored; the first copy is kept (HTTP 204 all the same, so retries are safe).
+    case alreadyStored
+    /// The blob's first chunk gave a different chunk count (HTTP 409).
+    case countMismatch(existing: Int)
+    /// Storing it would pass the relay's blob storage cap (HTTP 507).
+    case full
+}
+
 /// Persistence for the relay. The server only ever sees ciphertext and routing IDs.
 public protocol RelayStorage: Actor {
     /// Appends envelopes in one transaction. Envelopes whose opID is already stored are ignored,
@@ -45,6 +56,19 @@ public protocol RelayStorage: Actor {
     func putPairing(id: String, blob: Data, expiresAt: Int64, now: Int64, maxLive: Int) throws -> PairingPutResult
     /// Returns the blob once and deletes it. nil when missing or expired.
     func takePairing(id: String, now: Int64) throws -> Data?
+
+    /// Stores one sealed blob chunk. The first chunk of a blob fixes its chunk count. Refuses (`.full`) when the
+    /// blob bytes stored would pass `maxTotalBytes`.
+    func putBlobChunk(blobID: String, index: Int, count: Int, data: Data, now: Int64, maxTotalBytes: Int64) throws
+        -> BlobChunkPutResult
+    /// The blob's chunk count and the indexes stored, ascending; nil when no chunk of it is stored.
+    func blobStatus(blobID: String) throws -> (chunkCount: Int, received: [Int])?
+    /// One stored chunk's bytes, or nil.
+    func blobChunk(blobID: String, index: Int) throws -> Data?
+    /// Removes a blob and all its chunks. Removing a missing blob is not an error.
+    func deleteBlob(blobID: String) throws
+    /// Total bytes of every stored chunk.
+    func blobBytesStored() throws -> Int64
 
     /// The stored auth token hash, or nil if none has been set or adopted yet.
     func authTokenHash() throws -> String?

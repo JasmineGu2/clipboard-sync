@@ -5,7 +5,14 @@ import Foundation
 /// What a device record says, once opened.
 public struct DeviceInfo: Codable, Equatable, Sendable {
     public var name: String
-    public init(name: String) { self.name = name }
+    /// F16: where this device listens for direct sync, as "<IPv4>:<port>" on its tailnet address. nil when it
+    /// doesn't listen (the iPhone, or a client started without a peer port). Sealed with the name, so the relay
+    /// doesn't learn it. Older clients ignore the field.
+    public var peer: String?
+    public init(name: String, peer: String? = nil) {
+        self.name = name
+        self.peer = peer
+    }
 }
 
 /// Seals and opens device records (the vault's device list on the relay). See docs/design.md §3 (F13).

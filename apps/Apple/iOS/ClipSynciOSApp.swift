@@ -11,7 +11,8 @@ struct ClipSynciOSApp: App {
         // Only the onboarding prefill: since iOS 16, UIDevice.name is the generic model name without a
         // special entitlement, so onboarding asks for a name and saves it in the config.
         deviceName: UIDevice.current.model,
-        pasteboard: IOSPasteboard()
+        pasteboard: IOSPasteboard(),
+        peerSupport: PeerSockets.dialOnly
     )
     @Environment(\.scenePhase) private var scenePhase
 

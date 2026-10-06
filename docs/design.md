@@ -147,6 +147,14 @@ Only swift-crypto primitives (same API as CryptoKit).
   pull. `cursorAhead` triggers the same recovery as a second line of defense (a relay without epochs, or one
   restored from a backup, which keeps its epoch).
 
+**Direct sync (F16, §7)**
+- `SyncEngine.enablePeerSync(PeerSetup(dialer:listenAddress:))`, `handlePeerRequest(_:) -> Data` (the listener's
+  handler), `syncWithPeers() -> Int`, `peers() -> [PeerInfo]`, `syncPath: SyncPath` (`.relay`, `.direct(peers:)`,
+  `.offline`). `run()` dials peers every 2 s while the relay is unreachable.
+- `protocol PeerDialer`, `protocol PeerListener` (ClipSync); `SocketPeerDialer`, `SocketPeerListener`,
+  `TailnetAddress.detect()` (ClipPeerSocket, BSD sockets); `InMemoryPeerNetwork` for tests.
+- ClipStore: `ops(afterSeq:limit:)`, `logID()`, `insertFromPeer(_:meta:)`. ClipCrypto: `PeerChannel`.
+
 **Relay (Server/)**: separate SwiftPM package (Hummingbird), so the root package keeps building on Windows.
 SQLite table `envelopes(seq INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT UNIQUE, item_id, device_id, ciphertext)`.
 Its epoch (a random UUID string, `meta.relay_epoch`) is made when the database is created and changes only on a
@@ -246,3 +254,78 @@ Copying an image or file item downloads it first, then puts a copy named like th
 URL for Finder plus, for images, the image data. Another device's newest image doesn't land on the clipboard by
 itself (`LatestClipFollower` is text-only), because that would mean downloading every image on every device.
 
+
+## 7. Direct sync when the relay is unreachable (F16)
+
+**The shape.** The relay is a VM, and VMs go down. While it's unreachable, devices on the tailnet sync with each
+other directly. A device that can listen (the Mac app, `clipctl watch --peer-port N`) accepts TCP connections on its
+Tailscale address. The iPhone only dials, because iOS suspends a listener in the background. When the relay is back,
+normal sync resumes, and the relay catches up through the normal push path.
+
+```
+ iPhone ──dial──► Mac (listens 100.x.y.z:8790) ◄──dial── PC (listens too, and dials the Mac)
+          one TCP connection per exchange: [len][PeerRequestFrame] → [len][PeerResponseFrame]
+```
+
+**Every device's log is a little relay.** The relay's contract is "an append-only log with numbers; pull after a
+cursor". Each device already has one: its `ops` table, numbered by `seq`, never renumbered or deleted from. So a
+dialer keeps, per listener, a pull cursor into the listener's log and a push cursor into its own, and each exchange
+sends "my log after your push cursor" and gets back "your log after my pull cursor". Both cursors move in the same
+transaction as the ops they cover (`insertFromPeer`). Each log has a random ID (`log_id` in meta); a cursor is kept
+with the log ID it belongs to, and a different ID (a reinstall) starts that pair over from 0. Nothing about merging
+changes. The same ops arrive by another road, and a duplicate is a no-op (N13). The relay's seq can't be the cursor,
+since ops recorded offline or received directly have none. A vector of per-device timestamp high-waters looks
+tempting, but ops from one device can arrive out of order through different paths, and a gap would be skipped
+without a trace.
+
+**The relay catches up.** Ops received directly are stored with `outbound = 1`, as if this device had recorded them.
+When the relay answers again, every device pushes what it got directly, the relay dedupes by op ID, and a device
+that never comes back (an iPhone left in a drawer) doesn't take its copies with it.
+
+**Finding peers.** A listener puts its address (`"<IPv4>:<port>"`) in its device record, sealed with its name under
+the vault key, so the relay doesn't learn it. Each device caches the device list as the relay sent it (still sealed),
+refreshes it at most once a minute after a successful relay sync, and opens it with the current vault key when it
+needs it. After a revoke the cache stops opening, so a device has no peers until its next relay sync reads the new
+list, which no longer has the revoked device. A listener that gets a request from a device it doesn't know refreshes
+its list on its next relay sync.
+
+**The channel.** Inside the TCP connection, both sides send ordinary OpCipher envelopes, so the ops are encrypted
+exactly as on the relay. Around them, each request is sealed with HPKE in AuthPSK mode (`PeerChannel`):
+- to the listener's device key (X25519, from F13), so only that device can open it;
+- authenticated by the dialer's device key, so the listener knows which listed device sent it;
+- with a PSK from the vault key (`HKDF(vault, "clip.peer.psk.v1")`), so both must hold the current vault key;
+- with info `"clip.peer.v1|<from>|<to>"`, so a request can't be redirected or reflected.
+
+The response is AES-256-GCM under a key exported from that request's HPKE context, so it opens only for the request
+it answers. The listener refuses requests more than 5 minutes off its clock and any whose ephemeral key it has seen
+in the last 10 minutes (checked only after the request authenticates). Refusals (`badRequest`, `unknownDevice`,
+`unauthenticated`, `replay`, `clockSkew`, `unavailable`) are the only plaintext besides the two device IDs.
+The response also carries the responder's newest seq. The dialer rejects a page whose seqs don't climb from its
+cursor or pass that number, and a cursor past it means the log went back (a database restored from a backup keeps
+its log ID), so that pair starts over.
+
+**When it runs.** `run()` marks the relay unreachable on a network error or a 5xx, and a side task then dials every
+listening peer every 2 s, and right after each local change. A successful relay sync turns it off again.
+`syncPath` reports `.relay`, `.direct(peers:)` (exchanged with that many devices in the last 30 s) or `.offline`.
+The Mac menu shows it, the status line says "Syncing directly", and `clipctl status` shows what a running `watch`
+last saw.
+
+**Sockets.** `ClipPeerSocket` is one BSD-socket implementation (Darwin, Glibc, Winsock) for every client, behind
+ClipSync's `PeerDialer` and `PeerListener`, so ClipSync stays free of platform APIs. Blocking sockets on their own
+threads, never on Swift's cooperative pool. The listener binds only the address it's given (by default the
+Tailscale address, found by "connecting" a UDP socket to 100.100.100.100 and reading the local address; nothing is
+sent). It reads the 4-byte length first and refuses anything over 8 MiB, grows its buffer only as bytes
+arrive, serves at most 8 connections at once, and gives each one 10 s in total (a deadline, not a per-read timeout).
+The accept loop polls a stop flag and closes its own socket, so a restarted listener can take the port straight
+back. Dialers only connect to Tailscale addresses (loopback only when they listen on loopback themselves). The Mac listens on port 8790 (any free port if that's taken) and needs
+the `network.server` sandbox entitlement.
+
+**What's not direct.** Image and file payloads still go through the relay: their items and thumbnails sync
+directly, and copying one downloads it once the relay is back. Pairing and revoking need the relay.
+
+**Harness.** `--peer logCursors` takes the relay down for long stretches (58% of steps in the default run), lets
+devices exchange directly with the usual drops and crashes, then keeps the relay down while every device syncs
+directly until quiet and checks that devices on one vault key agree, then brings the relay back and runs the
+usual final checks. It passes 500/500 alone and with `--revoke repushAll`, blobs and expiry. Two broken variants
+are caught on every seed: `outboxOnly` (exchange only ops the relay hasn't acknowledged) and `ignoresVaultKey`
+(talk across a revoke, which hands the revoked device new ops).

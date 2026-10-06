@@ -19,12 +19,15 @@ public struct VaultDevice: Equatable, Hashable, Sendable, Identifiable {
     public let name: String
     public let publicKey: Data
     public let isThisDevice: Bool
+    /// F16: where it listens for direct sync ("<IPv4>:<port>"), if it does.
+    public let peerAddress: String?
 
-    public init(id: String, name: String, publicKey: Data, isThisDevice: Bool) {
+    public init(id: String, name: String, publicKey: Data, isThisDevice: Bool, peerAddress: String? = nil) {
         self.id = id
         self.name = name
         self.publicKey = publicKey
         self.isThisDevice = isThisDevice
+        self.peerAddress = peerAddress
     }
 }
 
@@ -58,21 +61,23 @@ extension SyncEngine {
     /// under the current vault key are left out (and are dropped by the next revoke).
     public func devices() async throws -> [VaultDevice] {
         try await registerIfNeeded()
-        return opened(try await transport.listDevices())
+        let records = try await transport.listDevices()
+        cachePeerDirectory(records)
+        return opened(records)
     }
 
     /// Opens records under the current vault key, this device first, then by name.
-    private func opened(_ records: [DeviceRecord]) -> [VaultDevice] {
+    func opened(_ records: [DeviceRecord], quiet: Bool = false) -> [VaultDevice] {
         let key = vaultKey
         let mine = deviceIDString
         return records.compactMap { record -> VaultDevice? in
             guard let info = try? DeviceDirectory.open(record, vaultKey: key) else {
-                log("ignoring a device record that doesn't open under this vault key: \(record.deviceID)")
+                if !quiet { log("ignoring a device record that doesn't open under this vault key: \(record.deviceID)") }
                 return nil
             }
             return VaultDevice(
                 id: record.deviceID, name: info.name, publicKey: record.publicKey,
-                isThisDevice: record.deviceID == mine)
+                isThisDevice: record.deviceID == mine, peerAddress: info.peer)
         }
         .sorted { ($0.isThisDevice ? 0 : 1, $0.name.lowercased(), $0.id) < ($1.isThisDevice ? 0 : 1, $1.name.lowercased(), $1.id) }
     }
@@ -123,7 +128,8 @@ extension SyncEngine {
         let newKey = VaultKey.generate()
         let records = try kept.map {
             try DeviceDirectory.seal(
-                deviceID: $0.id, publicKey: $0.publicKey, info: DeviceInfo(name: $0.name), vaultKey: newKey)
+                deviceID: $0.id, publicKey: $0.publicKey, info: DeviceInfo(name: $0.name, peer: $0.peerAddress),
+                vaultKey: newKey)
         }
         // This device gets a handoff too: if it crashes before saving the new key, its next 401 recovers it.
         let handoffs = try kept.map {
@@ -137,7 +143,8 @@ extension SyncEngine {
         log("removed \(removed.map(\.name).joined(separator: ", ")) from the vault; switching to a new vault key")
 
         try adopt(newKey, membership: membership)
-        registeredUnder = newKey.authTokenSHA256  // the revoke already wrote this device's record under the new key
+        // The revoke already wrote this device's record under the new key (with the address it had listed).
+        registeredUnder = registrationMarker(newKey, peer: all.first(where: \.isThisDevice)?.peerAddress)
         wake()  // a long-poll still waiting with the old token ends now
         do {
             try await performSync()  // new epoch: re-pushes everything under the new key
@@ -208,6 +215,10 @@ extension SyncEngine {
         transport = membership.makeTransport(key.authToken)
         transferer = Self.makeTransferer(cache: blobCache, transport: transport, vaultKey: key, meter: transferMeter)
         registeredUnder = nil
+        // The cached device list is sealed under the old key, so it no longer opens: no direct sync until the next
+        // sync refreshes it under the new key. Devices left out by the revoke never come back into it.
+        peerDirectoryRefreshedAt = nil
+        peerContacts = [:]
         wakeBlobs()
     }
 
@@ -215,11 +226,12 @@ extension SyncEngine {
     /// A relay from before F13 (404) or a taken device ID (409) is logged and not retried.
     func registerIfNeeded() async throws {
         guard let membership else { return }
-        let tokenHash = vaultKey.authTokenSHA256
-        guard registeredUnder != tokenHash else { return }
+        let peer = peerSetup?.listenAddress
+        let marker = registrationMarker(vaultKey, peer: peer)
+        guard registeredUnder != marker else { return }
         let record = try DeviceDirectory.seal(
             deviceID: deviceIDString, publicKey: membership.deviceKey.publicKey,
-            info: DeviceInfo(name: deviceName), vaultKey: vaultKey)
+            info: DeviceInfo(name: deviceName, peer: peer), vaultKey: vaultKey)
         do {
             try await transport.putDevice(record)
         } catch TransportError.notFound {
@@ -229,6 +241,12 @@ extension SyncEngine {
         } catch TransportError.rateLimited {
             log("the relay's device list is full; this device can't be handed a new key")
         }
-        registeredUnder = tokenHash
+        registeredUnder = marker
+    }
+
+    /// What `registeredUnder` records: the vault key's token hash and the advertised peer address (F16), so a
+    /// new key or a new address registers again.
+    func registrationMarker(_ key: VaultKey, peer: String?) -> String {
+        key.authTokenSHA256 + "|" + (peer ?? "")
     }
 }

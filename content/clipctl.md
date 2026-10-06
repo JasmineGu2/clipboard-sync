@@ -91,6 +91,22 @@ While `watch` runs on Windows, the newest copy from any other device goes straig
 
 On macOS and Linux, `watch` only syncs.
 
+## When the relay is down
+
+If the relay can't be reached, `watch` syncs straight with your other devices over Tailscale and the relay catches up when it's back. One device has to listen for the others to reach it:
+
+```
+clipctl watch --peer-port 8790
+```
+
+It listens on this computer's Tailscale address only and prints it, like `Listening for direct sync on 100.101.102.103:8790`. If Tailscale isn't on, it says so; `--peer-host <IPv4>` picks the address by hand. The Mac app listens on its own. Without `--peer-port`, `watch` still reaches devices that listen, which is all the iPhone does.
+
+While the relay is down, `watch` prints `sync path: direct (relay unreachable; 2 devices)`, and `relay` again once it's back. `clipctl status` shows the last path a running `watch` saw and the address it listens on.
+
+Only devices in your vault, on its current key, can connect, and everything is encrypted on top of Tailscale. A device paired in the last minute before the relay went down may not be known to the others yet. Images and files show up with their thumbnails, but the file itself downloads once the relay is back. Pairing and removing devices need the relay.
+
+After removing a lost device, also remove it from your tailnet in the Tailscale admin console. A device that can't reach the relay hasn't heard about the removal yet and would still sync with it directly.
+
 ## Removing a lost device
 
 If you lose a device, remove it from any other one:

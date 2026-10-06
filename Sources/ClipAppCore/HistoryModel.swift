@@ -58,6 +58,8 @@ public enum SyncIndicator: Equatable, Sendable {
     case offline
     /// F13: another device removed this one; syncing has stopped.
     case removed
+    /// F16: the relay is unreachable, but this device is syncing directly with others.
+    case direct(peers: Int)
 
     public var text: String {
         switch self {
@@ -65,6 +67,18 @@ public enum SyncIndicator: Equatable, Sendable {
         case .syncing: Strings.statusSyncing
         case .offline: Strings.statusOffline
         case .removed: Strings.statusRemoved
+        case .direct(let peers): Strings.format(Strings.statusDirect, ["count": String(peers)])
+        }
+    }
+}
+
+extension SyncPath {
+    /// One line for the Mac menu (F16).
+    public var text: String {
+        switch self {
+        case .relay: Strings.syncPathRelay
+        case .direct(let peers): Strings.format(Strings.syncPathDirect, ["count": String(peers)])
+        case .offline: Strings.syncPathNone
         }
     }
 }
@@ -78,6 +92,8 @@ public final class HistoryModel {
     /// True when the last fetch filled the page, so there may be more.
     public private(set) var canLoadMore = false
     public private(set) var syncStatus: SyncIndicator = .synced(lastSyncedAt: nil)
+    /// F16: relay, direct to other devices, or neither.
+    public private(set) var syncPath: SyncPath = .relay
     /// The last error, as copy. The UI shows it and sets it back to nil.
     public var message: AppMessage?
     /// The item most recently put on the clipboard, for a "Copied" confirmation. Clears itself after
@@ -261,10 +277,13 @@ public final class HistoryModel {
     private func updateStatus() async {
         let status = await engine.status
         let last = await engine.lastSyncedAt
+        let path = await engine.syncPath
+        syncPath = path
         switch status {
         case .idle: syncStatus = .synced(lastSyncedAt: last)
         case .syncing: syncStatus = .syncing
-        case .offline: syncStatus = .offline
+        case .offline:
+            if case .direct(let peers) = path { syncStatus = .direct(peers: peers) } else { syncStatus = .offline }
         case .revoked: syncStatus = .removed
         }
     }

@@ -9,6 +9,19 @@ import Observation
 /// an `InMemoryRelay` in tests.
 public typealias TransportFactory = @Sendable (URL, String?) -> any SyncTransport
 
+/// F16: direct device-to-device sync while the relay is unreachable. Platform code supplies the sockets
+/// (ClipPeerSocket): the Mac listens and dials, the iPhone only dials (it can't listen in the background).
+public struct PeerSupport: Sendable {
+    public var dialer: any PeerDialer
+    /// Makes and binds this device's listener, or returns nil when it can't (no Tailscale address). nil: dial only.
+    public var makeListener: (@Sendable () -> PeerListener?)?
+
+    public init(dialer: any PeerDialer, makeListener: (@Sendable () -> PeerListener?)? = nil) {
+        self.dialer = dialer
+        self.makeListener = makeListener
+    }
+}
+
 /// Where the app is in setup.
 public enum OnboardingState: Equatable, Sendable {
     /// No vault yet: show onboarding (create, or join with a code).
@@ -61,6 +74,8 @@ public final class ClipApp {
     @ObservationIgnored private var engine: SyncEngine?
     @ObservationIgnored private var runTask: Task<Void, Never>?
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
+    @ObservationIgnored private let peerSupport: PeerSupport?
+    @ObservationIgnored private var peerListener: PeerListener?
 
     /// How often a running app re-checks for expired items.
     nonisolated static let expiryCheckInterval: Duration = .seconds(3600)
@@ -70,8 +85,9 @@ public final class ClipApp {
     private init(
         home: URL, keyStore: any KeyStore, deviceName: String, pasteboard: any PasteboardWriter,
         makeTransport: @escaping TransportFactory, autoSync: Bool, db: ClipDatabase?, state: OnboardingState,
-        thumbnails: any ThumbnailMaker = NoThumbnails()
+        thumbnails: any ThumbnailMaker = NoThumbnails(), peerSupport: PeerSupport? = nil
     ) {
+        self.peerSupport = peerSupport
         self.blobCache = db == nil ? nil : try? BlobCache(directory: home.appendingPathComponent(Self.blobsFolderName))
         self.thumbnails = thumbnails
         self.home = home
@@ -95,7 +111,8 @@ public final class ClipApp {
         pasteboard: any PasteboardWriter,
         makeTransport: @escaping TransportFactory = ClipApp.httpTransport,
         autoSync: Bool = true,
-        thumbnails: any ThumbnailMaker = platformThumbnailMaker()
+        thumbnails: any ThumbnailMaker = platformThumbnailMaker(),
+        peerSupport: PeerSupport? = nil
     ) -> ClipApp {
         let db: ClipDatabase
         do {
@@ -108,7 +125,8 @@ public final class ClipApp {
         }
         let app = ClipApp(
             home: home, keyStore: keyStore, deviceName: deviceName, pasteboard: pasteboard,
-            makeTransport: makeTransport, autoSync: autoSync, db: db, state: .needsSetup, thumbnails: thumbnails)
+            makeTransport: makeTransport, autoSync: autoSync, db: db, state: .needsSetup, thumbnails: thumbnails,
+            peerSupport: peerSupport)
         HistoryModel.cleanExports(in: home.appendingPathComponent(exportsFolderName), olderThan: 24 * 60 * 60)
         do {
             if let config = try AppConfig.load(from: app.configURL), let key = try keyStore.loadVaultKey() {
@@ -294,6 +312,8 @@ public final class ClipApp {
         runTask = nil
         expiryTask?.cancel()
         expiryTask = nil
+        peerListener?.stop()
+        peerListener = nil
         history?.stop()
     }
 
@@ -355,7 +375,21 @@ public final class ClipApp {
         self.history = history
         history.start()
         if autoSync {
-            runTask = Task { await engine.run() }
+            // F16: listen (Mac) and dial (both) while the relay is unreachable.
+            let listener = peerSupport?.makeListener?()
+            if let listener {
+                do {
+                    try listener.start { await engine.handlePeerRequest($0) }
+                    peerListener = listener
+                } catch {
+                    listener.stop()
+                }
+            }
+            let setup = peerSupport.map { PeerSetup(dialer: $0.dialer, listenAddress: peerListener?.boundAddress) }
+            runTask = Task {
+                if let setup { await engine.enablePeerSync(setup) }
+                await engine.run()
+            }
             expiryTask = Task { [weak self] in
                 while !Task.isCancelled {
                     await self?.expireNow()

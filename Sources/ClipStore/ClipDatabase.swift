@@ -135,6 +135,20 @@ public final class ClipDatabase: @unchecked Sendable {
         }
     }
 
+    /// F16: stores ops from another device directly (not through the relay), queued for push so the relay catches up
+    /// once it's back, and writes `meta` (that peer's cursors) in the same transaction (PRD N12). Ops already here are
+    /// ignored, so a duplicate delivery changes nothing (N13).
+    @discardableResult
+    public func insertFromPeer(_ ops: [Op], meta: [String: String?]) throws -> [Op] {
+        try locked {
+            try inTransaction {
+                let inserted = try insertOps(ops, outbound: true)
+                for (key, value) in meta { try writeMeta(key, value) }
+                return inserted
+            }
+        }
+    }
+
     /// Rebuilds every item and the search index from the op log. A repair tool; also used by tests.
     public func refoldAll() throws {
         try locked {
@@ -353,6 +367,43 @@ public final class ClipDatabase: @unchecked Sendable {
                 ops.append(try decoder.decode(Op.self, from: columnData(stmt, 0)))
             }
             return ops
+        }
+    }
+
+    /// F16: this database's op log after local seq `after`, oldest first. The log is append-only (ops are never
+    /// deleted, and `seq` is an explicit primary key, so VACUUM can't renumber it), which lets another device keep a
+    /// cursor into it the way it keeps one into the relay's log.
+    public func ops(afterSeq after: Int64, limit: Int) throws -> [(seq: Int64, op: Op)] {
+        try locked {
+            var rows: [(seq: Int64, op: Op)] = []
+            try query("SELECT seq, body FROM ops WHERE seq > ? ORDER BY seq LIMIT ?", [.int(after), .int(Int64(limit))]) { stmt in
+                rows.append((sqlite3_column_int64(stmt, 0), try decoder.decode(Op.self, from: columnData(stmt, 1))))
+            }
+            return rows
+        }
+    }
+
+    /// F16: a random ID for this database's op log, made on first use. Another device's cursor into this log is
+    /// only valid for this ID; a new database (reinstall) gets a new one.
+    public func logID() throws -> String {
+        try locked {
+            try inTransaction {
+                if let id = try readMeta(Self.logIDKey) { return id }
+                let id = UUID().uuidString.lowercased()
+                try writeMeta(Self.logIDKey, id)
+                return id
+            }
+        }
+    }
+
+    private static let logIDKey = "log_id"
+
+    /// F16: the newest local seq (0 when the log is empty).
+    public func latestOpSeq() throws -> Int64 {
+        try locked {
+            var seq: Int64 = 0
+            try query("SELECT COALESCE(MAX(seq), 0) FROM ops") { seq = sqlite3_column_int64($0, 0) }
+            return seq
         }
     }
 

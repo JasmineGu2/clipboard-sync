@@ -2,6 +2,11 @@
 
 **Now:** Test receiving between the Mac and the PC. The Mac app is set up against the local relay (127.0.0.1:8788, shared on the tailnet as `http://macbook-air.tailc07d02.ts.net:8788`; restart it with `cd Server && nohup ./.build/debug/ClipRelay --port 8788 --db ../.relay/relay.sqlite3 > ../.relay/relay.log 2>&1 &`). On the PC: `git pull`, pair clipctl with a code from the Mac menu's Pair new device, run `clipctl watch`, then copy on one and paste on the other. Then the iPhone (apps/Apple/README.md).
 
+## F16 direct sync (2026-10-06, branch t33-direct, not merged)
+- While the relay is unreachable, devices sync over the tailnet: the Mac app listens on its Tailscale address (port 8790), `clipctl watch --peer-port N` listens too, the iPhone only dials. Design §7, decision 2026-10-06.
+- Check: 322 package tests, 62 relay tests, harness `--peer logCursors` 500/500 (also with revoke and blobs), `outboxOnly` and `ignoresVaultKey` caught; `scripts/e2e-direct.sh` passes (two clipctl clients, relay stopped and restarted); ClipSyncMac and ClipSynciOS build.
+- Not tried: the Mac app or iPhone talking directly on real devices, clipctl on Windows (the Winsock code has never compiled), the Mac's sandbox listening with the new entitlement.
+
 ## Where things stand (2026-10-05, branch t29-blobs)
 - M4 images and files (F11, F12) are on t29-blobs, with master merged in (revoke F13, expiry UI, crash test). Not merged into master yet.
 - Revoke and blobs work together: a revoke wipes relay blobs with the log, and the remaining devices upload the files they hold again under the new key. A file only the lost device had keeps its thumbnail and can't be downloaded. Decision in docs/decisions.md.

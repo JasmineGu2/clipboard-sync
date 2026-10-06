@@ -54,6 +54,15 @@ The code reads these from the `Strings` enum in `Sources/ClipAppCore/Strings.swi
 - `statusSyncing`: Syncing…
 - `statusOffline`: Offline. Changes sync when the server is back.
 - `statusRemoved`: This device was removed from your vault, so it no longer syncs.
+- `statusDirect`: Server unreachable. Syncing directly with {count} of your devices.
+
+## Sync path
+
+Shown in the Mac menu. When the relay (the server) can't be reached, devices on your tailnet sync directly with each other; the relay catches up when it's back.
+
+- `syncPathRelay`: Sync path: relay
+- `syncPathDirect`: Sync path: direct to {count} device(s), relay unreachable
+- `syncPathNone`: Sync path: none, relay and devices unreachable
 
 ## Mac menu
 

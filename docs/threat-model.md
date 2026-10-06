@@ -37,6 +37,15 @@ Anyone outside the tailnet is out of scope as long as the relay never binds a pu
 
 It keeps whatever it already had. See Known gaps.
 
+**Direct sync (F16).** While the relay is unreachable, devices exchange ops over the tailnet (design §7). Tailscale encrypts the link, but that isn't the only protection:
+- The ops are the same OpCipher envelopes as on the relay, so a direct hop carries nothing a relay wouldn't.
+- Each request is sealed with HPKE AuthPSK: to the listening device's own key, authenticated by the sending device's own key, with a PSK derived from the current vault key, and bound to both device IDs. A tailnet stranger can't make one. A vault member can't pass as another device, because the listener checks the sender against the public key in its own device list. A device on another vault key can't make or open one, which is what keeps a revoked device out: it has only the old key, and it isn't in the list sealed under the new one.
+- The response is sealed under a key exported from that request, so an old response can't be passed off as the answer to a new request, and only the sender can read it.
+- A replayed request is refused (5-minute clock window, plus a cache of request keys seen in the last 10 minutes). Even one that got through would only re-deliver ops, which changes nothing (N13), and its answer would still be sealed to the original request.
+- The listener binds only the Tailscale address (or one given by hand). It checks a frame's length (at most 8 MiB) before reading it and grows its buffer only as bytes arrive. It serves at most 8 connections at once, and gives each one 10 s in total, so a peer that trickles a byte at a time can't hold a slot. A request's timestamp is checked without overflow.
+- A dialer checks the answer before storing anything: its seqs must climb from the cursor and stay within the responder's log, so a member can't park the cursor past ops it will send later. A log that went back (restored from a backup with the same log ID) is detected the same way and exchanged again from the start.
+- The listen address travels sealed in the device record, next to the name, so the relay doesn't learn it from the record.
+
 **Keys at rest.** On Apple, the Keychain with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so the key doesn't move to another device through a backup. On Windows, DPAPI under the current user, with app-specific entropy. clipctl on macOS and Linux has an opt-in `--insecure-file-key` that writes a plain file, for testing only.
 
 **Relay access.**
@@ -84,6 +93,12 @@ A tailnet peer sees that the relay exists and can call `/healthz`. Without the t
 - **Old clients drop blob references.** A device from before M4 decodes an image item without its blob and stores that. Every device needs M4 before images are sent.
 - **Local blob copies are plaintext,** like the history: the blob cache and the `exports` folder (copies named for the clipboard, removed after a day) are protected only by the OS.
 - **Local history is plaintext.** `clips.sqlite` isn't encrypted by the app. On a lost device it's protected only by the OS: the login, and disk encryption if it's on. On Windows, anyone who signs in as that user can also unlock the DPAPI key.
+- **A device that hasn't heard of a revoke can still sync directly with the revoked device (F16).** It can't reach the relay, so it still holds the old vault key and the old device list, and HPKE checks out on both sides. Until it reaches the relay, the revoked device can read what it copies and send it ops, and once the stale device recovers it re-pushes those ops under the new key. Devices that already moved to the new key are safe. Revoke the lost device in the Tailscale admin console too, so it can't reach your other devices at all. Passing revoke handoffs between devices directly would close this but opens a worse hole: the revoked device holds the old key, so it could forge a handoff with a vault key of its own.
+- **Direct sync leaks a little to the tailnet.** A machine that can reach a listener can see that it's there, and its refusals name the reason (unknown device, failed authentication, replay). The frame header carries the two device IDs in the clear. Request sizes and timing show roughly how much is being synced.
+- **A listener restarted within 10 minutes forgets which requests it saw,** so an exact replay in that window is accepted. It only re-delivers ops the listener already has, and the answer is unreadable to anyone but the original sender.
+- **Direct sync needs clocks within 5 minutes.** A device whose clock is further off is refused (`clockSkew`).
+- **A paired device can point others at another tailnet address.** The listen address is chosen by the device that owns the record. Dialers only connect to Tailscale IPv4 addresses (never the LAN or their own loopback) and only send sealed frames, so the machine at that address learns that someone dialed it and nothing more.
+- **Ops received directly are echoed back.** A device pushes its whole log to a peer, including what it just pulled from that peer. The other side ignores what it has, so this costs bytes, not correctness. A malicious member could change its log ID on every answer to force full re-sends, at most 40 rounds per pass.
 - **The envelope's device ID isn't authenticated.** The relay could relabel which device pushed an op. Clients don't read it: the source device shown in the history comes from inside the encrypted op.
 
 ## Crypto review findings
@@ -100,6 +115,8 @@ A crypto-review agent read ClipCrypto and the relay's auth and pairing code. It 
 | Missing test vectors: the pairing wrap key, and unwrap under a different pairing ID. | Low | Fixed (T19). `OpCipher` got a fixed-nonce vector on 2026-10-01: an internal `seal(_:device:nonce:)` that only tests use, checked byte for byte against `scripts/kat/opcipher_kat.py` (Python `cryptography`). AES-GCM itself is checked against Test Case 16 from the GCM paper. |
 | Push bodies were capped at about 175 MB, not 4 MiB, and pairing bodies were decoded before the size check (code review). | Warning | Fixed (T15): 4 MiB for pushes and 100 KiB for pairing, checked before decoding. |
 | Blob chunks (M4): per-blob key, random nonce, AAD binding item, blob, index, count and size; plaintext length checked; file published only after its SHA-256 matches. | New | Python-checked vector and tamper tests. Reviewed by a separate agent on 2026-10-05: no crypto findings; two transfer bugs fixed, follow-ups in docs/decisions.md. |
+
+F16 added HPKE in AuthPSK mode for direct sync, checked against the RFC 9180 vector for this suite and mode (first encryption and first export), plus a known-answer HKDF for the peer PSK computed in Python. Tests cover each refusal: another vault key, another sender key, another recipient, swapped device IDs, tampering, a response opened by another request, a replay, a request outside the clock window, an unknown device, and a revoked device on the old key. A separate review agent read the F16 diff for peer authentication, revoked devices, replay and correctness before it was committed.
 
 F13 added HPKE in PSK mode for handoffs (checked against the RFC 9180 test vector for exactly this suite and mode), and two HKDF derivations with known answers computed independently in Python. Round-trip tests cover every way a handoff or device record must fail: wrong device key, wrong old vault key (the relay forging one), wrong device ID, a swapped public key, tampering. It has not had a separate crypto-review pass yet.
 

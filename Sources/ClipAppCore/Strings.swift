@@ -49,6 +49,12 @@ public enum Strings {
     public static let statusSyncing = "Syncing…"
     public static let statusOffline = "Offline. Changes sync when the server is back."
     public static let statusRemoved = "This device was removed from your vault, so it no longer syncs."
+    public static let statusDirect = "Server unreachable. Syncing directly with {count} of your devices."
+
+    // MARK: Sync path (F16)
+    public static let syncPathRelay = "Sync path: relay"
+    public static let syncPathDirect = "Sync path: direct to {count} device(s), relay unreachable"
+    public static let syncPathNone = "Sync path: none, relay and devices unreachable"
 
     // MARK: Mac menu
     public static let menuPauseCapture = "Pause capture"
@@ -177,6 +183,10 @@ public enum Strings {
         "errorNotUploadedYet": errorNotUploadedYet, "errorDownloadFailed": errorDownloadFailed,
         "errorUnknown": errorUnknown,
         "statusRemoved": statusRemoved,
+        "statusDirect": statusDirect,
+        "syncPathRelay": syncPathRelay,
+        "syncPathDirect": syncPathDirect,
+        "syncPathNone": syncPathNone,
         "menuDevices": menuDevices,
         "devicesTitle": devicesTitle,
         "devicesIntro": devicesIntro,

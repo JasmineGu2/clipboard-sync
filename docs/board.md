@@ -45,4 +45,6 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 - [x] T29 M4 images and files (F11, F12, N5, N6): encrypted 1 MiB chunks on relay blob routes, resumable upload and download, thumbnails in the op, blob GC; `clipctl send-file`/`get`, Mac capture, iPhone paste and share sheet; harness `--blob-gc deadItemsOnly` 500/500, `unreferencedOnRelay` caught; `scripts/e2e-blobs.sh`
 - [x] Revoke x blobs: the revoke wipes relay blobs, remaining devices re-upload what they hold under the new key, blob routes re-check the token in storage; harness `--revoke-blobs reuploadHeld` 500/500, `keepRelayBlobs` and `opsOnly` caught; `scripts/e2e-revoke-blobs.sh` (three clipctl clients)
 
+- [x] T33 Direct sync while the relay is down (F16): each listening device serves its own op log like a small relay, per-peer log cursors, HPKE AuthPSK between device keys under the vault key, sealed peer addresses in device records, ops received directly re-pushed to the relay; `ClipPeerSocket` (BSD sockets), `clipctl watch --peer-port`, sync path in `clipctl status` and the Mac menu; harness `--peer logCursors` 500/500 (also with revoke, blobs, expiry), `outboxOnly` and `ignoresVaultKey` caught
+
 ## Blocked

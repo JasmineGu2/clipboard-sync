@@ -44,6 +44,9 @@ targets:
       # Shared/DevicesView.swift imports ClipSync directly (VaultDevice), so link it explicitly.
       - package: ClipSync
         product: ClipSync
+      # Shared/PeerSockets.swift: direct device-to-device sync (F16).
+      - package: ClipSync
+        product: ClipPeerSocket
     settings:
       base:
         # The app is called ClipSync, but its Swift module can't be: the package has a `ClipSync` module.
@@ -71,6 +74,9 @@ targets:
       # Shared/DevicesView.swift imports ClipSync directly (VaultDevice), so link it explicitly.
       - package: ClipSync
         product: ClipSync
+      # Shared/PeerSockets.swift: direct device-to-device sync (F16).
+      - package: ClipSync
+        product: ClipPeerSocket
       - target: ClipShare
     settings:
       base:

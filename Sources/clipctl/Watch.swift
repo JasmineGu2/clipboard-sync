@@ -1,5 +1,6 @@
 import ArgumentParser
 import ClipCore
+import ClipPeerSocket
 import ClipSync
 import Foundation
 #if os(Windows)
@@ -19,12 +20,29 @@ struct Watch: AsyncParsableCommand {
     var noReceive = false
     @Option(help: "Delete unpinned items older than this many days, on every device. Checked hourly.")
     var expireDays: Int?
+    @Option(help: ArgumentHelp(
+        "When the relay is unreachable, also sync directly with your other devices, listening on this port.",
+        discussion: "Listens on this device's Tailscale address only. Without it, watch still dials devices that listen."))
+    var peerPort: Int?
+    @Option(help: "Address for --peer-port to listen on (default: this device's Tailscale IPv4 address).")
+    var peerHost: String?
     @Option(help: .hidden) var exitAfter: Double?
+
+    /// Written by watch for `clipctl status`, which runs as a separate process.
+    static let syncPathKey = "clipctl.sync_path"
+    static let peerListenKey = "clipctl.peer_listen"
 
     static let pollInterval: Duration = .milliseconds(250)
     static let expiryInterval: Duration = .seconds(3600)
 
     func validate() throws {
+        if let peerPort, !(1...65_535).contains(peerPort) {
+            throw ValidationError("--peer-port must be between 1 and 65535.")
+        }
+        if peerHost != nil, peerPort == nil { throw ValidationError("--peer-host needs --peer-port.") }
+        if let peerHost, PeerAddress.ipv4Octets(peerHost) == nil {
+            throw ValidationError("--peer-host must be an IPv4 address, like 100.101.102.103.")
+        }
         if let expireDays, !(1...SyncEngine.maxExpiryDays).contains(expireDays) {
             throw ValidationError("--expire-days must be between 1 and \(SyncEngine.maxExpiryDays).")
         }
@@ -42,6 +60,12 @@ struct Watch: AsyncParsableCommand {
         say("Syncing with \(client.config.serverURL) (no clipboard capture on this OS). Ctrl+C to stop.")
         #endif
         if client.home.isPaused { say("Capture is paused: \(client.home.pausedURL.path) exists.") }
+
+        // F16: direct sync with other devices while the relay is unreachable.
+        let listener = try startPeerListener(engine: engine)
+        await engine.enablePeerSync(PeerSetup(dialer: SocketPeerDialer(), listenAddress: listener?.boundAddress))
+        try? client.db.setMeta(Self.peerListenKey, listener?.boundAddress)
+        var lastPath: SyncPath?
 
         #if os(Windows)
         let receives = !noReceive
@@ -91,6 +115,13 @@ struct Watch: AsyncParsableCommand {
         #endif
         while !stop.isSet {
             if let deadline, Date() >= deadline { break }
+            let path = await engine.syncPath
+            if path != lastPath {
+                if lastPath != nil || path != .relay { say("sync path: \(describePath(path))") }
+                lastPath = path
+                try? client.db.setMeta(
+                    Self.syncPathKey, "\(describePath(path)) (since \(ISO8601DateFormatter().string(from: Date())))")
+            }
             if await engine.status == .revoked {
                 say("This device was removed from the vault, so it no longer syncs. Pair it again to use it.")
                 break
@@ -142,12 +173,45 @@ struct Watch: AsyncParsableCommand {
         }
 
         expiryLoop?.cancel()
+        listener?.stop()
+        try? client.db.setMeta(Self.peerListenKey, nil)
+        try? client.db.setMeta(Self.syncPathKey, nil)
         syncLoop.cancel()
         await syncLoop.value
         // Let the reporter print anything recorded just before the stop.
         try? await Task.sleep(for: .milliseconds(100))
         reporter.cancel()
         say("Stopped.")
+    }
+}
+
+extension Watch {
+    /// Binds the direct-sync listener when `--peer-port` is given: on `--peer-host`, else the Tailscale address.
+    func startPeerListener(engine: SyncEngine) throws -> SocketPeerListener? {
+        guard let peerPort else { return nil }
+        guard let host = peerHost ?? TailnetAddress.detect() else {
+            throw CLIError("No Tailscale address found for --peer-port. Is Tailscale on? Or pass --peer-host.")
+        }
+        if !PeerAddress.isTailnet(host), !PeerAddress.isLoopback(host) {
+            warn("\(host) isn't a Tailscale (100.64.0.0/10) or loopback address; direct sync is reachable from that network.")
+        }
+        let listener: SocketPeerListener
+        do {
+            listener = try SocketPeerListener(host: host, port: peerPort)
+            try listener.start { await engine.handlePeerRequest($0) }
+        } catch {
+            throw CLIError("Can't listen for direct sync: \(error)")
+        }
+        say("Listening for direct sync on \(listener.boundAddress) (used when the relay is unreachable).")
+        return listener
+    }
+}
+
+func describePath(_ path: SyncPath) -> String {
+    switch path {
+    case .relay: "relay"
+    case .direct(let peers): "direct (relay unreachable; \(peers) device\(peers == 1 ? "" : "s"))"
+    case .offline: "offline (no relay, no device reachable)"
     }
 }
 

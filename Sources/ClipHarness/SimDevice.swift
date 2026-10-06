@@ -26,6 +26,17 @@ struct DeviceDisk {
     var hidden: Set<ItemID> = []
     /// How many relay revokes this device has recovered from (F13). Written in the same step as the recovery.
     var relayGeneration = 0
+    /// Every op this device holds, in the order it stored them: its local op log (ClipDatabase `ops.seq`).
+    /// Append-only and written with each insert, like the database.
+    var log: [Op] = []
+    /// Per listening device: cursors into its log and into ours (F16), written with the ops they cover.
+    var peerCursors: [Int: PeerSimCursor] = [:]
+}
+
+/// A dialer's position in one listener's log (`pulled`) and in its own log as sent to it (`pushed`), as indexes.
+struct PeerSimCursor: Equatable {
+    var pulled = 0
+    var pushed = 0
 }
 
 /// One simulated device: a HybridClock on a skewed fake wall clock, a merge store, an outbox and a cursor.
@@ -50,6 +61,9 @@ struct SimDevice {
     /// Blobs in this device's blob cache: ones it created and ones it downloaded. Cache files are fsynced before
     /// they're published, so a crash keeps them (BlobCache).
     var heldBlobs: Set<BlobID> = []
+    /// See `DeviceDisk.log` and `DeviceDisk.peerCursors`.
+    var log: [Op] = []
+    var peerCursors: [Int: PeerSimCursor] = [:]
 
     var disk: DeviceDisk
 
@@ -75,6 +89,8 @@ struct SimDevice {
         noteTimestamp(ts)
         let op = Op(id: opID, itemID: item, timestamp: ts, kind: kind)
         store.apply(op)
+        log.append(op)
+        disk.log = log
         outbox.append(op)
         disk.outbox = outbox
         disk.clockHighWater = clockHighWater
@@ -96,7 +112,10 @@ struct SimDevice {
     mutating func applyPage(_ entries: [SimRelay.Entry]) {
         recentItems = []
         for entry in entries {
-            if store.apply(entry.op) { recentItems.append(entry.op.itemID) }
+            if store.apply(entry.op) {
+                recentItems.append(entry.op.itemID)
+                log.append(entry.op)
+            }
             clock.observe(entry.op.timestamp)
             noteTimestamp(entry.op.timestamp)
         }
@@ -104,6 +123,28 @@ struct SimDevice {
         disk.store = store
         disk.cursor = cursor
         disk.clockHighWater = clockHighWater
+        disk.log = log
+    }
+
+    /// F16: stores ops received directly, queues the new ones for the relay, and moves the cursors for `peer`
+    /// (nil when this device answered), all persisted together. Returns how many were new.
+    @discardableResult
+    mutating func applyDirect(_ ops: [Op], peer: Int?, cursor: PeerSimCursor?) -> Int {
+        var new = 0
+        for op in ops where store.apply(op) {
+            log.append(op)
+            outbox.append(op)
+            clock.observe(op.timestamp)
+            noteTimestamp(op.timestamp)
+            new += 1
+        }
+        if let peer, let cursor { peerCursors[peer] = cursor }
+        disk.store = store
+        disk.log = log
+        disk.outbox = outbox
+        disk.peerCursors = peerCursors
+        disk.clockHighWater = clockHighWater
+        return new
     }
 
     /// Successful push response: drop the acknowledged ops and persist the outbox.
@@ -113,8 +154,15 @@ struct SimDevice {
     }
 
     /// Crash and restart: memory is gone, reload what was persisted.
-    mutating func restart(recovery: ClockRecovery) {
+    mutating func restart(recovery: ClockRecovery, fromLog: Bool = false) {
         store = disk.store
+        log = disk.log
+        peerCursors = disk.peerCursors
+        if fromLog {
+            // Like the database: the items are the fold of every stored op.
+            store = MergeStore(mutation: store.mutation)
+            for op in log { store.apply(op) }
+        }
         cursor = disk.cursor
         outbox = disk.outbox
         recentItems = []

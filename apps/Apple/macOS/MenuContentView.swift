@@ -134,6 +134,9 @@ struct MacHistoryView: View {
                 .lineLimit(1)
             Spacer()
             Menu {
+                // F16: relay, direct to other devices, or neither. Informational, so disabled.
+                Text(history.syncPath.text)
+                Divider()
                 Button(controller.app.capturePaused ? Strings.menuResumeCapture : Strings.menuPauseCapture) {
                     controller.setCapturePaused(!controller.app.capturePaused)
                 }
@@ -172,6 +175,7 @@ struct MacHistoryView: View {
         case .synced: return .green
         case .syncing: return .blue
         case .offline: return .red
+        case .direct: return .orange
         case .removed: return .gray
         }
     }

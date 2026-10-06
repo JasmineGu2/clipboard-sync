@@ -66,6 +66,13 @@ public struct VaultKey: Sendable {
         derive(info: "clip.rekey.psk.v1")
     }
 
+    /// HPKE pre-shared key for direct device-to-device sync (F16): HKDF-SHA256(vault, salt "clip.v1",
+    /// info "clip.peer.psk.v1", 32 bytes). Only devices holding the current vault key can make or open a peer
+    /// message, so a device revoked (or not yet told about a revoke) can't talk to devices on the new key.
+    var peerPSK: SymmetricKey {
+        derive(info: "clip.peer.psk.v1")
+    }
+
     /// Encrypts one blob's chunks: HKDF-SHA256(vault, salt "clip.v1", info "clip.blob.v1|<blobID>", 32 bytes).
     /// A key per blob keeps each key's nonce count tiny and means a chunk can't open under another blob's key.
     func blobKey(for blob: BlobID) -> SymmetricKey {

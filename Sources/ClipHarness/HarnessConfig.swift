@@ -79,6 +79,26 @@ public enum RevokeBlobMode: String, CaseIterable, Sendable {
     case opsOnly
 }
 
+/// Direct device-to-device sync while the relay is down (F16). The relay goes down for long stretches; devices that
+/// listen (device 0 always, others by chance; the rest only dial, like the iPhone) exchange ops directly. At the end
+/// the relay stays down while every device syncs directly until quiet, and devices on the same vault key must agree;
+/// then the relay comes back and everything must converge, with the relay holding every op.
+public enum PeerMode: String, CaseIterable, Sendable {
+    /// No outages, no direct sync. The default, so seeds without it replay exactly as before it existed.
+    case off
+    /// What SyncEngine does: a dialer pushes its own log after a per-listener push cursor and pulls the listener's
+    /// log after a per-listener pull cursor; ops received directly are queued for the relay; only devices on the same
+    /// vault key talk. Should converge.
+    case logCursors
+    /// Broken on purpose: devices exchange only ops still waiting for the relay (their outboxes), the obvious
+    /// "send what the relay hasn't got" shortcut. Ops one device pulled from the relay before it went down never
+    /// reach a device that missed them, so direct sync alone doesn't converge.
+    case outboxOnly
+    /// Broken on purpose (with `--revoke`): devices talk whatever vault key they hold, so the revoked device can pull
+    /// what remaining devices write under the new key.
+    case ignoresVaultKey
+}
+
 public struct HarnessConfig: Sendable {
     public var seed: UInt64
     /// Number of devices, 2...5. nil picks one from the seed.
@@ -120,6 +140,12 @@ public struct HarnessConfig: Sendable {
     /// Per pulled image or file item, when `revokeBlobs` applies: chance the device downloads its blob.
     public var blobFetchRate: Double = 0.3
 
+    public var peer: PeerMode = .off
+    /// Per step, with `peer` on: chance the relay goes down while up, and comes back while down. Outages average
+    /// about 1 / `relayRecoveryRate` steps.
+    public var relayOutageRate: Double = 0.02
+    public var relayRecoveryRate: Double = 0.012
+
     public init(seed: UInt64, devices: Int? = nil, steps: Int = 400) {
         self.seed = seed
         self.devices = devices
@@ -150,6 +176,10 @@ public struct HarnessStats: Equatable, Sendable {
     /// With `revokeBlobs`: blobs devices downloaded, and blobs uploaded after the revoke (re-uploads and new ones).
     public var blobFetches = 0
     public var blobReuploads = 0
+    /// With `peer`: relay outages, steps the relay was down, and direct exchanges that went through.
+    public var relayOutages = 0
+    public var relayDownSteps = 0
+    public var peerExchanges = 0
 
     public var drops: Int { pushRequestDrops + pushResponseDrops + pullResponseDrops }
 
@@ -176,6 +206,9 @@ public struct HarnessStats: Equatable, Sendable {
         s.revokeRecoveries = a.revokeRecoveries + b.revokeRecoveries
         s.blobFetches = a.blobFetches + b.blobFetches
         s.blobReuploads = a.blobReuploads + b.blobReuploads
+        s.relayOutages = a.relayOutages + b.relayOutages
+        s.relayDownSteps = a.relayDownSteps + b.relayDownSteps
+        s.peerExchanges = a.peerExchanges + b.peerExchanges
         return s
     }
 }

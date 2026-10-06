@@ -58,7 +58,7 @@ public actor SyncEngine {
     /// Fires after local records and after remote ops are applied. Single consumer (the UI).
     public nonisolated let changes: AsyncStream<Void>
 
-    private let db: ClipDatabase
+    let db: ClipDatabase
     // Vars because a revoke (F13) swaps the vault key, and with it the cipher and the token. See Revocation.swift.
     var vaultKey: VaultKey
     var cipher: OpCipher
@@ -66,7 +66,7 @@ public actor SyncEngine {
     let membership: Membership?
     /// The token hash this device last registered its record under; nil means register on the next sync.
     var registeredUnder: String?
-    private let now: @Sendable () -> Date
+    let now: @Sendable () -> Date
     let log: @Sendable (String) -> Void
     private let changesContinuation: AsyncStream<Void>.Continuation
     private var clock: HybridClock
@@ -84,6 +84,25 @@ public actor SyncEngine {
     private var blobWorkPending = false
 
     var syncTask: Task<Void, Error>?
+
+    // F16: direct device-to-device sync (PeerSync.swift).
+    /// Set by `enablePeerSync`; nil means this engine only uses the relay.
+    var peerSetup: PeerSetup?
+    /// False after the relay failed to answer (network error or 5xx); true after any successful sync.
+    var relayReachable = true
+    /// Device ID to the last successful direct exchange with it, either direction.
+    var peerContacts: [String: Date] = [:]
+    /// The last error per peer, so a peer that stays unreachable is logged once, not every round.
+    var peerErrors: [String: String] = [:]
+    var peerReplay = PeerReplayCache()
+    var peerDirectoryRefreshedAt: Date?
+    /// When a device not in the cached list last sent a request (it may have just paired).
+    var peerUnknownSince: Date?
+    /// `peers()` opened under this vault key; cleared when the list is cached again.
+    var openedPeers: (key: VaultKey, json: String, peers: [PeerInfo])?
+    var peerRoundTask: Task<Int, Never>?
+    var peerWaiter: CheckedContinuation<Void, Never>?
+    var peerWorkPending = false
     private var longPollTask: Task<PullResponse, Error>?
     private var wakePending = false
     /// How the current sync already recovered from a relay reset, if it did. At most one recovery per sync.
@@ -515,10 +534,13 @@ public actor SyncEngine {
             }
             status = .idle
             lastSyncedAt = now()
+            relayReachable = true
         } catch {
             status = .offline(lastError: String(describing: error))
+            if Self.meansRelayUnreachable(error) { noteRelayUnreachable() }
             throw error
         }
+        await refreshPeerDirectoryIfNeeded()
     }
 
     private func pushPending() async throws {
@@ -658,7 +680,7 @@ public actor SyncEngine {
         wakeBlobs()
     }
 
-    private func recordUndecryptable(_ opIDs: [String]) throws {
+    func recordUndecryptable(_ opIDs: [String]) throws {
         let existing = try db.meta(Self.undecryptableKey)
             .flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) } ?? []
         let all = Array((existing + opIDs).suffix(Self.maxUndecryptableRecorded))
@@ -678,7 +700,12 @@ public actor SyncEngine {
     public func run() async {
         // Blob uploads run beside the op loop, so a large file never holds up text.
         let blobWork = transferer == nil ? nil : Task { await self.runBlobWork() }
-        defer { blobWork?.cancel() }
+        // F16: while the relay is unreachable, sync directly with other devices beside the relay retries.
+        let peerWork = peerSetup == nil ? nil : Task { await self.runPeerWork() }
+        defer {
+            blobWork?.cancel()
+            peerWork?.cancel()
+        }
         var failures = 0
         while !Task.isCancelled {
             do {
@@ -689,6 +716,7 @@ public actor SyncEngine {
                 try await longPoll()
             } catch {
                 if Task.isCancelled { break }
+                if Self.meansRelayUnreachable(error) { noteRelayUnreachable() }
                 if case SyncError.deviceRevoked = error {
                     log("this device was removed from the vault (the relay refused its key); sync stopped")
                     break
@@ -752,6 +780,21 @@ public actor SyncEngine {
     func wake() {
         wakePending = true
         longPollTask?.cancel()
+        wakePeers()
+    }
+
+    /// F16: stores ops another device sent directly, with that device's cursors (`meta`) in the same transaction.
+    /// They're queued for push, so the relay gets them once it's back, whoever made them.
+    @discardableResult
+    func storePeerOps(_ ops: [Op], meta: [String: String?]) throws -> [Op] {
+        if let newest = ops.map(\.timestamp).max() {
+            clock.observe(newest)
+            try advanceHighWater(newest)
+        }
+        let inserted = try db.insertFromPeer(ops, meta: meta)
+        if !inserted.isEmpty { changesContinuation.yield() }
+        if inserted.contains(where: { $0.kind == .delete }) { wakeBlobs() }
+        return inserted
     }
 
     // MARK: Clock persistence

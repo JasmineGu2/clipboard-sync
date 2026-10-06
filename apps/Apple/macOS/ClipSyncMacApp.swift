@@ -29,7 +29,8 @@ final class MacAppController {
             home: AppPaths.home,
             keyStore: KeychainKeyStore.appDefault,
             deviceName: Host.current().localizedName ?? ProcessInfo.processInfo.hostName,
-            pasteboard: pasteboard
+            pasteboard: pasteboard,
+            peerSupport: PeerSockets.mac
         )
         startWatcherIfReady()
     }

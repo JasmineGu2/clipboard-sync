@@ -16,6 +16,7 @@ struct Options {
     var blobGC = BlobGCMode.off
     var revoke = RevokeMode.off
     var revokeBlobs = RevokeBlobMode.reuploadHeld
+    var peer = PeerMode.off
 
     func config(seed: UInt64) -> HarnessConfig {
         var c = HarnessConfig(seed: seed, devices: devices, steps: steps)
@@ -26,6 +27,7 @@ struct Options {
         c.blobGC = blobGC
         c.revoke = revoke
         c.revokeBlobs = revokeBlobs
+        c.peer = peer
         return c
     }
 
@@ -40,6 +42,7 @@ struct Options {
         if blobGC != .off { s += " --blob-gc \(blobGC.rawValue)" }
         if revoke != .off { s += " --revoke \(revoke.rawValue)" }
         if revokeBlobs != .reuploadHeld { s += " --revoke-blobs \(revokeBlobs.rawValue)" }
+        if peer != .off { s += " --peer \(peer.rawValue)" }
         return s
     }
 }
@@ -54,6 +57,8 @@ func usage() -> Never {
                [--revoke \(RevokeMode.allCases.map(\.rawValue).joined(separator: "|"))]
                [--revoke-blobs \(RevokeBlobMode.allCases.map(\.rawValue).joined(separator: "|"))]
                  (images and files across the revoke; needs --revoke and --blob-gc)
+               [--peer \(PeerMode.allCases.map(\.rawValue).joined(separator: "|"))]
+                 (relay outages with direct device-to-device sync; ignoresVaultKey needs --revoke)
         """)
     exit(2)
 }
@@ -97,6 +102,9 @@ func parseOptions(_ args: [String]) -> Options {
         case "--revoke-blobs":
             guard let raw = it.next(), let r = RevokeBlobMode(rawValue: raw) else { usage() }
             options.revokeBlobs = r
+        case "--peer":
+            guard let raw = it.next(), let p = PeerMode(rawValue: raw) else { usage() }
+            options.peer = p
         case "--help", "-h": usage()
         default:
             print("unknown argument \(arg)")
@@ -141,6 +149,7 @@ print("\(converged)/\(options.seeds) seeds converged (ops=\(total.ops), pushes=\
     + (options.expiry == .off ? "" : ", expiry sweeps=\(total.expirySweeps), expired=\(total.expiredItems)")
     + (options.blobGC == .off ? "" : ", blob GC sweeps=\(total.blobGCSweeps), blobs collected=\(total.blobsCollected)")
     + (options.revoke == .off ? "" : ", revokes=\(total.revokes), recoveries=\(total.revokeRecoveries)")
+    + (options.peer == .off ? "" : ", relay outages=\(total.relayOutages), steps relay down=\(total.relayDownSteps), direct exchanges=\(total.peerExchanges)")
     + (options.revoke == .off || options.blobGC == .off ? ""
         : ", blob fetches=\(total.blobFetches), uploads after revoke=\(total.blobReuploads)")
     + ") in \(String(format: "%.1f", seconds))s")

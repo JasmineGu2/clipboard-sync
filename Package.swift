@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "ClipStore", targets: ["ClipStore"]),
         .library(name: "ClipSync", targets: ["ClipSync"]),
         .library(name: "ClipAppCore", targets: ["ClipAppCore"]),
+        .library(name: "ClipPeerSocket", targets: ["ClipPeerSocket"]),
         .executable(name: "clipctl", targets: ["clipctl"]),
         .executable(name: "ConvergenceHarness", targets: ["ConvergenceHarness"]),
     ],
@@ -46,8 +47,11 @@ let package = Package(
         // Test helper: writes to a ClipDatabase until killed. CrashInjectionTests launches it (PRD N12).
         .executableTarget(name: "ClipStoreCrashWriter", dependencies: ["ClipStore", "ClipCore"]),
         .target(name: "ClipSync", dependencies: ["ClipCore", "ClipCrypto", "ClipStore", "ClipWire"]),
+        // F16: BSD-socket dialer and listener behind ClipSync's PeerDialer/PeerListener (macOS, iOS, Linux, Windows).
+        .target(name: "ClipPeerSocket", dependencies: ["ClipSync", "ClipWire"]),
+        .testTarget(name: "ClipPeerSocketTests", dependencies: ["ClipPeerSocket", "ClipSync", "ClipWire"]),
         .executableTarget(name: "clipctl", dependencies: [
-            "ClipSync", "ClipAppCore",
+            "ClipSync", "ClipAppCore", "ClipPeerSocket",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ]),
         // Randomized convergence simulation; the executable is a thin CLI over it.

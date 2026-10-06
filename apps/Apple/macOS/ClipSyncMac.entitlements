@@ -6,6 +6,9 @@
 	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!-- F16: listens on its Tailscale address for direct sync while the relay is unreachable. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
 	<!-- Gives the app a provisioned keychain group, which the data-protection keychain needs (N9). -->
 	<key>keychain-access-groups</key>
 	<array>

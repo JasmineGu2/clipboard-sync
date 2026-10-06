@@ -45,6 +45,12 @@ struct Simulation {
     private var relayGeneration = 0
     /// Ops on the relay when it was revoked: their blobs had been uploaded already (`RevokeBlobMode.opsOnly`).
     private var opsOnRelayAtRevoke: Set<OpID> = []
+    // F16 direct sync (only with `config.peer` on).
+    private var relayDown = false
+    /// Which devices listen. Device 0 always does (the Mac); the others by chance (the iPhone doesn't).
+    private var listens: [Bool] = []
+    /// The vault key generation each op was made under (its creator's revoke recoveries at the time).
+    private var opGeneration: [OpID: Int] = [:]
     /// Images and files across a revoke are modelled (see `RevokeBlobMode`).
     private var modelsRevokeBlobs: Bool { config.revoke != .off && config.blobGC != .off }
 
@@ -76,6 +82,11 @@ struct Simulation {
         if config.revoke != .off, config.steps > 0 {
             revokeStep = Int.random(in: config.steps / 4...max(config.steps / 4, config.steps * 3 / 4), using: &self.rng)
         }
+        // Same rule for direct sync.
+        if config.peer != .off {
+            listens = (0..<count).map { $0 == 0 }
+            for i in 1..<count { listens[i] = self.rng.chance(0.5) }
+        }
     }
 
     // MARK: - Run
@@ -101,7 +112,24 @@ struct Simulation {
     private mutating func randomDevice() -> Int { Int.random(in: 0..<devices.count, using: &rng) }
 
     private mutating func stepOnce() throws(HarnessFailure) {
-        if let revokeStep, step == revokeStep { try revokeDevice() }
+        if config.peer != .off {
+            if relayDown, rng.chance(config.relayRecoveryRate) {
+                relayDown = false
+                log("--- relay back ---")
+            } else if !relayDown, rng.chance(config.relayOutageRate) {
+                relayDown = true
+                stats.relayOutages += 1
+                log("--- relay DOWN ---")
+            }
+            if relayDown { stats.relayDownSteps += 1 }
+        }
+        if let revokeStep, step == revokeStep {
+            if relayDown {
+                relayDown = false  // a revoke needs the relay; it comes back for it
+                log("--- relay back (for the revoke) ---")
+            }
+            try revokeDevice()
+        }
         if rng.chance(config.crashRate) { try crash(randomDevice()) }
         if rng.chance(config.offlineToggleRate) {
             let d = randomDevice()
@@ -124,6 +152,7 @@ struct Simulation {
         let d = randomDevice()
         switch Int.random(in: 0..<100, using: &rng) {
         case 0..<40: try userAction(d)
+        case 40..<100 where relayDown: try peerExchange(d, faulty: true)
         case 40..<68: try push(d, faulty: true)
         default: _ = try pull(d, limit: Int.random(in: 1...8, using: &rng), faulty: true)
         }
@@ -178,6 +207,7 @@ struct Simulation {
     private mutating func noteIssued(_ op: Op, by d: Int, note: String = "") throws(HarnessFailure) {
         opLabels[op.id] = allOps.count
         allOps.append(op)
+        if config.peer != .off { opGeneration[op.id] = generation(d) }
         stats.ops += 1
         log("\(devices[d].name) \(describe(op))\(note)")
 
@@ -223,7 +253,7 @@ struct Simulation {
 
     /// Deletes blobs from the relay by the configured rule (see `BlobGCMode`).
     private mutating func blobGCSweep(_ d: Int) {
-        guard devices[d].online else { return }
+        guard devices[d].online, !relayDown else { return }
         if modelsRevokeBlobs {
             guard d != revoked else { return }  // 401
             recoverFromRevokeIfNeeded(d)
@@ -243,7 +273,7 @@ struct Simulation {
     }
 
     private mutating func push(_ d: Int, faulty: Bool) throws(HarnessFailure) {
-        guard devices[d].online, d != revoked else { return }  // a revoked device gets 401
+        guard devices[d].online, d != revoked, !relayDown else { return }  // a revoked device gets 401
         recoverFromRevokeIfNeeded(d)
         guard !devices[d].outbox.isEmpty else { return }
         let size = faulty ? Int.random(in: 1...6, using: &rng) : devices[d].outbox.count
@@ -275,7 +305,7 @@ struct Simulation {
 
     /// Returns the page (nil when offline or the response was dropped).
     private mutating func pull(_ d: Int, limit: Int, faulty: Bool) throws(HarnessFailure) -> SimRelay.Page? {
-        guard devices[d].online, d != revoked else { return nil }
+        guard devices[d].online, d != revoked, !relayDown else { return nil }
         recoverFromRevokeIfNeeded(d)
         let before = devices[d].cursor
         let page = relay.page(after: before, limit: limit)
@@ -309,7 +339,7 @@ struct Simulation {
     }
 
     private mutating func crash(_ d: Int) throws(HarnessFailure) {
-        devices[d].restart(recovery: config.clockRecovery)
+        devices[d].restart(recovery: config.clockRecovery, fromLog: config.peer != .off)
         stats.restarts += 1
         let device = devices[d]
         log("\(device.name) CRASH, restart at cursor=\(device.cursor) outbox=\(device.outbox.count)")
@@ -331,6 +361,8 @@ struct Simulation {
     // MARK: - Heal and final checks
 
     private mutating func heal() throws(HarnessFailure) {
+        if config.peer != .off { try healDirectly() }
+        relayDown = false
         log("--- network heals ---")
         for i in devices.indices { devices[i].online = true }
         // A device that never made a request since the revoke learns of it now.
@@ -356,6 +388,7 @@ struct Simulation {
     }
 
     private mutating func checkFinal() throws(HarnessFailure) {
+        if config.peer != .off { try checkRevokedDeviceLockedOut() }
         if revoked != nil { return try checkFinalAfterRevoke() }
         // (4) The relay never stores an op ID twice.
         let logIDs = relay.log.map(\.op.id)
@@ -411,6 +444,117 @@ struct Simulation {
                     + diff(device.name, device.store.items, "reference", reference.items))
             }
         }
+    }
+
+    // MARK: - Direct sync (F16)
+
+    /// The vault key a device holds, as a count of revokes it has recovered from. The revoked device never recovers.
+    private func generation(_ d: Int) -> Int { devices[d].disk.relayGeneration }
+
+    /// Whether two devices can authenticate each other: both hold the same vault key (the PSK), unless broken.
+    private func canTalk(_ a: Int, _ b: Int) -> Bool {
+        config.peer == .ignoresVaultKey || generation(a) == generation(b)
+    }
+
+    /// Device `d` dials a random other device that listens. Returns how many ops moved.
+    @discardableResult
+    private mutating func peerExchange(_ d: Int, faulty: Bool) throws(HarnessFailure) -> Int {
+        let candidates = devices.indices.filter { $0 != d && listens[$0] }
+        guard !candidates.isEmpty else { return 0 }
+        let l = candidates[Int.random(in: 0..<candidates.count, using: &rng)]
+        return try peerExchange(d, with: l, faulty: faulty, limit: Int.random(in: 1...8, using: &rng))
+    }
+
+    private mutating func peerExchange(_ d: Int, with l: Int, faulty: Bool, limit: Int) throws(HarnessFailure) -> Int {
+        guard devices[d].online, devices[l].online, canTalk(d, l) else { return 0 }
+        let cursor = devices[d].peerCursors[l] ?? PeerSimCursor()
+        let push: [Op]
+        switch config.peer {
+        case .off: return 0
+        case .logCursors, .ignoresVaultKey: push = Array(devices[d].log.dropFirst(cursor.pushed).prefix(limit))
+        case .outboxOnly: push = Array(devices[d].outbox.prefix(limit))
+        }
+        if faulty, rng.chance(config.pushRequestDropRate) {
+            log("\(devices[d].name) -> \(devices[l].name) direct [\(push.map(label).joined(separator: ","))] request LOST")
+            return 0
+        }
+        // The listener stores what was pushed first, then answers from its log (which may now include it).
+        var moved = devices[l].applyDirect(push, peer: nil, cursor: nil)
+        let pull: [Op]
+        switch config.peer {
+        case .off: return 0
+        case .logCursors, .ignoresVaultKey: pull = Array(devices[l].log.dropFirst(cursor.pulled).prefix(limit))
+        case .outboxOnly: pull = Array(devices[l].outbox.prefix(limit))
+        }
+        if faulty, rng.chance(config.pushResponseDropRate) {
+            log("\(devices[d].name) -> \(devices[l].name) direct [\(push.map(label).joined(separator: ","))] stored, response LOST")
+            return moved
+        }
+        let next = PeerSimCursor(pulled: cursor.pulled + pull.count, pushed: cursor.pushed + push.count)
+        moved += devices[d].applyDirect(pull, peer: l, cursor: next)
+        stats.peerExchanges += 1
+        log("\(devices[d].name) <-> \(devices[l].name) direct sent [\(push.map(label).joined(separator: ","))]"
+            + " got [\(pull.map(label).joined(separator: ","))]")
+        try checkRevokedDeviceLockedOut()
+        return moved
+    }
+
+    /// The revoked device must never hold an op made under a vault key it doesn't have.
+    private func checkRevokedDeviceLockedOut() throws(HarnessFailure) {
+        guard let revoked else { return }
+        let mine = generation(revoked)
+        if let leaked = devices[revoked].store.seenOps.first(where: { (opGeneration[$0] ?? 0) > mine }),
+           let op = allOps.first(where: { $0.id == leaked })
+        {
+            throw fail("the revoked device \(devices[revoked].name) got \(label(op)) "
+                + "(by \(deviceLabels[op.timestamp.device] ?? "?")), made under the vault key it was locked out of")
+        }
+    }
+
+    /// End of the run, relay still down: every device dials every listener until nothing moves. Devices on the same
+    /// vault key that can reach a listener on that key must then agree, without the relay.
+    private mutating func healDirectly() throws(HarnessFailure) {
+        relayDown = true
+        log("--- direct heal (relay still down) ---")
+        for i in devices.indices { devices[i].online = true }
+        var round = 0
+        while true {
+            round += 1
+            if round > 50 { throw fail("no quiescence after 50 direct sync rounds") }
+            var moved = 0
+            for d in devices.indices {
+                for l in devices.indices where l != d && listens[l] {
+                    // Like SyncEngine.exchange: keep going while either cursor isn't at the end of its log (a page
+                    // can be all ops the other side already had). Outbox-only has no cursors: until nothing is new.
+                    var guardRounds = 0
+                    repeat {
+                        let n = try peerExchange(d, with: l, faulty: false, limit: 50)
+                        moved += n
+                        guardRounds += 1
+                        if guardRounds > 500 { throw fail("direct exchange \(devices[d].name) <-> \(devices[l].name) never ends") }
+                        if config.peer == .outboxOnly, n == 0 { break }
+                    } while hasMore(d, l) || (config.peer == .outboxOnly)
+                }
+            }
+            if moved == 0 { break }
+        }
+        for gen in Set(devices.indices.map(generation)) {
+            let group = devices.indices.filter { generation($0) == gen }
+            guard group.contains(where: { listens[$0] }) else { continue }
+            let members = group.filter { $0 != revoked }
+            guard let first = members.first else { continue }
+            for i in members.dropFirst() where devices[i].store != devices[first].store {
+                throw fail("with the relay down, direct sync left devices apart: "
+                    + diff(devices[first].name, devices[first].store.items, devices[i].name, devices[i].store.items))
+            }
+        }
+    }
+
+    /// Whether a log-cursor exchange between `d` and `l` still has ops to send either way.
+    private func hasMore(_ d: Int, _ l: Int) -> Bool {
+        guard config.peer != .outboxOnly, canTalk(d, l) else { return false }
+        let cursor = devices[d].peerCursors[l] ?? PeerSimCursor()
+        return cursor.pushed < devices[d].log.count || cursor.pulled < devices[l].log.count
     }
 
     // MARK: - Revoke (F13)

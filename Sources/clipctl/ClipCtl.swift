@@ -436,6 +436,9 @@ struct Status: AsyncParsableCommand {
             ("Cursor", String(try db.syncCursor())),
             ("Last sync", try db.meta(Client.lastSyncKey) ?? "never"),
             ("Last error", try db.meta(Client.lastErrorKey) ?? "none"),
+            // F16: written by a running `watch`; a one-shot command always uses the relay.
+            ("Sync path", try db.meta(Watch.syncPathKey) ?? "relay (no watch running)"),
+            ("Direct", try db.meta(Watch.peerListenKey).map { "listening on \($0)" } ?? "not listening"),
             // The engine's key: a revoke on another device may have replaced the one on disk at open.
             ("Relay pin", await client.engine.currentVaultKey.authTokenSHA256),
             ("Capture", client.home.isPaused ? "paused (\(client.home.pausedURL.path) exists)" : "on"),

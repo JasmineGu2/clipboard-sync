@@ -289,3 +289,118 @@ extension WireLimits {
         }
     }
 }
+
+// MARK: - Direct device-to-device sync (F16, design §7)
+//
+// When the relay is unreachable, a device that can listen (the Mac app, `clipctl watch --peer-port`) accepts TCP
+// connections on its tailnet address. Each connection carries one length-prefixed frame each way: 4 bytes of
+// big-endian length, then that many bytes of JSON. The request is `PeerRequestFrame`, the answer
+// `PeerResponseFrame`, and the connection closes. Inside, sealed with ClipCrypto `PeerChannel`, both sides send the
+// same OpCipher envelopes the relay would carry, so ops are encrypted twice on the way.
+//
+// Each device's local op log is append-only and numbered (its `ops.seq`), like the relay's. A peer pulls another
+// device's log after a cursor it keeps for that device, and pushes its own log after a second cursor. That is the
+// relay's model with each listening device acting as a small relay, so it inherits the same convergence argument.
+
+/// The unencrypted envelope of one peer request.
+public struct PeerRequestFrame: Codable, Sendable, Equatable {
+    public var version: Int
+    /// The sending device's ID (uppercase UUID string, as in the device list).
+    public var from: String
+    /// The device this request is for.
+    public var to: String
+    /// HPKE encapsulated key, 32 bytes.
+    public var enc: Data
+    /// HPKE ciphertext of a JSON `PeerRequest`.
+    public var sealed: Data
+
+    public init(version: Int = PeerLimits.version, from: String, to: String, enc: Data, sealed: Data) {
+        self.version = version
+        self.from = from
+        self.to = to
+        self.enc = enc
+        self.sealed = sealed
+    }
+}
+
+/// The unencrypted envelope of one peer response: either `sealed` (a JSON `PeerResponse` under the request's
+/// response key) or `error`.
+public struct PeerResponseFrame: Codable, Sendable, Equatable {
+    public var sealed: Data?
+    public var error: PeerRefusal?
+
+    public init(sealed: Data? = nil, error: PeerRefusal? = nil) {
+        self.sealed = sealed
+        self.error = error
+    }
+}
+
+/// Why a device refused a peer request. Sent in the clear, so it says nothing a stranger couldn't guess.
+public enum PeerRefusal: String, Codable, Sendable, Equatable {
+    /// Not JSON, wrong version, wrong size, or not addressed to this device.
+    case badRequest
+    /// The sender isn't in this device's device list.
+    case unknownDevice
+    /// The request didn't open: another vault key (one side is on a key from before a revoke), another device's
+    /// key, or tampering.
+    case unauthenticated
+    /// Already seen.
+    case replay
+    /// Sent more than `PeerLimits.clockWindowMillis` from this device's clock: one of the two clocks is off.
+    case clockSkew
+    /// This device was removed from the vault or doesn't sync directly.
+    case unavailable
+}
+
+/// What a peer request says once opened.
+public struct PeerRequest: Codable, Sendable, Equatable {
+    /// The sender's wall clock, in milliseconds since 1970. Checked against a window (replay).
+    public var sentAtMillis: Int64
+    /// Ops from the sender's log, sealed with OpCipher like a relay push; `seq` is the sender's local seq.
+    public var envelopes: [Envelope]
+    /// The responder's log ID the cursor below refers to; nil on first contact.
+    public var logID: String?
+    /// Send the responder's log after this local seq (ignored when `logID` isn't the responder's: then from 0).
+    public var after: Int64
+    public var limit: Int
+
+    public init(sentAtMillis: Int64, envelopes: [Envelope], logID: String?, after: Int64, limit: Int) {
+        self.sentAtMillis = sentAtMillis
+        self.envelopes = envelopes
+        self.logID = logID
+        self.after = after
+        self.limit = limit
+    }
+}
+
+/// What a peer response says once opened.
+public struct PeerResponse: Codable, Sendable, Equatable {
+    /// The responder's log ID: random, made with its database. A different one means the cursor is for a log that
+    /// no longer exists, so start over from 0 (and push everything again).
+    public var logID: String
+    /// Ops from the responder's log, `seq` ascending (its local seq).
+    public var envelopes: [Envelope]
+    public var hasMore: Bool
+    /// The newest local seq in the responder's log. A pull cursor past it means the log went back (a database
+    /// restored from a backup keeps its log ID), so the dialer starts that pair over.
+    public var latestSeq: Int64
+
+    public init(logID: String, envelopes: [Envelope], hasMore: Bool, latestSeq: Int64) {
+        self.logID = logID
+        self.envelopes = envelopes
+        self.hasMore = hasMore
+        self.latestSeq = latestSeq
+    }
+}
+
+public enum PeerLimits {
+    public static let version = 1
+    /// Largest frame either side reads; checked from the length prefix before reading the body.
+    public static let maxFrameBytes = 8 * 1024 * 1024
+    /// Envelope bytes per request or response. Envelopes are base64 in the request JSON, which is sealed and base64
+    /// again in the frame, so 3 MiB of envelopes stays under `maxFrameBytes`.
+    public static let maxEnvelopeBytes = 3 * 1024 * 1024
+    public static let maxEnvelopes = WireLimits.maxEnvelopesPerPush
+    /// How far a request's `sentAtMillis` may be from the responder's clock.
+    public static let clockWindowMillis: Int64 = 5 * 60 * 1000
+}

@@ -89,6 +89,10 @@ public actor InMemoryRelay: SyncTransport, BlobTransport {
 
     public func setSendsEpoch(_ value: Bool) { sendsEpoch = value }
 
+    /// F16: false makes every request fail with a network error, like a relay VM that's down. The log is kept.
+    public func setReachable(_ value: Bool) { reachable = value }
+    private var reachable = true
+
     /// Appends envelopes as-is, bypassing validation. For planting poisoned envelopes in tests.
     public func inject(_ envelopes: [Envelope]) { _ = append(envelopes) }
 
@@ -321,6 +325,7 @@ public actor InMemoryRelay: SyncTransport, BlobTransport {
     // MARK: Internals
 
     private func authorize(_ token: String?) throws {
+        guard reachable else { throw TransportError.network("relay unreachable (simulated)") }
         guard let tokenHash else { return }
         guard let token, VaultKey.tokenSHA256(token) == tokenHash else { throw TransportError.unauthorized }
     }

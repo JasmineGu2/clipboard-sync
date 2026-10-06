@@ -293,4 +293,55 @@ final class ConvergenceHarnessTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(caught, 15, "only \(caught)/20 seeds caught \(mode.rawValue)", line: line)
         XCTAssertTrue(example?.contains(text) ?? false, example ?? "", line: line)
     }
+
+    // MARK: - Direct sync while the relay is down (F16)
+
+    /// Long relay outages with devices exchanging over per-device log cursors: devices on one vault key agree with
+    /// the relay still down, and everything converges once it's back, with the relay holding every op.
+    func testDirectSyncConvergesThroughRelayOutages() {
+        var total = HarnessStats()
+        for seed in UInt64(1)...60 {
+            var config = HarnessConfig(seed: seed)
+            config.peer = .logCursors
+            let result = runSimulation(config)
+            XCTAssertTrue(result.converged, result.failure ?? "")
+            total = total + result.stats
+        }
+        XCTAssertGreaterThan(total.relayOutages, 60)
+        XCTAssertGreaterThan(total.peerExchanges, 1000)
+    }
+
+    func testDirectSyncWithRevokeKeepsTheRevokedDeviceOut() {
+        for seed in UInt64(1)...40 {
+            var config = HarnessConfig(seed: seed)
+            config.peer = .logCursors
+            config.revoke = .repushAll
+            let result = runSimulation(config)
+            XCTAssertTrue(result.converged, result.failure ?? "")
+        }
+    }
+
+    /// Broken on purpose: exchanging only outboxes misses what a device pulled from the relay before it went down.
+    func testOutboxOnlyDirectSyncIsCaught() {
+        var caught = 0
+        for seed in UInt64(1)...20 {
+            var config = HarnessConfig(seed: seed)
+            config.peer = .outboxOnly
+            if !runSimulation(config).converged { caught += 1 }
+        }
+        XCTAssertGreaterThanOrEqual(caught, 15, "only \(caught)/20 seeds caught outbox-only direct sync")
+    }
+
+    /// Broken on purpose: ignoring the vault key lets the revoked device pull ops made under the new key.
+    func testDirectSyncIgnoringTheVaultKeyIsCaught() {
+        var caught = 0
+        for seed in UInt64(1)...20 {
+            var config = HarnessConfig(seed: seed)
+            config.peer = .ignoresVaultKey
+            config.revoke = .repushAll
+            let result = runSimulation(config)
+            if !result.converged, result.failure?.contains("locked out of") == true { caught += 1 }
+        }
+        XCTAssertGreaterThanOrEqual(caught, 15, "only \(caught)/20 seeds caught the revoked device getting new ops")
+    }
 }

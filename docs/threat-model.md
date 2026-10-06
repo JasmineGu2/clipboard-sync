@@ -43,6 +43,8 @@ It keeps whatever it already had. See Known gaps.
 - A device ID's public key can't be changed once registered (409), so a device that is still in the vault can't take over another device's entry before a revoke.
 - Push bodies are capped at 4 MiB before decoding, and pairing bodies at 100 KiB. At most 100 pairing blobs can be live.
 
+**The Apple Watch (F17).** The watch isn't a vault member. It never gets the vault key or the token and never talks to the relay. The iPhone sends it the plain text of pinned items only (at most 50, 2,000 characters each, 48 KB in all) over WatchConnectivity. The watch saves them with `completeFileProtectionUnlessOpen`, so the file can't be opened while the watch is locked. **Copy on iPhone** sends back only an item ID, and the iPhone copies that item from its own database, so the watch can't put text of its own on the phone's clipboard.
+
 **The network.** The relay speaks plain HTTP and relies on the tailnet: Tailscale's WireGuard tunnel encrypts traffic between devices, and the relay binds only the address it's given (default `127.0.0.1`, with a warning on `0.0.0.0`).
 
 ## What leaks
@@ -71,6 +73,7 @@ A tailnet peer sees that the relay exists and can call `/healthz`. Without the t
 - **A relay restored from a backup keeps its epoch.** Devices detect a reset by a new epoch. A restored backup has the old one, so only the cursor-ahead check (409) catches it, and only when a device's cursor is past the restored log.
 - **The relay can withhold or split.** It can drop ops, stop serving a device, or show different devices different logs. Nothing detects that yet. It can't forge or alter an op.
 - **Local history is plaintext.** `clips.sqlite` isn't encrypted by the app. On a lost device it's protected only by the OS: the login, and disk encryption if it's on. On Windows, anyone who signs in as that user can also unlock the DPAPI key.
+- **Pinned items sit in plaintext on the watch (F17).** A lost watch holds the text of every pinned item it last got, protected only by its passcode and data protection. WatchConnectivity also keeps its own copy of the last list the phone sent, outside the app's file. Each transfer replaces the whole list in both places, so an unpinned item should go on the next one (not yet checked on a watch). Revoking a device doesn't touch the watch, since it was never in the vault.
 - **The envelope's device ID isn't authenticated.** The relay could relabel which device pushed an op. Clients don't read it: the source device shown in the history comes from inside the encrypted op.
 
 ## Crypto review findings

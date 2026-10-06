@@ -42,5 +42,6 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 - [x] CI green on GitHub (Linux build/test fixes, Windows Swift install, nightly pipefail)
 - [x] T28 Revoke (F13): device keys, HPKE handoffs, relay revoke/wipe, `clipctl devices`/`revoke`, Devices view on Mac and iOS; harness `--revoke repushAll` 500/500, `resetCursorOnly` caught
 - [x] T26 Expiry (F14) as synced deletes; harness `--expiry deleteOps` 2000/2000, `hideLocally` caught; clipctl `expire`
+- [x] T31 Apple Watch view of pinned items (F17): iPhone mirrors pinned items, Copy on iPhone by ID; opt-in target (`CLIPSYNC_WATCH=YES`), type-checked for watchOS only, not run (needs the watchOS platform and a simulator or watch)
 
 ## Blocked

@@ -1,0 +1,27 @@
+# F17: Apple Watch view of pinned items. Included by project.yml only when CLIPSYNC_WATCH=YES (see README.md).
+# The watch gets plain text of pinned items from the iPhone over WatchConnectivity. It has no vault key and
+# never talks to the relay (docs/decisions.md).
+targets:
+  ClipSynciOS:
+    dependencies:
+      # The watch app ships inside the iPhone app (ClipSync.app/Watch).
+      - target: ClipSyncWatch
+
+  ClipSyncWatch:
+    type: application
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources:
+      - path: Watch
+        excludes: ["*.plist"]
+    dependencies:
+      - package: ClipSync
+        product: ClipAppCore
+    settings:
+      base:
+        PRODUCT_NAME: ClipSync
+        PRODUCT_MODULE_NAME: ClipSyncWatch
+        # A companion watch app's bundle ID must start with its iPhone app's.
+        PRODUCT_BUNDLE_IDENTIFIER: dev.jazz.clipsync.ios.watchkitapp
+        INFOPLIST_FILE: Watch/Info.plist
+        SKIP_INSTALL: YES

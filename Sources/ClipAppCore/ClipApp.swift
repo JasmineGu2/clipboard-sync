@@ -48,6 +48,8 @@ public final class ClipApp {
     @ObservationIgnored private let home: URL
     @ObservationIgnored private let keyStore: any KeyStore
     @ObservationIgnored private let pasteboard: any PasteboardWriter
+    /// F17: where the history sends pinned items (the Apple Watch link on iOS). nil elsewhere.
+    @ObservationIgnored private let pinnedMirror: (any PinnedItemsMirror)?
     @ObservationIgnored private let makeTransport: TransportFactory
     @ObservationIgnored private let autoSync: Bool
     @ObservationIgnored private let db: ClipDatabase?
@@ -63,9 +65,11 @@ public final class ClipApp {
 
     private init(
         home: URL, keyStore: any KeyStore, deviceName: String, pasteboard: any PasteboardWriter,
+        pinnedMirror: (any PinnedItemsMirror)?,
         makeTransport: @escaping TransportFactory, autoSync: Bool, db: ClipDatabase?, state: OnboardingState
     ) {
         self.home = home
+        self.pinnedMirror = pinnedMirror
         self.keyStore = keyStore
         self.deviceName = deviceName
         self.pasteboard = pasteboard
@@ -79,11 +83,13 @@ public final class ClipApp {
     /// With both present the app is `.ready` and syncing; otherwise `.needsSetup`.
     /// - Parameters:
     ///   - autoSync: start `SyncEngine.run()` (long-poll loop) when ready. Tests pass false and sync by hand.
+    ///   - pinnedMirror: F17, gets the pinned items whenever they change (the Apple Watch link on iOS).
     public static func bootstrap(
         home: URL,
         keyStore: any KeyStore,
         deviceName: String,
         pasteboard: any PasteboardWriter,
+        pinnedMirror: (any PinnedItemsMirror)? = nil,
         makeTransport: @escaping TransportFactory = ClipApp.httpTransport,
         autoSync: Bool = true
     ) -> ClipApp {
@@ -93,11 +99,11 @@ public final class ClipApp {
             db = try ClipDatabase(url: home.appendingPathComponent(databaseFileName))
         } catch {
             return ClipApp(
-                home: home, keyStore: keyStore, deviceName: deviceName, pasteboard: pasteboard,
+                home: home, keyStore: keyStore, deviceName: deviceName, pasteboard: pasteboard, pinnedMirror: pinnedMirror,
                 makeTransport: makeTransport, autoSync: autoSync, db: nil, state: .failed(.storage))
         }
         let app = ClipApp(
-            home: home, keyStore: keyStore, deviceName: deviceName, pasteboard: pasteboard,
+            home: home, keyStore: keyStore, deviceName: deviceName, pasteboard: pasteboard, pinnedMirror: pinnedMirror,
             makeTransport: makeTransport, autoSync: autoSync, db: db, state: .needsSetup)
         do {
             if let config = try AppConfig.load(from: app.configURL), let key = try keyStore.loadVaultKey() {
@@ -338,6 +344,7 @@ public final class ClipApp {
         expiryDays = config.expiryDays
         let history = HistoryModel(engine: engine, db: db, pasteboard: pasteboard)
         history.receivesLatest = config.receivesLatest
+        history.pinnedMirror = pinnedMirror
         self.history = history
         history.start()
         if autoSync {

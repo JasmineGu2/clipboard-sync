@@ -78,7 +78,20 @@ Only swift-crypto primitives (same API as CryptoKit).
 - **Blob chunks (F11, F12)**: per blob, key = HKDF(vault, info "clip.blob.v1|" + blobID). Each 1 MiB chunk is
   `AES.GCM.seal(chunk, blobKey, nonce: random, authenticating: "clip.blob.v1|" + itemID + "|" + blobID + "|" +
   index + "|" + count + "|" + size)`. See §6.
-- **Revocation (F13, M4)**: make a new vault key, re-encrypt-forward, and hand it to the remaining devices by pairing.
+- **Revocation (F13)**: each device has its own X25519 key pair (`DeviceKey`, in its KeyStore) and registers a
+  `DeviceRecord` on the relay: the public key in the clear, the name sealed with AES-256-GCM under
+  HKDF(vault, info "clip.device.v1"), AAD `"clip.device.v1|<deviceID>|<hex public key>"`. To revoke, a device
+  syncs, makes a new vault key, and sends `POST /v1/auth/revoke` with the old token. One relay transaction swaps
+  in the new key's token, deletes the log and pairing blobs, starts a new epoch, rewrites the device list (names
+  re-sealed under the new key), and stores a handoff per remaining device, this one included:
+  `RekeyHandoff` = HPKE (RFC 9180) PSK mode, DHKEM(X25519, HKDF-SHA256) + HKDF-SHA256 + AES-256-GCM, to the
+  device's public key, PSK = HKDF(old vault, info "clip.rekey.psk.v1"), PSK ID "clip.rekey.v1",
+  info `"clip.rekey.v1|<deviceID>"`; the blob is the 32-byte encapsulated key then the sealed new vault key.
+  A remaining device that gets 401 fetches its handoffs (`GET /v1/rekey/<id>`, oldest first), opens each with
+  the key before it, saves the newest, and swaps cipher and token. The new epoch then triggers the usual reset
+  recovery: re-push everything under the new key, pull from 0. No handoff and the token still refused means
+  this device was revoked: `SyncStatus.revoked`, and `run()` stops. Why this shape: docs/decisions.md
+  (2026-10-05).
 
 ## 4. Module APIs (the contract parallel tasks build against)
 
@@ -107,13 +120,19 @@ Only swift-crypto primitives (same API as CryptoKit).
 - `BlobCache(directory:)`: `importFile(at:as:maxBytes:)`, `importData`, `readChunk`, `beginDownload(_:) -> BlobDownload`
   (`append`, `finish`), `export(_:to:)`, `collectGarbage(live:dead:orphanAge:)`
 - Crash safety (N12): WAL + every mutation in a transaction; the cursor moves in the same transaction as the
-  ops it covers.
+  ops it covers. `CrashInjectionTests` kills a writer process (`ClipStoreCrashWriter`) mid-write and checks the
+  reopened file.
 
 **ClipSync**
 - `protocol SyncTransport`: `push`, `pull(after:limit:wait:)`, `putPairing(id:blob:)`, `takePairing(id:)`
 - `protocol BlobTransport`: `putBlobChunk`, `blobStatus`, `blobChunk`, `deleteBlob` (HTTPTransport, InMemoryRelay)
 - `actor BlobTransferer`: `upload(_:item:progress:)`, `download(_:item:progress:)`, `meter` (N6)
-- `HTTPTransport(baseURL:token:)` (URLSession/FoundationNetworking), `InMemoryRelay` (tests and harness)
+- `SyncTransport` (F13): `putDevice`, `listDevices`, `revoke`, `handoffs(deviceID:)`
+- `HTTPTransport(baseURL:token:)` (URLSession/FoundationNetworking), `InMemoryRelay` (tests; `client(token:)`
+  gives a per-device view that carries a token, and `pin(tokenSHA256:)` turns auth on)
+- `SyncEngine(..., membership:)`: with a `Membership` (device key, a transport factory, a key saver) the engine
+  registers its device record once per vault key, recovers a new key on 401, and offers `devices()`,
+  `revoke(_ ids:)` and `currentVaultKey`. Without one (tests, the share extension) it behaves as before.
 - `actor SyncEngine(db:cipher:transport:device:deviceName:)`:
   `addText(_:) -> ItemID`, `setPinned/setTitle/setTag/delete`, `syncOnce()`, `run()` (push, then long-poll pull,
   with exponential backoff and jitter), `changes: AsyncStream<Void>`
@@ -129,8 +148,9 @@ Only swift-crypto primitives (same API as CryptoKit).
 
 **Relay (Server/)**: separate SwiftPM package (Hummingbird), so the root package keeps building on Windows.
 SQLite table `envelopes(seq INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT UNIQUE, item_id, device_id, ciphertext)`.
-Its epoch (a random UUID string, `meta.relay_epoch`) is made when the database is created and never changes;
-every push and pull response carries it. A pull with `after` past the newest seq gets 409 `CursorAheadResponse`.
+Its epoch (a random UUID string, `meta.relay_epoch`) is made when the database is created and changes only on a
+revoke, which wipes the log like a fresh database; every push and pull response carries it. Tables `devices` and
+`handoffs` hold the device list and the revoke handoffs (at most 8 per device). A pull with `after` past the newest seq gets 409 `CursorAheadResponse`.
 It binds to the Tailscale address only (N10).
 
 ## 5. Concealed content (F9)

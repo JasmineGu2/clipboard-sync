@@ -39,11 +39,24 @@ public enum BlobChunkPutResult: Sendable, Equatable {
     case full
 }
 
+/// Outcome of storing a device record.
+public enum DevicePutResult: Sendable, Equatable {
+    case stored
+    /// The relay already holds a different public key for this device ID (HTTP 409). A device keeps one key for
+    /// life, so this is someone else claiming its ID.
+    case keyMismatch
+    /// The relay already holds `maxDevices` records (HTTP 429).
+    case full
+}
+
 /// Persistence for the relay. The server only ever sees ciphertext and routing IDs.
 public protocol RelayStorage: Actor {
     /// Appends envelopes in one transaction. Envelopes whose opID is already stored are ignored,
     /// so client retries are safe.
     func append(_ envelopes: [Envelope]) throws -> AppendResult
+    /// `append`, but only if `tokenHash` is still the stored auth hash, checked in the same transaction.
+    /// Throws `AuthChanged` otherwise, so a push authorized just before a revoke can't land after it.
+    func append(_ envelopes: [Envelope], requiringTokenHash tokenHash: String) throws -> AppendResult
     /// Envelopes with seq > `after`, ascending, at most `limit`.
     func page(after: Int64, limit: Int) throws -> LogPage
     func latestSeq() throws -> Int64
@@ -81,7 +94,29 @@ public protocol RelayStorage: Actor {
     /// The pin is written once per distinct value: if the same value was already applied, a hash rotated
     /// since then is kept, so a restart doesn't undo a revocation. A new pin value always wins.
     func seedAuthTokenHash(_ hash: String) throws -> String
+
+    /// Inserts or replaces a device record, unless a different public key is stored for that ID or `maxDevices`
+    /// other records are held.
+    func putDevice(_ record: DeviceRecord, maxDevices: Int) throws -> DevicePutResult
+    /// Every device record, ordered by device ID.
+    func devices() throws -> [DeviceRecord]
+    /// Handoff blobs for one device, oldest first.
+    func handoffs(deviceID: String) throws -> [Data]
+    /// Revocation, in one transaction: stores `newTokenHash`, deletes every envelope and pairing blob, makes a new
+    /// epoch, replaces the device table with `devices`, deletes handoffs for devices not in it, appends `handoffs`,
+    /// and keeps at most `maxHandoffsPerDevice` per device (the newest). Returns the new epoch.
+    /// With `expectedDeviceIDs`, throws `DeviceListChanged` (and changes nothing) unless the stored device IDs are
+    /// exactly those: a device that registered after the revoker read the list would otherwise be dropped.
+    func revoke(
+        newTokenHash: String, devices: [DeviceRecord], handoffs: [Handoff], maxHandoffsPerDevice: Int,
+        expectedDeviceIDs: [String]?
+    ) throws -> String
 }
+
+/// The auth hash changed between a request's auth check and its write (a revoke landed in between).
+public struct AuthChanged: Error {}
+/// The device list changed since the revoker read it.
+public struct DeviceListChanged: Error {}
 
 public struct StorageError: Error, CustomStringConvertible, Sendable {
     public var code: Int32

@@ -248,6 +248,15 @@ final class ClipAppTests: XCTestCase {
         again.stop()
     }
 
+    func testExpiryChoicesAndLabels() {
+        XCTAssertEqual(ExpiryChoices.options(current: nil), ExpiryChoices.presets)
+        XCTAssertEqual(ExpiryChoices.options(current: 30), ExpiryChoices.presets)
+        XCTAssertEqual(ExpiryChoices.options(current: 14), [nil, 1, 7, 14, 30, 90], "a hand-edited value still shows")
+        XCTAssertEqual(ExpiryChoices.label(nil), "Never")
+        XCTAssertEqual(ExpiryChoices.label(1), "1 day")
+        XCTAssertEqual(ExpiryChoices.label(30), "30 days")
+    }
+
     func testOldConfigWithoutExpiryStillLoads() async throws {
         let json = #"{"serverURL":"http://relay.test:8080","deviceID":"00000000-0000-0000-0000-000000000001","deviceName":"PC"}"#
         let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))

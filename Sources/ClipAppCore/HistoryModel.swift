@@ -56,12 +56,15 @@ public enum SyncIndicator: Equatable, Sendable {
     case synced(lastSyncedAt: Date?)
     case syncing
     case offline
+    /// F13: another device removed this one; syncing has stopped.
+    case removed
 
     public var text: String {
         switch self {
         case .synced: Strings.statusSynced
         case .syncing: Strings.statusSyncing
         case .offline: Strings.statusOffline
+        case .removed: Strings.statusRemoved
         }
     }
 }
@@ -262,6 +265,7 @@ public final class HistoryModel {
         case .idle: syncStatus = .synced(lastSyncedAt: last)
         case .syncing: syncStatus = .syncing
         case .offline: syncStatus = .offline
+        case .revoked: syncStatus = .removed
         }
     }
 

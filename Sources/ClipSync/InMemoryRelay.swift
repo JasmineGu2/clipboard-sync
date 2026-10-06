@@ -1,10 +1,15 @@
+import ClipCrypto
 import ClipWire
 import Foundation
 
 /// The relay's behavior without HTTP, for tests and the harness. Mirrors RelayRouter: dedupe by opID,
 /// server-assigned seq, paging with `hasMore`, long-poll that wakes on push, `cursorAhead` when a cursor is past
 /// the log, an epoch on every push and pull response, one-time pairing blobs (no overwrite, at most `WireLimits.maxLivePairings`), and the same limits
-/// (mapped to `TransportError` the way HTTPTransport maps status codes). It has no token, so it doesn't model auth.
+/// (mapped to `TransportError` the way HTTPTransport maps status codes).
+///
+/// Auth is off until `pin(tokenSHA256:)` or a revoke sets a token hash; then only `client(token:)` views carrying
+/// that token get through (the relay's own `SyncTransport` methods send no token). Device records, revocation and
+/// handoffs (F13) follow the real relay too.
 public actor InMemoryRelay: SyncTransport, BlobTransport {
     public let maxPullLimit: Int
     public let pairingTTL: TimeInterval
@@ -20,6 +25,9 @@ public actor InMemoryRelay: SyncTransport, BlobTransport {
     private var blobs: [String: (count: Int, chunks: [Int: Data])] = [:]
     private var blobPutsBeforeFailure: Int?
     private var blobGetsBeforeFailure: Int?
+    private var tokenHash: String?
+    private var devices: [String: DeviceRecord] = [:]
+    private var handoffs: [(deviceID: String, blob: Data)] = []
     private var waiters: [UUID: (continuation: CheckedContinuation<Void, Never>, timeout: Task<Void, Never>)] = [:]
 
     // Fault knobs.
@@ -84,12 +92,52 @@ public actor InMemoryRelay: SyncTransport, BlobTransport {
     /// Appends envelopes as-is, bypassing validation. For planting poisoned envelopes in tests.
     public func inject(_ envelopes: [Envelope]) { _ = append(envelopes) }
 
+    /// Turns auth on: from now on only requests carrying a token with this SHA-256 get through.
+    public func pin(tokenSHA256: String) { tokenHash = tokenSHA256.lowercased() }
+
+    /// A transport that sends `token` with every request, like `HTTPTransport(baseURL:token:)`.
+    public nonisolated func client(token: String?) -> InMemoryRelayClient {
+        InMemoryRelayClient(relay: self, token: token)
+    }
+
+    public var deviceRecords: [DeviceRecord] { devices.values.sorted { $0.deviceID < $1.deviceID } }
     public var envelopes: [Envelope] { log }
     public var latestSeq: Int64 { log.last?.seq ?? 0 }
 
     // MARK: SyncTransport
 
     public func push(_ request: PushRequest) async throws -> PushResponse {
+        try await push(request, token: nil)
+    }
+
+    public func pull(after: Int64, limit: Int, wait: Int) async throws -> PullResponse {
+        try await pull(after: after, limit: limit, wait: wait, token: nil)
+    }
+
+    public func putPairing(id: String, blob: Data) async throws {
+        try await putPairing(id: id, blob: blob, token: nil)
+    }
+
+    public func putDevice(_ record: DeviceRecord) async throws {
+        try await putDevice(record, token: nil)
+    }
+
+    public func listDevices() async throws -> [DeviceRecord] {
+        try await listDevices(token: nil)
+    }
+
+    public func revoke(_ request: RevokeRequest) async throws -> RevokeResponse {
+        try await revoke(request, token: nil)
+    }
+
+    public func handoffs(deviceID: String) async throws -> [Data] {
+        handoffs.filter { $0.deviceID == deviceID }.map(\.blob)
+    }
+
+    // MARK: Requests with a token
+
+    func push(_ request: PushRequest, token: String?) async throws -> PushResponse {
+        try authorize(token)
         if pushFailures > 0 {
             pushFailures -= 1
             throw TransportError.network("simulated push failure")
@@ -106,7 +154,8 @@ public actor InMemoryRelay: SyncTransport, BlobTransport {
         return PushResponse(latestSeq: latestSeq, epoch: sentEpoch)
     }
 
-    public func pull(after: Int64, limit: Int, wait: Int) async throws -> PullResponse {
+    func pull(after: Int64, limit: Int, wait: Int, token: String?) async throws -> PullResponse {
+        try authorize(token)
         if pullFailures > 0 {
             pullFailures -= 1
             throw TransportError.network("simulated pull failure")
@@ -126,10 +175,12 @@ public actor InMemoryRelay: SyncTransport, BlobTransport {
                 return page
             }
             await waitForPush(timeout: remaining)
+            try authorize(token)  // a revoke may have landed while this pull waited
         }
     }
 
-    public func putPairing(id: String, blob: Data) async throws {
+    func putPairing(id: String, blob: Data, token: String?) async throws {
+        try authorize(token)
         try validatePairingID(id)
         guard !blob.isEmpty else { throw TransportError.badRequest("empty pairing blob") }
         guard blob.count <= WireLimits.maxPairingBlobBytes else { throw TransportError.payloadTooLarge }
@@ -187,7 +238,74 @@ public actor InMemoryRelay: SyncTransport, BlobTransport {
         blobs[blobID] = nil
     }
 
+    func putDevice(_ record: DeviceRecord, token: String?) async throws {
+        try authorize(token)
+        try validate(record)
+        if let existing = devices[record.deviceID] {
+            guard existing.publicKey == record.publicKey else { throw TransportError.conflict }
+        } else {
+            guard devices.count < WireLimits.maxDevices else { throw TransportError.rateLimited }
+        }
+        devices[record.deviceID] = record
+    }
+
+    func listDevices(token: String?) async throws -> [DeviceRecord] {
+        try authorize(token)
+        return deviceRecords
+    }
+
+    func revoke(_ request: RevokeRequest, token: String?) async throws -> RevokeResponse {
+        try authorize(token)
+        guard WireLimits.isValidSHA256Hex(request.newTokenSHA256) else {
+            throw TransportError.badRequest("newTokenSHA256 must be 64 hex characters")
+        }
+        guard !request.devices.isEmpty, request.devices.count <= WireLimits.maxDevices else {
+            throw TransportError.badRequest("1...\(WireLimits.maxDevices) devices")
+        }
+        var listed = Set<String>()
+        for record in request.devices {
+            try validate(record)
+            guard listed.insert(record.deviceID).inserted else { throw TransportError.badRequest("listed twice") }
+        }
+        guard request.handoffs.count <= WireLimits.maxDevices else { throw TransportError.badRequest("too many handoffs") }
+        if let expected = request.expectedDeviceIDs, Set(devices.keys) != Set(expected) {
+            throw TransportError.conflict
+        }
+        for handoff in request.handoffs {
+            guard listed.contains(handoff.deviceID), !handoff.blob.isEmpty,
+                  handoff.blob.count <= WireLimits.maxHandoffBytes
+            else { throw TransportError.badRequest("bad handoff") }
+        }
+        // One step, like the relay's transaction.
+        tokenHash = request.newTokenSHA256.lowercased()
+        epoch = UUID().uuidString.lowercased()
+        log = []
+        seenOpIDs = []
+        pairings = [:]
+        devices = Dictionary(uniqueKeysWithValues: request.devices.map { ($0.deviceID, $0) })
+        handoffs = handoffs.filter { listed.contains($0.deviceID) }
+            + request.handoffs.map { (deviceID: $0.deviceID, blob: $0.blob) }
+        var kept: [String: Int] = [:]
+        handoffs = handoffs.reversed().filter { entry in
+            kept[entry.deviceID, default: 0] += 1
+            return kept[entry.deviceID]! <= WireLimits.maxHandoffsPerDevice
+        }.reversed()
+        wakeAll()
+        return RevokeResponse(epoch: epoch)
+    }
+
     // MARK: Internals
+
+    private func authorize(_ token: String?) throws {
+        guard let tokenHash else { return }
+        guard let token, VaultKey.tokenSHA256(token) == tokenHash else { throw TransportError.unauthorized }
+    }
+
+    private func validate(_ record: DeviceRecord) throws {
+        guard WireLimits.isValidID(record.deviceID), record.publicKey.count == WireLimits.devicePublicKeyBytes,
+              !record.sealed.isEmpty, record.sealed.count <= WireLimits.maxSealedDeviceBytes
+        else { throw TransportError.badRequest("invalid device record") }
+    }
 
     private func append(_ envelopes: [Envelope]) -> Int {
         var inserted = 0
@@ -259,5 +377,43 @@ public actor InMemoryRelay: SyncTransport, BlobTransport {
 
     private func wakeAll() {
         for id in Array(waiters.keys) { wake(id) }
+    }
+}
+
+/// One device's view of an `InMemoryRelay`: every request carries `token`, like `HTTPTransport`.
+public struct InMemoryRelayClient: SyncTransport {
+    public let relay: InMemoryRelay
+    public let token: String?
+
+    public func push(_ request: PushRequest) async throws -> PushResponse {
+        try await relay.push(request, token: token)
+    }
+
+    public func pull(after: Int64, limit: Int, wait: Int) async throws -> PullResponse {
+        try await relay.pull(after: after, limit: limit, wait: wait, token: token)
+    }
+
+    public func putPairing(id: String, blob: Data) async throws {
+        try await relay.putPairing(id: id, blob: blob, token: token)
+    }
+
+    public func takePairing(id: String) async throws -> Data? {
+        try await relay.takePairing(id: id)
+    }
+
+    public func putDevice(_ record: DeviceRecord) async throws {
+        try await relay.putDevice(record, token: token)
+    }
+
+    public func listDevices() async throws -> [DeviceRecord] {
+        try await relay.listDevices(token: token)
+    }
+
+    public func revoke(_ request: RevokeRequest) async throws -> RevokeResponse {
+        try await relay.revoke(request, token: token)
+    }
+
+    public func handoffs(deviceID: String) async throws -> [Data] {
+        try await relay.handoffs(deviceID: deviceID)
     }
 }

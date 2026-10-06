@@ -14,6 +14,7 @@ struct Options {
     var clockCheck = true
     var expiry = ExpiryMode.off
     var blobGC = BlobGCMode.off
+    var revoke = RevokeMode.off
 
     func config(seed: UInt64) -> HarnessConfig {
         var c = HarnessConfig(seed: seed, devices: devices, steps: steps)
@@ -22,6 +23,7 @@ struct Options {
         c.checkClockMonotonic = clockCheck
         c.expiry = expiry
         c.blobGC = blobGC
+        c.revoke = revoke
         return c
     }
 
@@ -34,6 +36,7 @@ struct Options {
         if !clockCheck { s += " --no-clock-check" }
         if expiry != .off { s += " --expiry \(expiry.rawValue)" }
         if blobGC != .off { s += " --blob-gc \(blobGC.rawValue)" }
+        if revoke != .off { s += " --revoke \(revoke.rawValue)" }
         return s
     }
 }
@@ -45,6 +48,7 @@ func usage() -> Never {
                [--clock-recovery \(ClockRecovery.allCases.map(\.rawValue).joined(separator: "|"))] [--no-clock-check]
                [--expiry \(ExpiryMode.allCases.map(\.rawValue).joined(separator: "|"))]
                [--blob-gc \(BlobGCMode.allCases.map(\.rawValue).joined(separator: "|"))]
+               [--revoke \(RevokeMode.allCases.map(\.rawValue).joined(separator: "|"))]
         """)
     exit(2)
 }
@@ -82,6 +86,9 @@ func parseOptions(_ args: [String]) -> Options {
         case "--blob-gc":
             guard let raw = it.next(), let b = BlobGCMode(rawValue: raw) else { usage() }
             options.blobGC = b
+        case "--revoke":
+            guard let raw = it.next(), let r = RevokeMode(rawValue: raw) else { usage() }
+            options.revoke = r
         case "--help", "-h": usage()
         default:
             print("unknown argument \(arg)")
@@ -121,6 +128,7 @@ print("\(converged)/\(options.seeds) seeds converged (ops=\(total.ops), pushes=\
     + " duplicate pushes=\(total.duplicatePushes), restarts=\(total.restarts)"
     + (options.expiry == .off ? "" : ", expiry sweeps=\(total.expirySweeps), expired=\(total.expiredItems)")
     + (options.blobGC == .off ? "" : ", blob GC sweeps=\(total.blobGCSweeps), blobs collected=\(total.blobsCollected)")
+    + (options.revoke == .off ? "" : ", revokes=\(total.revokes), recoveries=\(total.revokeRecoveries)")
     + ") in \(String(format: "%.1f", seconds))s")
 
 if let first = failures.first, let failure = first.failure {

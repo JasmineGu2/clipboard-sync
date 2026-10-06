@@ -16,7 +16,7 @@ struct ClipCtl: AsyncParsableCommand {
         subcommands: [
             Init.self, Pair.self, Add.self, SendFile.self, List.self, Search.self, Copy.self, Get.self,
             Pin.self, Unpin.self, Rename.self, Tag.self, Untag.self, Delete.self, Expire.self,
-            Sync.self, Status.self, Watch.self,
+            Sync.self, Status.self, Watch.self, Devices.self, Revoke.self,
         ]
     )
 
@@ -64,7 +64,12 @@ struct Pair: AsyncParsableCommand {
 
         func run() async throws {
             let client = try Client.open(global)
-            let code = try await SyncEngine.startPairing(vaultKey: client.key, transport: client.transport)
+            // Sync first: if another device revoked one since, this picks up the new vault key, and the code must
+            // carry that one, not the key loaded from disk.
+            try? await client.sync(timeout: Client.afterChangeTimeout)
+            let key = await client.engine.currentVaultKey
+            let transport = HTTPTransport(baseURL: try relayURL(client.config.serverURL), token: key.authToken)
+            let code = try await SyncEngine.startPairing(vaultKey: key, transport: transport)
             print("Pairing code: \(code.display)")
             print("Type it on the new device with `clipctl pair join --server \(client.config.serverURL) <code>`.")
             print("It expires in 10 minutes and works once.")
@@ -431,11 +436,94 @@ struct Status: AsyncParsableCommand {
             ("Cursor", String(try db.syncCursor())),
             ("Last sync", try db.meta(Client.lastSyncKey) ?? "never"),
             ("Last error", try db.meta(Client.lastErrorKey) ?? "none"),
-            ("Relay pin", client.key.authTokenSHA256),
+            // The engine's key: a revoke on another device may have replaced the one on disk at open.
+            ("Relay pin", await client.engine.currentVaultKey.authTokenSHA256),
             ("Capture", client.home.isPaused ? "paused (\(client.home.pausedURL.path) exists)" : "on"),
         ]
         for (label, value) in rows {
             print(label.padding(toLength: 12, withPad: " ", startingAt: 0) + value)
         }
     }
+}
+
+// MARK: - Devices (F13)
+
+struct Devices: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "List the devices in this vault.")
+    @OptionGroup var global: GlobalOptions
+
+    func run() async throws {
+        let client = try Client.open(global)
+        do {
+            try await client.sync(timeout: Client.afterChangeTimeout)
+        } catch {
+            throw CLIError("Can't read the device list: \(describe(error))")
+        }
+        let devices: [VaultDevice]
+        do {
+            devices = try await client.engine.devices()
+        } catch {
+            throw CLIError("Can't read the device list: \(describe(error))")
+        }
+        for device in devices {
+            print("\(shortDeviceID(device.id))  \(device.name)\(device.isThisDevice ? "  (this device)" : "")")
+        }
+        print("A device shows here once it has synced with this version. Any device not listed has to pair again after a revoke.")
+    }
+}
+
+struct Revoke: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Remove a lost device from the vault. It can't sync or read anything new afterwards.")
+    @OptionGroup var global: GlobalOptions
+    @Argument(help: "The device: the start of its ID from `clipctl devices`, or its exact name.") var device: String
+    @Flag(help: "Don't ask for confirmation.") var yes = false
+
+    func run() async throws {
+        let client = try Client.open(global)
+        do {
+            try await client.sync(timeout: Client.syncTimeout)
+        } catch {
+            throw CLIError("Not revoked: sync first failed (\(describe(error)))")
+        }
+        let devices = try await client.engine.devices()
+        let target = try pick(device, from: devices)
+        guard !target.isThisDevice else { throw CLIError(describe(SyncError.cannotRevokeThisDevice)) }
+        if !yes {
+            print("Remove \(target.name) (\(shortDeviceID(target.id)))? It stops syncing and can't read anything copied from now on. [y/N] ", terminator: "")
+            fflush(nil)
+            let answer = readLine()?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+            guard answer == "y" || answer == "yes" else {
+                print("Not revoked.")
+                return
+            }
+        }
+        do {
+            try await client.engine.revoke([target.id])
+        } catch {
+            throw CLIError("Not revoked: \(describe(error))")
+        }
+        print("revoked \(target.name). This device now uses a new vault key.")
+        print("Your other devices switch to it the next time they sync. Relay pin is now \(await client.engine.currentVaultKey.authTokenSHA256).")
+    }
+
+    /// By ID prefix (dashes and case don't matter) or by exact name.
+    func pick(_ wanted: String, from devices: [VaultDevice]) throws -> VaultDevice {
+        let prefix = wanted.lowercased().replacingOccurrences(of: "-", with: "")
+        let byID = prefix.isEmpty ? [] : devices.filter {
+            $0.id.lowercased().replacingOccurrences(of: "-", with: "").hasPrefix(prefix)
+        }
+        let matches = byID.isEmpty ? devices.filter { $0.name == wanted } : byID
+        switch matches.count {
+        case 1: return matches[0]
+        case 0: throw CLIError("No device matches \"\(wanted)\". Try `clipctl devices`.")
+        default:
+            throw CLIError("\"\(wanted)\" matches \(matches.count) devices. Type more of the ID from `clipctl devices`.")
+        }
+    }
+}
+
+/// The first 8 hex digits of a device ID, lower case, like item IDs in `list`.
+func shortDeviceID(_ id: String) -> String {
+    String(id.lowercased().replacingOccurrences(of: "-", with: "").prefix(8))
 }

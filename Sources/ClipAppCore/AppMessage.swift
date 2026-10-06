@@ -32,6 +32,10 @@ public enum AppMessage: String, Equatable, Sendable, CaseIterable {
     case unreadableFile
     case notUploadedYet
     case downloadFailed
+    case removedFromVault
+    case cannotRemoveThisDevice
+    case unknownDevice
+    case notRegistered
     case unknown
 
     /// The copy for this message, from `Strings`.
@@ -57,6 +61,10 @@ public enum AppMessage: String, Equatable, Sendable, CaseIterable {
         case .unreadableFile: Strings.errorUnreadableFile
         case .notUploadedYet: Strings.errorNotUploadedYet
         case .downloadFailed: Strings.errorDownloadFailed
+        case .removedFromVault: Strings.errorRemovedFromVault
+        case .cannotRemoveThisDevice: Strings.errorCannotRemoveThisDevice
+        case .unknownDevice: Strings.errorUnknownDevice
+        case .notRegistered: Strings.errorNotRegistered
         case .unknown: Strings.errorUnknown
         }
     }
@@ -73,6 +81,11 @@ public enum AppMessage: String, Equatable, Sendable, CaseIterable {
             case .pairingDecryptionFailed: self = .codeMismatch
             case .missingSeq: self = .server
             case .expiryStalled: self = .storage
+            case .deviceRevoked: self = .removedFromVault
+            case .cannotRevokeThisDevice: self = .cannotRemoveThisDevice
+            case .unknownDevice: self = .unknownDevice
+            case .notRegistered: self = .notRegistered
+            case .membershipUnavailable: self = .unknown
             case .blobsUnavailable: self = .unknown
             case .fileTooLarge: self = .fileTooLarge
             case .unreadableFile: self = .unreadableFile

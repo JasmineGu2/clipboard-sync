@@ -701,6 +701,19 @@ final class RawSQLite {
         return result
     }
 
+    func strings(_ sql: String) throws -> [String] {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw StoreError(code: sqlite3_errcode(db), message: String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        var result: [String] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? "")
+        }
+        return result
+    }
+
     func close() {
         sqlite3_close(db)
         db = nil

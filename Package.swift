@@ -43,6 +43,8 @@ let package = Package(
             "ClipCore", "CSQLite",
             .product(name: "Crypto", package: "swift-crypto"),
         ]),
+        // Test helper: writes to a ClipDatabase until killed. CrashInjectionTests launches it (PRD N12).
+        .executableTarget(name: "ClipStoreCrashWriter", dependencies: ["ClipStore", "ClipCore"]),
         .target(name: "ClipSync", dependencies: ["ClipCore", "ClipCrypto", "ClipStore", "ClipWire"]),
         .executableTarget(name: "clipctl", dependencies: [
             "ClipSync", "ClipAppCore",

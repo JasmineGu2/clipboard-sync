@@ -487,6 +487,10 @@ actor DiskBlobTransport: SyncTransport, BlobTransport {
     }
     func putPairing(id: String, blob: Data) async throws { try await ops.putPairing(id: id, blob: blob) }
     func takePairing(id: String) async throws -> Data? { try await ops.takePairing(id: id) }
+    func putDevice(_ record: DeviceRecord) async throws { try await ops.putDevice(record) }
+    func listDevices() async throws -> [DeviceRecord] { try await ops.listDevices() }
+    func revoke(_ request: RevokeRequest) async throws -> RevokeResponse { try await ops.revoke(request) }
+    func handoffs(deviceID: String) async throws -> [Data] { try await ops.handoffs(deviceID: deviceID) }
 
     private func url(_ blobID: String, _ index: Int) -> URL { directory.appendingPathComponent("\(blobID)-\(index)") }
 

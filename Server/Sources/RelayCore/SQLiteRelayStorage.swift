@@ -11,8 +11,8 @@ public actor SQLiteRelayStorage: RelayStorage {
     /// The last operator pin applied (see `seedAuthTokenHash`).
     static let authSeedKey = "auth_token_seed_sha256"
     static let epochKey = "relay_epoch"
-    /// Read (or made) once at open; it never changes for the life of the database file.
-    private let relayEpoch: String
+    /// Read (or made) once at open. Only a revoke changes it (the log is wiped then, like a fresh database).
+    private var relayEpoch: String
 
     /// Opens (creating if needed) the database at `path`. Use ":memory:" for tests.
     public init(path: String) throws {
@@ -57,6 +57,17 @@ public actor SQLiteRelayStorage: RelayStorage {
                     data BLOB NOT NULL,
                     PRIMARY KEY(blob_id, idx)
                 ) WITHOUT ROWID;
+                CREATE TABLE IF NOT EXISTS devices(
+                    device_id TEXT PRIMARY KEY,
+                    public_key BLOB NOT NULL,
+                    sealed BLOB NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS handoffs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    device_id TEXT NOT NULL,
+                    blob BLOB NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS handoffs_device ON handoffs(device_id, id);
                 """)
             self.relayEpoch = try Self.loadOrCreateEpoch(handle)
         } catch {
@@ -92,9 +103,20 @@ public actor SQLiteRelayStorage: RelayStorage {
     // MARK: Envelopes
 
     public func append(_ envelopes: [Envelope]) throws -> AppendResult {
+        try append(envelopes, check: nil)
+    }
+
+    public func append(_ envelopes: [Envelope], requiringTokenHash tokenHash: String) throws -> AppendResult {
+        try append(envelopes, check: tokenHash)
+    }
+
+    private func append(_ envelopes: [Envelope], check tokenHash: String?) throws -> AppendResult {
         var inserted = 0
         if !envelopes.isEmpty {
             try transaction {
+                if let tokenHash, let stored = try readMeta(Self.authTokenKey), stored != tokenHash {
+                    throw AuthChanged()
+                }
                 // Skip known opIDs before inserting rather than relying on INSERT OR IGNORE: an ignored insert
                 // still uses up an AUTOINCREMENT value, which would leave gaps in seq.
                 let exists = try Statement(db, "SELECT 1 FROM envelopes WHERE op_id = ?")
@@ -328,6 +350,94 @@ public actor SQLiteRelayStorage: RelayStorage {
         try upsert.bind(1, key)
         try upsert.bind(2, value)
         _ = try upsert.step()
+    }
+
+    // MARK: Devices and revocation
+
+    public func putDevice(_ record: DeviceRecord, maxDevices: Int) throws -> DevicePutResult {
+        var result = DevicePutResult.stored
+        try transaction {
+            let existing = try Statement(db, "SELECT public_key FROM devices WHERE device_id = ?")
+            try existing.bind(1, record.deviceID)
+            if try existing.step() {
+                if existing.blob(0) != record.publicKey {
+                    result = .keyMismatch
+                    return
+                }
+            } else {
+                let count = try Statement(db, "SELECT COUNT(*) FROM devices")
+                _ = try count.step()
+                if count.int64(0) >= Int64(maxDevices) {
+                    result = .full
+                    return
+                }
+            }
+            let put = try Statement(db, "INSERT OR REPLACE INTO devices(device_id, public_key, sealed) VALUES(?, ?, ?)")
+            try put.bind(1, record.deviceID)
+            try put.bind(2, record.publicKey)
+            try put.bind(3, record.sealed)
+            _ = try put.step()
+        }
+        return result
+    }
+
+    public func devices() throws -> [DeviceRecord] {
+        let query = try Statement(db, "SELECT device_id, public_key, sealed FROM devices ORDER BY device_id")
+        var rows: [DeviceRecord] = []
+        while try query.step() {
+            rows.append(DeviceRecord(deviceID: query.text(0), publicKey: query.blob(1), sealed: query.blob(2)))
+        }
+        return rows
+    }
+
+    public func handoffs(deviceID: String) throws -> [Data] {
+        let query = try Statement(db, "SELECT blob FROM handoffs WHERE device_id = ? ORDER BY id ASC")
+        try query.bind(1, deviceID)
+        var rows: [Data] = []
+        while try query.step() { rows.append(query.blob(0)) }
+        return rows
+    }
+
+    public func revoke(
+        newTokenHash: String, devices: [DeviceRecord], handoffs: [Handoff], maxHandoffsPerDevice: Int,
+        expectedDeviceIDs: [String]?
+    ) throws -> String {
+        let newEpoch = UUID().uuidString.lowercased()
+        try transaction {
+            if let expectedDeviceIDs, Set(try self.devices().map(\.deviceID)) != Set(expectedDeviceIDs) {
+                throw DeviceListChanged()
+            }
+            try writeMeta(Self.authTokenKey, newTokenHash)
+            try writeMeta(Self.epochKey, newEpoch)
+            try Self.exec(db, "DELETE FROM envelopes; DELETE FROM pairing; DELETE FROM devices;")
+            let put = try Statement(db, "INSERT OR REPLACE INTO devices(device_id, public_key, sealed) VALUES(?, ?, ?)")
+            for record in devices {
+                try put.reset()
+                try put.bind(1, record.deviceID)
+                try put.bind(2, record.publicKey)
+                try put.bind(3, record.sealed)
+                _ = try put.step()
+            }
+            try Self.exec(db, "DELETE FROM handoffs WHERE device_id NOT IN (SELECT device_id FROM devices)")
+            let add = try Statement(db, "INSERT INTO handoffs(device_id, blob) VALUES(?, ?)")
+            for handoff in handoffs {
+                try add.reset()
+                try add.bind(1, handoff.deviceID)
+                try add.bind(2, handoff.blob)
+                _ = try add.step()
+            }
+            // Keep the newest `maxHandoffsPerDevice` per device.
+            let trim = try Statement(db, """
+                DELETE FROM handoffs WHERE id IN (
+                    SELECT id FROM handoffs h
+                    WHERE (SELECT COUNT(*) FROM handoffs n WHERE n.device_id = h.device_id AND n.id > h.id) >= ?
+                )
+                """)
+            try trim.bind(1, Int64(maxHandoffsPerDevice))
+            _ = try trim.step()
+        }
+        relayEpoch = newEpoch
+        return newEpoch
     }
 
     // MARK: Diagnostics

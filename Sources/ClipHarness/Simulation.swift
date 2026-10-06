@@ -37,6 +37,13 @@ struct Simulation {
     private var persistedCursorFloor: [Int64]
     private var issuedTimestamps: Set<HLCTimestamp> = []
 
+    // F13 revoke (only with `config.revoke` on).
+    /// The step at which one device is revoked.
+    private var revokeStep: Int?
+    private var revoked: Int?
+    /// Bumped by each revoke; a device whose disk has an older value recovers on its next request.
+    private var relayGeneration = 0
+
     // Short labels for traces, and a stable order for random picks (dictionaries iterate in random order).
     private var itemLabels: [ItemID: Int] = [:]
     private var itemsByLabel: [ItemID] = []
@@ -61,6 +68,10 @@ struct Simulation {
         self.lastIssued = Array(repeating: nil, count: count)
         self.persistedCursorFloor = Array(repeating: 0, count: count)
         for device in devices { deviceLabels[device.id] = device.name }
+        // Only draws from the RNG when revoke is on, so other seeds replay unchanged.
+        if config.revoke != .off, config.steps > 0 {
+            revokeStep = Int.random(in: config.steps / 4...max(config.steps / 4, config.steps * 3 / 4), using: &self.rng)
+        }
     }
 
     // MARK: - Run
@@ -86,6 +97,7 @@ struct Simulation {
     private mutating func randomDevice() -> Int { Int.random(in: 0..<devices.count, using: &rng) }
 
     private mutating func stepOnce() throws(HarnessFailure) {
+        if let revokeStep, step == revokeStep { try revokeDevice() }
         if rng.chance(config.crashRate) { try crash(randomDevice()) }
         if rng.chance(config.offlineToggleRate) {
             let d = randomDevice()
@@ -222,7 +234,9 @@ struct Simulation {
     }
 
     private mutating func push(_ d: Int, faulty: Bool) throws(HarnessFailure) {
-        guard devices[d].online, !devices[d].outbox.isEmpty else { return }
+        guard devices[d].online, d != revoked else { return }  // a revoked device gets 401
+        recoverFromRevokeIfNeeded(d)
+        guard !devices[d].outbox.isEmpty else { return }
         let size = faulty ? Int.random(in: 1...6, using: &rng) : devices[d].outbox.count
         let batch = Array(devices[d].outbox.prefix(size))
         let names = batch.map(label).joined(separator: ",")
@@ -245,7 +259,8 @@ struct Simulation {
 
     /// Returns the page (nil when offline or the response was dropped).
     private mutating func pull(_ d: Int, limit: Int, faulty: Bool) throws(HarnessFailure) -> SimRelay.Page? {
-        guard devices[d].online else { return nil }
+        guard devices[d].online, d != revoked else { return nil }
+        recoverFromRevokeIfNeeded(d)
         let before = devices[d].cursor
         let page = relay.page(after: before, limit: limit)
         stats.pulls += 1
@@ -285,6 +300,8 @@ struct Simulation {
         if device.disk.cursor < persistedCursorFloor[d] {
             throw fail("\(device.name) restarted with cursor \(device.disk.cursor), below persisted \(persistedCursorFloor[d])")
         }
+        // A revoked device, or one that hasn't noticed the revoke yet, re-pushes on recovery; checked at the end.
+        if d == revoked || device.disk.relayGeneration < relayGeneration { return }
         // No lost data: every op this device created is on the relay or still in its persisted outbox.
         let outbox = Set(device.outbox.map(\.id))
         if let lost = allOps.first(where: {
@@ -299,16 +316,18 @@ struct Simulation {
     private mutating func heal() throws(HarnessFailure) {
         log("--- network heals ---")
         for i in devices.indices { devices[i].online = true }
+        // A device that never made a request since the revoke learns of it now.
+        for i in devices.indices where i != revoked { recoverFromRevokeIfNeeded(i) }
         var round = 0
         while true {
             round += 1
             if round > 50 { throw fail("no quiescence after 50 healed sync rounds") }
             var moved = false
-            for i in devices.indices where !devices[i].outbox.isEmpty {
+            for i in devices.indices where !devices[i].outbox.isEmpty && i != revoked {
                 try push(i, faulty: false)
                 moved = true
             }
-            for i in devices.indices {
+            for i in devices.indices where i != revoked {
                 while let page = try pull(i, limit: 50, faulty: false), !page.entries.isEmpty {
                     moved = true
                     if !page.hasMore { break }
@@ -320,6 +339,7 @@ struct Simulation {
     }
 
     private mutating func checkFinal() throws(HarnessFailure) {
+        if revoked != nil { return try checkFinalAfterRevoke() }
         // (4) The relay never stores an op ID twice.
         let logIDs = relay.log.map(\.op.id)
         if Set(logIDs).count != logIDs.count {
@@ -373,6 +393,87 @@ struct Simulation {
                 throw fail("\(device.name) differs from the reference replica: "
                     + diff(device.name, device.store.items, "reference", reference.items))
             }
+        }
+    }
+
+    // MARK: - Revoke (F13)
+
+    /// One device is revoked. Like SyncEngine.revoke: the revoking device syncs first, then the relay swaps its token,
+    /// wipes the log and starts a new epoch in one step.
+    private mutating func revokeDevice() throws(HarnessFailure) {
+        let v = randomDevice()
+        var r = randomDevice()
+        if r == v { r = (v + 1) % devices.count }
+        log("--- \(devices[r].name) revokes \(devices[v].name) ---")
+        devices[r].online = true
+        try push(r, faulty: false)
+        while let page = try pull(r, limit: 50, faulty: false), page.hasMore {}
+        revoked = v
+        relayGeneration += 1
+        relay = SimRelay()
+        stats.revokes += 1
+        recoverFromRevokeIfNeeded(r)
+    }
+
+    /// A remaining device's first request after a revoke gets 401, it picks up the new key, and the new epoch makes
+    /// it recover. One atomic step on disk, like `markAllOutbound`.
+    private mutating func recoverFromRevokeIfNeeded(_ d: Int) {
+        guard d != revoked, devices[d].disk.relayGeneration < relayGeneration else { return }
+        // A crash may have lost in-memory state; recovery starts from what's on disk plus the outbox, like the engine.
+        switch config.revoke {
+        case .off:
+            return
+        case .repushAll:
+            // `markAllOutbound` queues every op in the database: what it pulled, and everything it ever recorded
+            // (ClipDatabase stores a local op when it's recorded, which DeviceDisk only models through the outbox).
+            let held = devices[d].store.seenOps
+            let me = devices[d].id
+            devices[d].outbox = allOps.filter { held.contains($0.id) || $0.timestamp.device == me }
+        case .resetCursorOnly:
+            break
+        }
+        devices[d].cursor = 0
+        devices[d].disk.outbox = devices[d].outbox
+        devices[d].disk.cursor = 0
+        devices[d].disk.relayGeneration = relayGeneration
+        persistedCursorFloor[d] = 0
+        stats.revokeRecoveries += 1
+        log("\(devices[d].name) recovers from the revoke: cursor 0, outbox \(devices[d].outbox.count)")
+    }
+
+    /// After a revoke the promise is about the devices that remain: they converge, and nothing any of them created
+    /// or held is lost. The revoked device's ops survive only if a remaining device had pulled them.
+    private mutating func checkFinalAfterRevoke() throws(HarnessFailure) {
+        let remaining = devices.indices.filter { $0 != revoked }.map { devices[$0] }
+        let remainingIDs = Set(remaining.map(\.id))
+        var held = Set<OpID>()
+        for device in remaining { held.formUnion(device.store.seenOps) }
+        let expected = allOps.filter { remainingIDs.contains($0.timestamp.device) || held.contains($0.id) }
+
+        let logIDs = relay.log.map(\.op.id)
+        if Set(logIDs).count != logIDs.count {
+            throw fail("relay log has duplicate op IDs (\(logIDs.count) entries, \(Set(logIDs).count) distinct)")
+        }
+        if let lost = expected.first(where: { !relay.contains($0.id) }) {
+            throw fail("\(label(lost)) (by \(deviceLabels[lost.timestamp.device] ?? "?")) was lost in the revoke: "
+                + "a remaining device created or held it, but it's not on the relay")
+        }
+        if relay.log.count != expected.count {
+            throw fail("relay has \(relay.log.count) ops but the remaining devices account for \(expected.count)")
+        }
+        for device in remaining where !device.outbox.isEmpty {
+            throw fail("\(device.name) still has \(device.outbox.count) unsent ops after healing")
+        }
+        for device in remaining.dropFirst() where device.store != remaining[0].store {
+            throw fail("replicas diverged: \(diff(remaining[0].name, remaining[0].store.items, device.name, device.store.items))")
+        }
+        var shuffled = expected
+        shuffled.shuffle(using: &rng)
+        var reference = Replica()
+        for op in shuffled { reference.apply(op) }
+        for device in remaining where device.store.items != reference.items || device.store.seenOps != reference.seenOps {
+            throw fail("\(device.name) differs from the reference replica: "
+                + diff(device.name, device.store.items, "reference", reference.items))
         }
     }
 

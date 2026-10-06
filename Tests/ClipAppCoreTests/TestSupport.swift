@@ -54,6 +54,23 @@ struct HangingTransport: SyncTransport {
 
     func putPairing(id: String, blob: Data) async throws {}
     func takePairing(id: String) async throws -> Data? { nil }
+
+    func putDevice(_ record: DeviceRecord) async throws {
+        try await Task.sleep(for: .seconds(3600))
+        throw TransportError.network("hung")
+    }
+
+    func listDevices() async throws -> [DeviceRecord] {
+        try await Task.sleep(for: .seconds(3600))
+        throw TransportError.network("hung")
+    }
+
+    func revoke(_ request: RevokeRequest) async throws -> RevokeResponse {
+        try await Task.sleep(for: .seconds(3600))
+        throw TransportError.network("hung")
+    }
+
+    func handoffs(deviceID: String) async throws -> [Data] { [] }
 }
 
 /// A relay that's down.
@@ -62,6 +79,10 @@ struct OfflineTransport: SyncTransport {
     func pull(after: Int64, limit: Int, wait: Int) async throws -> PullResponse { throw TransportError.network("offline") }
     func putPairing(id: String, blob: Data) async throws { throw TransportError.network("offline") }
     func takePairing(id: String) async throws -> Data? { throw TransportError.network("offline") }
+    func putDevice(_ record: DeviceRecord) async throws { throw TransportError.network("offline") }
+    func listDevices() async throws -> [DeviceRecord] { throw TransportError.network("offline") }
+    func revoke(_ request: RevokeRequest) async throws -> RevokeResponse { throw TransportError.network("offline") }
+    func handoffs(deviceID: String) async throws -> [Data] { throw TransportError.network("offline") }
 }
 
 /// A fresh, empty directory per call.

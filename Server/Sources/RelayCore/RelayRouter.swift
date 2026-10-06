@@ -14,6 +14,8 @@ public struct RelayConfig: Sendable {
     public var maxIDLength: Int = WireLimits.maxIDBytes
     /// Cap on all stored blob chunks together; a chunk that would pass it gets 507.
     public var maxBlobStorageBytes: Int64 = 20 * 1024 * 1024 * 1024
+    public var maxDevices: Int = WireLimits.maxDevices
+    public var maxHandoffsPerDevice: Int = WireLimits.maxHandoffsPerDevice
     /// Operator-pinned SHA-256 of the bearer token (64 hex chars). Setting it turns off trust on first use.
     public var authTokenSHA256: String?
     /// Unix seconds. Injected so tests can move time forward.
@@ -42,6 +44,8 @@ public enum RelayBodyLimits {
     public static let rotate = 1024
     /// One sealed chunk, raw bytes.
     public static let blobChunk = WireLimits.maxBlobChunkBodyBytes
+    public static let device = WireLimits.maxDeviceBodyBytes
+    public static let revoke = WireLimits.maxRevokeBodyBytes
 }
 
 /// Builds the relay's routes:
@@ -50,6 +54,8 @@ public enum RelayBodyLimits {
 /// - `PUT  /v1/pairing/{id}` (bearer auth), `GET /v1/pairing/{id}` (no auth: the new device has no token yet)
 /// - `POST /v1/auth/rotate` (bearer auth with the current token)
 /// - `PUT|GET /v1/blobs/{id}/chunks/{index}`, `GET|DELETE /v1/blobs/{id}` (bearer auth; see ClipWire)
+/// - `PUT /v1/devices/{id}`, `GET /v1/devices` (bearer auth), `POST /v1/auth/revoke` (bearer auth with the current
+///   token), `GET /v1/rekey/{id}` (no auth: a remaining device's old token stopped working). F13, design §3.
 public func buildRelayRouter(
     storage: any RelayStorage,
     notifier: PushNotifier,
@@ -63,10 +69,16 @@ public func buildRelayRouter(
     router.get("healthz") { _, _ in "ok" }
 
     router.post("v1/ops") { request, _ -> Response in
-        try await auth.authorize(request)
+        let tokenHash = try await auth.authorize(request)
         let push = try await decodeBody(PushRequest.self, request, limit: RelayBodyLimits.push)
         try validate(push, maxIDLength: config.maxIDLength)
-        let result = try await storage.append(push.envelopes)
+        let result: AppendResult
+        do {
+            // Re-checked inside the write's transaction: a revoke may have landed since the check above.
+            result = try await storage.append(push.envelopes, requiringTokenHash: tokenHash)
+        } catch is AuthChanged {
+            throw HTTPError(.unauthorized)
+        }
         if result.inserted > 0 { await notifier.notify() }
         return try jsonResponse(PushResponse(latestSeq: result.latestSeq, epoch: try await storage.epoch()))
     }
@@ -93,11 +105,15 @@ public func buildRelayRouter(
             }
             let remaining = deadline - ContinuousClock.now
             if !page.envelopes.isEmpty || remaining <= .zero || Task.isCancelled {
+                // A revoke may have landed since the first check; don't hand a revoked token the new log.
+                try await auth.authorize(request)
                 return try jsonResponse(PullResponse(
                     envelopes: page.envelopes, latestSeq: page.latestSeq, hasMore: page.hasMore,
                     epoch: try await storage.epoch()))
             }
             await notifier.wait(since: generation, timeout: remaining)
+            // A revoke may have landed while this request waited; a revoked token must not see what comes next.
+            try await auth.authorize(request)
         }
     }
 
@@ -188,6 +204,70 @@ public func buildRelayRouter(
         return Response(status: .noContent)
     }
 
+    // MARK: Devices and revoke (F13).
+
+    router.put("v1/devices/:id") { request, context -> Response in
+        try await auth.authorize(request)
+        let id = try deviceID(context, maxLength: config.maxIDLength)
+        let record = try await decodeBody(DeviceRecord.self, request, limit: RelayBodyLimits.device)
+        guard record.deviceID == id else { throw HTTPError(.badRequest, message: "deviceID must match the path") }
+        try validate(record, maxIDLength: config.maxIDLength)
+        switch try await storage.putDevice(record, maxDevices: config.maxDevices) {
+        case .stored: return Response(status: .noContent)
+        case .keyMismatch: throw HTTPError(.conflict, message: "this device ID is registered with another key")
+        case .full: throw HTTPError(.tooManyRequests, message: "too many devices")
+        }
+    }
+
+    router.get("v1/devices") { request, _ -> Response in
+        try await auth.authorize(request)
+        return try jsonResponse(DeviceListResponse(devices: try await storage.devices()))
+    }
+
+    router.post("v1/auth/revoke") { request, _ -> Response in
+        try await auth.authorize(request)
+        let body = try await decodeBody(RevokeRequest.self, request, limit: RelayBodyLimits.revoke)
+        guard WireLimits.isValidSHA256Hex(body.newTokenSHA256) else {
+            throw HTTPError(.badRequest, message: "newTokenSHA256 must be 64 hex characters")
+        }
+        guard !body.devices.isEmpty, body.devices.count <= config.maxDevices,
+              body.handoffs.count <= config.maxDevices
+        else {
+            throw HTTPError(.badRequest, message: "1...\(config.maxDevices) devices and at most as many handoffs")
+        }
+        var listed = Set<String>()
+        for record in body.devices {
+            try validate(record, maxIDLength: config.maxIDLength)
+            guard listed.insert(record.deviceID).inserted else {
+                throw HTTPError(.badRequest, message: "a device is listed twice")
+            }
+        }
+        for handoff in body.handoffs {
+            guard listed.contains(handoff.deviceID) else {
+                throw HTTPError(.badRequest, message: "every handoff must be for a listed device")
+            }
+            guard !handoff.blob.isEmpty, handoff.blob.count <= WireLimits.maxHandoffBytes else {
+                throw HTTPError(.badRequest, message: "handoff blobs must be 1...\(WireLimits.maxHandoffBytes) bytes")
+            }
+        }
+        let epoch: String
+        do {
+            epoch = try await auth.revoke(
+                newHash: body.newTokenSHA256, devices: body.devices, handoffs: body.handoffs,
+                maxHandoffsPerDevice: config.maxHandoffsPerDevice, expectedDeviceIDs: body.expectedDeviceIDs)
+        } catch is DeviceListChanged {
+            throw HTTPError(.conflict, message: "the device list changed; read it again")
+        }
+        // Wake long-polls: they re-check the token, so the revoked device's waiting pull ends in 401.
+        await notifier.notify()
+        return try jsonResponse(RevokeResponse(epoch: epoch))
+    }
+
+    router.get("v1/rekey/:id") { _, context -> Response in
+        let id = try deviceID(context, maxLength: config.maxIDLength)
+        return try jsonResponse(HandoffsResponse(handoffs: try await storage.handoffs(deviceID: id)))
+    }
+
     return router
 }
 
@@ -229,6 +309,25 @@ func validate(_ push: PushRequest, maxIDLength: Int) throws {
             }
         }
     }
+}
+
+func validate(_ record: DeviceRecord, maxIDLength: Int) throws {
+    guard WireLimits.isValidID(record.deviceID), record.deviceID.utf8.count <= maxIDLength else {
+        throw HTTPError(.badRequest, message: "deviceID must be 1...\(maxIDLength) bytes with no control characters")
+    }
+    guard record.publicKey.count == WireLimits.devicePublicKeyBytes else {
+        throw HTTPError(.badRequest, message: "publicKey must be \(WireLimits.devicePublicKeyBytes) bytes")
+    }
+    guard !record.sealed.isEmpty, record.sealed.count <= WireLimits.maxSealedDeviceBytes else {
+        throw HTTPError(.badRequest, message: "sealed must be 1...\(WireLimits.maxSealedDeviceBytes) bytes")
+    }
+}
+
+private func deviceID(_ context: RelayRequestContext, maxLength: Int) throws -> String {
+    guard let id = context.parameters.get("id"), WireLimits.isValidID(id), id.utf8.count <= maxLength else {
+        throw HTTPError(.badRequest, message: "device id must be 1...\(maxLength) bytes with no control characters")
+    }
+    return id
 }
 
 private func pairingID(_ context: RelayRequestContext) throws -> String {

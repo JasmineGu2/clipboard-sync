@@ -20,10 +20,13 @@ struct ClipSynciOSApp: App {
             RootView(app: app)
         }
         .onChange(of: scenePhase) { _, phase in
-            // iOS suspends the long-poll in the background; catch up (and pick up share-extension sends)
-            // as soon as the app is back.
+            // iOS suspends the long-poll and the hourly expiry check in the background; catch up (and pick
+            // up share-extension sends) as soon as the app is back.
             if phase == .active, let history = app.history {
-                Task { await history.syncNow() }
+                Task {
+                    await app.expireNow()
+                    await history.syncNow()
+                }
             }
         }
     }

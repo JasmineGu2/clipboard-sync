@@ -6,6 +6,7 @@ import SwiftUI
 struct MenuContentView: View {
     let controller: MacAppController
     @State private var showingPair = false
+    @State private var showingDevices = false
 
     var body: some View {
         Group {
@@ -26,8 +27,13 @@ struct MenuContentView: View {
             case .ready:
                 if showingPair {
                     PairView(app: controller.app) { showingPair = false }
+                } else if showingDevices {
+                    DevicesView(app: controller.app) { showingDevices = false }
+                        .frame(height: 480)
                 } else if let history = controller.app.history {
-                    MacHistoryView(history: history, controller: controller, showingPair: $showingPair)
+                    MacHistoryView(
+                        history: history, controller: controller, showingPair: $showingPair,
+                        showingDevices: $showingDevices)
                 }
             case .failed(let message):
                 VStack(spacing: 12) {
@@ -45,6 +51,7 @@ struct MacHistoryView: View {
     @Bindable var history: HistoryModel
     let controller: MacAppController
     @Binding var showingPair: Bool
+    @Binding var showingDevices: Bool
 
     @State private var renaming: ClipItem?
     @State private var renameText = ""
@@ -135,7 +142,18 @@ struct MacHistoryView: View {
                     get: { controller.app.receivesLatest },
                     set: { controller.app.setReceivesLatest($0) }
                 ))
+                // F14: a submenu with a checkmark on the current choice.
+                Picker(Strings.expiryTitle, selection: Binding(
+                    get: { controller.app.expiryDays },
+                    set: { days in Task { await controller.app.setExpiryDays(days) } }
+                )) {
+                    ForEach(ExpiryChoices.options(current: controller.app.expiryDays), id: \.self) { days in
+                        Text(ExpiryChoices.label(days)).tag(days)
+                    }
+                }
+                .pickerStyle(.menu)
                 Button(Strings.menuPairDevice) { showingPair = true }
+                Button(Strings.menuDevices) { showingDevices = true }
                 Divider()
                 QuitButton()
             } label: {
@@ -154,6 +172,7 @@ struct MacHistoryView: View {
         case .synced: return .green
         case .syncing: return .blue
         case .offline: return .red
+        case .removed: return .gray
         }
     }
 

@@ -48,6 +48,7 @@ public enum Strings {
     public static let statusSynced = "Synced"
     public static let statusSyncing = "Syncing…"
     public static let statusOffline = "Offline. Changes sync when the server is back."
+    public static let statusRemoved = "This device was removed from your vault, so it no longer syncs."
 
     // MARK: Mac menu
     public static let menuPauseCapture = "Pause capture"
@@ -56,6 +57,14 @@ public enum Strings {
     public static let menuReceiveLatest = "Use copies from other devices"
     public static let menuPairDevice = "Pair new device…"
     public static let menuQuit = "Quit ClipSync"
+
+    // MARK: Expiry (F14)
+    public static let settingsTitle = "Settings"
+    public static let expiryTitle = "Delete unpinned items after"
+    public static let expiryHint = "Older unpinned items are deleted on all your devices. Pinned items stay."
+    public static let expiryOff = "Never"
+    public static let expiryOneDay = "1 day"
+    public static let expiryDays = "{days} days"
 
     // MARK: Onboarding
     public static let onboardingTitle = "Set up ClipSync"
@@ -78,6 +87,19 @@ public enum Strings {
     public static let pairInstructions = "On the new device, choose Join with a pairing code and type this code."
     public static let pairExpiry = "The code works once and expires in 10 minutes."
     public static let pairNewCode = "New code"
+
+    // MARK: Devices (F13)
+    public static let menuDevices = "Devices…"
+    public static let devicesTitle = "Devices"
+    public static let devicesIntro = "Every device that can read your history. If you lose one, remove it here: it stops syncing and can't read anything copied after that."
+    public static let devicesLoading = "Loading devices…"
+    public static let devicesMissingHint = "A device only shows here once it has synced with this version. Any device not listed has to pair again after you remove one."
+    public static let deviceThis = "This device"
+    public static let actionRemoveDevice = "Remove"
+    public static let removeDeviceTitle = "Remove {device}?"
+    public static let removeDeviceMessage = "It stops syncing and can't read anything copied from now on. Your other devices switch to a new key the next time they sync. Anything already on it stays there."
+    public static let removeDeviceConfirm = "Remove device"
+    public static let deviceRemoved = "{device} was removed."
 
     // MARK: Share extension and Shortcuts
     public static let shareSent = "Sent to ClipSync"
@@ -110,6 +132,10 @@ public enum Strings {
     public static let errorNotUploadedYet = "This is still uploading from the other device. Try again in a moment."
     public static let errorDownloadFailed = "The download didn't match what was sent. Try again."
     public static let errorUnknown = "Something went wrong. Try again."
+    public static let errorRemovedFromVault = "This device was removed from your vault, so it no longer syncs."
+    public static let errorCannotRemoveThisDevice = "A device can't remove itself. Remove it from another device."
+    public static let errorUnknownDevice = "That device isn't in your vault any more."
+    public static let errorNotRegistered = "This device isn't in the device list yet. Let it sync once, then try again."
 
     /// Every key and value, for the content/app.md sync test.
     static let all: [String: String] = [
@@ -128,6 +154,8 @@ public enum Strings {
         "menuPauseCapture": menuPauseCapture, "menuResumeCapture": menuResumeCapture,
         "capturePaused": capturePaused, "menuReceiveLatest": menuReceiveLatest,
         "menuPairDevice": menuPairDevice, "menuQuit": menuQuit,
+        "settingsTitle": settingsTitle, "expiryTitle": expiryTitle, "expiryHint": expiryHint,
+        "expiryOff": expiryOff, "expiryOneDay": expiryOneDay, "expiryDays": expiryDays,
         "onboardingTitle": onboardingTitle, "onboardingIntro": onboardingIntro, "serverLabel": serverLabel,
         "serverPlaceholder": serverPlaceholder, "serverHint": serverHint,
         "deviceNameLabel": deviceNameLabel, "deviceNameHint": deviceNameHint,
@@ -148,6 +176,22 @@ public enum Strings {
         "errorFileTooLarge": errorFileTooLarge, "errorUnreadableFile": errorUnreadableFile,
         "errorNotUploadedYet": errorNotUploadedYet, "errorDownloadFailed": errorDownloadFailed,
         "errorUnknown": errorUnknown,
+        "statusRemoved": statusRemoved,
+        "menuDevices": menuDevices,
+        "devicesTitle": devicesTitle,
+        "devicesIntro": devicesIntro,
+        "devicesLoading": devicesLoading,
+        "devicesMissingHint": devicesMissingHint,
+        "deviceThis": deviceThis,
+        "actionRemoveDevice": actionRemoveDevice,
+        "removeDeviceTitle": removeDeviceTitle,
+        "removeDeviceMessage": removeDeviceMessage,
+        "removeDeviceConfirm": removeDeviceConfirm,
+        "deviceRemoved": deviceRemoved,
+        "errorRemovedFromVault": errorRemovedFromVault,
+        "errorCannotRemoveThisDevice": errorCannotRemoveThisDevice,
+        "errorUnknownDevice": errorUnknownDevice,
+        "errorNotRegistered": errorNotRegistered,
     ]
 
     /// Fills `{name}` placeholders, e.g. `format(fromDevice, ["device": "iPhone"])`.

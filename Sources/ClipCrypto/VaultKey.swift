@@ -42,12 +42,28 @@ public struct VaultKey: Sendable {
     /// hex(SHA-256(UTF-8 of `authToken`)): what the relay stores, and what `--token-sha256` pins.
     /// Safe to show: it identifies the vault to the relay but can't be used as a token.
     public var authTokenSHA256: String {
-        SHA256.hash(data: Data(authToken.utf8)).hexString
+        Self.tokenSHA256(authToken)
+    }
+
+    /// hex(SHA-256(UTF-8 of `token`)), the way the relay stores any bearer token.
+    public static func tokenSHA256(_ token: String) -> String {
+        SHA256.hash(data: Data(token.utf8)).hexString
     }
 
     /// Encrypts ops: HKDF-SHA256(vault, salt "clip.v1", info "clip.data.v1", 32 bytes).
     var dataKey: SymmetricKey {
         derive(info: "clip.data.v1")
+    }
+
+    /// Seals device names in the vault's device list: HKDF-SHA256(vault, salt "clip.v1", info "clip.device.v1").
+    var directoryKey: SymmetricKey {
+        derive(info: "clip.device.v1")
+    }
+
+    /// HPKE pre-shared key for handing the next vault key to a remaining device (F13):
+    /// HKDF-SHA256(vault, salt "clip.v1", info "clip.rekey.psk.v1", 32 bytes).
+    var rekeyPSK: SymmetricKey {
+        derive(info: "clip.rekey.psk.v1")
     }
 
     /// Encrypts one blob's chunks: HKDF-SHA256(vault, salt "clip.v1", info "clip.blob.v1|<blobID>", 32 bytes).

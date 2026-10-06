@@ -106,6 +106,42 @@ public struct RelayRequestBuilder: Sendable {
         return request
     }
 
+    public func putDevice(_ record: DeviceRecord) throws -> URLRequest {
+        var request = URLRequest(url: url("v1/devices/\(record.deviceID)"))
+        request.httpMethod = "PUT"
+        request.httpBody = try JSONEncoder().encode(record)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = Self.shortTimeout
+        authorize(&request)
+        return request
+    }
+
+    public func listDevices() -> URLRequest {
+        var request = URLRequest(url: url("v1/devices"))
+        request.httpMethod = "GET"
+        request.timeoutInterval = Self.shortTimeout
+        authorize(&request)
+        return request
+    }
+
+    public func revoke(_ body: RevokeRequest) throws -> URLRequest {
+        var request = URLRequest(url: url("v1/auth/revoke"))
+        request.httpMethod = "POST"
+        request.httpBody = try JSONEncoder().encode(body)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = Self.shortTimeout
+        authorize(&request)
+        return request
+    }
+
+    /// No token: the device asking has just been told its token no longer works.
+    public func handoffs(deviceID: String) -> URLRequest {
+        var request = URLRequest(url: url("v1/rekey/\(deviceID)"))
+        request.httpMethod = "GET"
+        request.timeoutInterval = Self.shortTimeout
+        return request
+    }
+
     /// Maps a pull response's status: 409 carries `CursorAheadResponse` and becomes `.cursorAhead`.
     public static func checkPull(status: Int, body: Data) throws {
         if status == 409 {
@@ -187,6 +223,29 @@ public struct HTTPTransport: SyncTransport {
         if status == 404 { return nil }
         try RelayRequestBuilder.check(status: status, body: data)
         return try decode(PairingBlob.self, data).blob
+    }
+
+    public func putDevice(_ record: DeviceRecord) async throws {
+        let (data, status) = try await send(builder.putDevice(record))
+        try RelayRequestBuilder.check(status: status, body: data)
+    }
+
+    public func listDevices() async throws -> [DeviceRecord] {
+        let (data, status) = try await send(builder.listDevices())
+        try RelayRequestBuilder.check(status: status, body: data)
+        return try decode(DeviceListResponse.self, data).devices
+    }
+
+    public func revoke(_ request: RevokeRequest) async throws -> RevokeResponse {
+        let (data, status) = try await send(builder.revoke(request))
+        try RelayRequestBuilder.check(status: status, body: data)
+        return try decode(RevokeResponse.self, data)
+    }
+
+    public func handoffs(deviceID: String) async throws -> [Data] {
+        let (data, status) = try await send(builder.handoffs(deviceID: deviceID))
+        try RelayRequestBuilder.check(status: status, body: data)
+        return try decode(HandoffsResponse.self, data).handoffs
     }
 
     private func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {

@@ -41,6 +41,8 @@ Dashes and case don't matter when you type the code.
 | `clipctl expire --days 30` | Deletes unpinned items older than 30 days, on every device, then syncs. |
 | `clipctl sync` | Push and pull once. |
 | `clipctl status` | Server, device, item count, changes waiting to push, sync cursor, last error. |
+| `clipctl devices` | Lists the devices in your vault, this one marked. |
+| `clipctl revoke <device>` | Removes a lost device from the vault. See below. |
 | `clipctl watch` | Keeps syncing and captures what you copy. Ctrl+C stops it. Add `--expire-days 30` to expire old unpinned items every hour. |
 
 `<id>` is the start of an item's ID. The 8 characters `list` shows are always enough, and fewer work if they're unique.
@@ -89,6 +91,36 @@ While `watch` runs on Windows, the newest copy from any other device goes straig
 
 On macOS and Linux, `watch` only syncs.
 
+## Removing a lost device
+
+If you lose a device, remove it from any other one:
+
+```
+clipctl devices
+clipctl revoke 3dcc23fa
+```
+
+`devices` prints each device's short ID and name. `revoke` takes the start of an ID or the exact name, asks
+before it does anything, and `--yes` skips the question.
+
+After a revoke the lost device can't sync, and it can't read anything copied from then on, even with a copy
+of the relay's disk. Behind the scenes this device makes a new vault key, the relay starts over with an empty
+log, and every other device gets the new key the next time it syncs. You don't have to do anything on them.
+They push their history back to the relay under the new key, so nothing they had is lost.
+
+What it can't undo: anything already on the lost device stays there, including its history.
+
+A device only shows in `devices` once it has synced with this version of clipctl. A device that isn't listed
+gets left out of the new key, so it has to pair again after a revoke. So does a device that was offline
+through more than 8 revokes.
+
+On the removed device, commands that sync fail with "this device was removed from the vault", and `watch`
+stops.
+
+The relay pin in `clipctl status` changes after a revoke, because it's a hash of the new key's token. A relay
+pinned with `CLIP_RELAY_TOKEN_SHA256` keeps working (it keeps the new hash across restarts), but update the
+variable to the new pin so it matches.
+
 ## Locking the relay to your vault
 
 `clipctl status` shows a **Relay pin**: a hash of your vault's relay token. Start the relay with it
@@ -102,9 +134,10 @@ The home folder is `%APPDATA%\ClipSync` on Windows and `~/.config/clipsync` else
 - `config.json`: server URL, device ID and device name
 - `clips.sqlite`: your history
 - `key.dpapi`: the vault key, encrypted with Windows DPAPI
+- `device.dpapi`: this device's own key, encrypted the same way. Other devices use it to send this one a new vault key after a revoke.
 
 Only your Windows user on this PC can unlock `key.dpapi`. If you copy it to another PC or another user, it won't open. Use `pair` to move a vault instead.
 
 ## The vault key on macOS and Linux
 
-A command-line tool has no Keychain to use, so clipctl won't store the key there unless you ask with `--insecure-file-key`. The key then goes in `key.insecure` as a plain file that only your user can read. Anyone who gets that file can read your whole clipboard history, so use this for testing only. You have to pass the flag on every command.
+A command-line tool has no Keychain to use, so clipctl won't store the key there unless you ask with `--insecure-file-key`. The key then goes in `key.insecure` (and this device's own key in `device.insecure`) as a plain file that only your user can read. Anyone who gets that file can read your whole clipboard history, so use this for testing only. You have to pass the flag on every command.

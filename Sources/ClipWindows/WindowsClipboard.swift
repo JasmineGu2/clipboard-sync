@@ -2,10 +2,11 @@
 import Foundation
 import WinSDK
 
-/// The Win32 clipboard: reading for `watch`, writing for `copy`. See docs/design.md §5 (F9).
-enum WindowsClipboard {
+/// The Win32 clipboard: reading for capture (`clipctl watch`, the tray app), writing for `clipctl copy` and
+/// copies from history. See docs/design.md §5 (F9).
+public enum WindowsClipboard {
     /// Text over this many UTF-8 bytes is never captured.
-    static let maxCaptureBytes = 1024 * 1024
+    public static let maxCaptureBytes = 1024 * 1024
 
     /// Set by password managers and by us (on `copy`): monitors must ignore the content.
     static let excludeFormat = register("ExcludeClipboardContentFromMonitorProcessing")
@@ -15,7 +16,7 @@ enum WindowsClipboard {
     static let historyFormat = register("CanIncludeInClipboardHistory")
     static let cloudFormat = register("CanUploadToCloudClipboard")
 
-    enum Capture {
+    public enum Capture: Sendable {
         case text(String)
         /// A concealed-content marker is present; the name says which.
         case concealed(String)
@@ -26,10 +27,10 @@ enum WindowsClipboard {
         case busy
     }
 
-    static var sequenceNumber: DWORD { GetClipboardSequenceNumber() }
+    public static var sequenceNumber: DWORD { GetClipboardSequenceNumber() }
 
     /// Reads the clipboard text unless it's marked concealed or too large.
-    static func readForCapture() -> Capture {
+    public static func readForCapture() -> Capture {
         guard open(owner: nil) else { return .busy }
         defer { CloseClipboard() }
 
@@ -74,7 +75,7 @@ enum WindowsClipboard {
     }
 
     /// Puts text on the clipboard, marked so monitors (our own watcher included) don't capture it again.
-    static func write(_ text: String) throws {
+    public static func write(_ text: String) throws {
         // SetClipboardData fails after EmptyClipboard if the clipboard was opened without an owner window,
         // so own it with a message-only window.
         let window = "STATIC".withCString(encodedAs: UTF16.self) { className in
@@ -83,9 +84,9 @@ enum WindowsClipboard {
         }
         defer { if let window { DestroyWindow(window) } }
 
-        guard open(owner: window) else { throw CLIError("The clipboard is busy (another app has it open). Try again.") }
+        guard open(owner: window) else { throw WindowsError("The clipboard is busy (another app has it open). Try again.") }
         defer { CloseClipboard() }
-        guard EmptyClipboard() else { throw CLIError("Couldn't empty the clipboard (Windows error \(GetLastError())).") }
+        guard EmptyClipboard() else { throw WindowsError("Couldn't empty the clipboard (Windows error \(GetLastError())).") }
 
         let units = Array(text.utf16) + [0]
         try set(UINT(CF_UNICODETEXT), bytes: units.count * 2) { destination in
@@ -99,18 +100,18 @@ enum WindowsClipboard {
 
     private static func set(_ format: UINT, bytes: Int, fill: (UnsafeMutableRawPointer) -> Void) throws {
         guard let memory = GlobalAlloc(UINT(GMEM_MOVEABLE), SIZE_T(bytes)) else {
-            throw CLIError("Out of memory writing the clipboard.")
+            throw WindowsError("Out of memory writing the clipboard.")
         }
         guard let pointer = GlobalLock(memory) else {
             GlobalFree(memory)
-            throw CLIError("Couldn't lock clipboard memory (Windows error \(GetLastError())).")
+            throw WindowsError("Couldn't lock clipboard memory (Windows error \(GetLastError())).")
         }
         fill(pointer)
         GlobalUnlock(memory)
         // On success the system owns the memory; only free it on failure.
         guard SetClipboardData(format, memory) != nil else {
             GlobalFree(memory)
-            throw CLIError("Couldn't set clipboard data (Windows error \(GetLastError())).")
+            throw WindowsError("Couldn't set clipboard data (Windows error \(GetLastError())).")
         }
     }
 

@@ -4,6 +4,9 @@ import ClipCrypto
 import ClipStore
 import ClipSync
 import Foundation
+#if os(Windows)
+import ClipWindows
+#endif
 
 // Help strings are inline because ArgumentParser needs them in code; the longer guide is content/clipctl.md.
 

@@ -4,6 +4,9 @@ import ClipCrypto
 import ClipStore
 import ClipSync
 import Foundation
+#if os(Windows)
+import ClipWindows
+#endif
 
 /// Options every command accepts, before or after the subcommand name.
 struct GlobalOptions: ParsableArguments {
@@ -40,9 +43,7 @@ struct HomeFolder: Sendable {
 
     static var defaultURL: URL {
         #if os(Windows)
-        if let appData = ProcessInfo.processInfo.environment["APPDATA"] {
-            return URL(fileURLWithPath: appData, isDirectory: true).appendingPathComponent("ClipSync", isDirectory: true)
-        }
+        if let appData = WindowsPaths.appDataHome { return appData }
         #endif
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config", isDirectory: true)

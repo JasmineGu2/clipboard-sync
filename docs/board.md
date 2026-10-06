@@ -11,6 +11,7 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 ## In progress
 
 ## Review
+- [ ] T32 M3 Windows tray app (`ClipSyncWin`, apps/Windows): tray menu, history window with search/copy/pin/rename/delete, Ctrl+Shift+V, clipboard listener with concealed skip, pause, expiry, pairing, devices/revoke, start at sign-in; clipctl's Win32 code moved to `ClipWindows`; copy in content/windows.md. Builds as a stub on macOS (218 tests pass) · needs: CI Windows job for the first compile, then a run on the PC
 
 ## Done
 - [x] T01 Contracts, design doc

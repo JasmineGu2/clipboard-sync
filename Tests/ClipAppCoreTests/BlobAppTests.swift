@@ -151,7 +151,9 @@ final class BlobAppTests: XCTestCase {
         XCTAssertTrue(mac.model.recent.allSatisfy { $0.kind == .file })
     }
 
-    func testOldExportsAreCleanedUp() throws {
+    // async only so Linux test discovery compiles: a sync throwing test in a @MainActor class next to async ones
+    // gives its generated allTests list conflicting element types.
+    func testOldExportsAreCleanedUp() async throws {
         let exports = try makeHome()
         let old = exports.appendingPathComponent("old"), fresh = exports.appendingPathComponent("fresh")
         for folder in [old, fresh] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }

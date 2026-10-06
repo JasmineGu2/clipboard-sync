@@ -46,6 +46,11 @@ jobs:
           Invoke-WebRequest $url -OutFile $exe
           $p = Start-Process $exe -ArgumentList "-q" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Swift installer exited with $($p.ExitCode)" }
+          # The bundle can exit before its toolchain package has written its files (2026-10-06: an empty
+          # Toolchains folder). Wait for swift.exe itself, up to 5 minutes.
+          $swift = Join-Path $env:LOCALAPPDATA "Programs\Swift\Toolchains\*\usr\bin\swift.exe"
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $swift); $i++) { Start-Sleep 5 }
+          if (-not (Test-Path $swift)) { throw "swift.exe never appeared at $swift" }
       # Mirrors scripts/swiftenv.sh: toolchain and runtime on PATH, SDKROOT set.
       - name: Put Swift on PATH
         shell: pwsh

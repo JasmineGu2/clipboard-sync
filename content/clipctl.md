@@ -100,7 +100,9 @@ clipctl devices
 clipctl revoke 3dcc23fa
 ```
 
-`devices` prints each device's short ID and name. `revoke` takes the start of an ID or the exact name, asks
+`devices` prints each device's short ID, key fingerprint, join date and name, with this device marked. To spot a
+decoy, run `clipctl devices` (or open Devices in the app) on each of your devices and check the key next to "this
+device" matches the key shown for it here. `revoke` takes the start of an ID or the exact name, asks
 before it does anything, and `--yes` skips the question.
 
 After a revoke the lost device can't sync, and it can't read anything copied from then on, even with a copy

@@ -47,7 +47,7 @@ struct Init: AsyncParsableCommand {
         }
         try home.create()
         try store.saveVaultKey(VaultKey.generate())
-        let config = Config(serverURL: url.absoluteString, deviceID: UUID(), deviceName: name ?? defaultDeviceName())
+        let config = Config(serverURL: url.absoluteString, deviceID: UUID(), deviceName: name ?? defaultDeviceName(), joinedAt: Date())
         try home.save(config)
         print("Created a new vault in \(home.url.path)")
         print("Device: \(config.deviceName). Server: \(config.serverURL)")
@@ -101,7 +101,7 @@ struct Pair: AsyncParsableCommand {
             }
             try home.create()
             try store.saveVaultKey(key)
-            let config = Config(serverURL: url.absoluteString, deviceID: UUID(), deviceName: name ?? defaultDeviceName())
+            let config = Config(serverURL: url.absoluteString, deviceID: UUID(), deviceName: name ?? defaultDeviceName(), joinedAt: Date())
             try home.save(config)
             print("Joined the vault. Device: \(config.deviceName)")
             let client = try Client.open(global)
@@ -468,10 +468,14 @@ struct Devices: AsyncParsableCommand {
         } catch {
             throw CLIError("Can't read the device list: \(describe(error))")
         }
+        // The key fingerprint is the check against decoys: run `clipctl devices` (or open Devices) on each device
+        // and compare the key next to "this device" with the key shown for it here.
         for device in devices {
-            print("\(shortDeviceID(device.id))  \(device.name)\(device.isThisDevice ? "  (this device)" : "")")
+            let joined = device.joinedAt.map { "joined " + $0.formatted(.iso8601.year().month().day()) } ?? "joined ?"
+            print("\(shortDeviceID(device.id))  key \(device.fingerprint)  \(joined)  \(device.name)\(device.isThisDevice ? "  (this device)" : "")")
         }
         print("A device shows here once it has synced with this version. Any device not listed has to pair again after a revoke.")
+        print("To check a device, run `clipctl devices` on it (or open Devices in the app): the key next to \"this device\" should match its key here. Revoke anything you don't recognize.")
     }
 }
 

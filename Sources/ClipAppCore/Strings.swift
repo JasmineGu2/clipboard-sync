@@ -100,6 +100,23 @@ public enum Strings {
     public static let removeDeviceMessage = "It stops syncing and can't read anything copied from now on. Your other devices switch to a new key the next time they sync. Anything already on it stays there. Images and files that only it had keep their preview but can't be downloaded any more."
     public static let removeDeviceConfirm = "Remove device"
     public static let deviceRemoved = "{device} was removed."
+    public static let deviceFingerprint = "Key {fingerprint}"
+    public static let deviceJoined = "Joined {date}"
+    public static let devicesCheckHint = "To check a device, open Devices on it: the key next to This device should match the key shown for it here. Remove any device you don't recognize."
+
+    // MARK: Removed from the vault (F13)
+    public static let removedTitle = "This device was removed"
+    public static let removedBody = "Another device removed this one from your vault, so it no longer syncs. Set it up again to join with a pairing code or start a new vault."
+    public static let removedKeepsHistory = "The old history isn't deleted. It moves to a folder named removed- and the date, inside ClipSync's data folder on this device."
+    public static let setUpAgain = "Set up again"
+
+    // MARK: Quick picker (Mac)
+    public static let menuQuickPick = "Quick picker (⌃⌘V)"
+    public static let pickerPrompt = "Search recent clips"
+    public static let pickerHintCopy = "↑↓ to choose · Return to copy · Esc to close"
+    public static let pickerHintPaste = "↑↓ to choose · Return to paste · Esc to close"
+    public static let pickerCopiedNoPaste = "Copied. Press ⌘V to paste. To paste with Return, allow ClipSync in System Settings > Privacy & Security > Accessibility."
+    public static let pickerHotkeyUnavailable = "⌃⌘V is taken by another app, so the quick picker has no shortcut. Open it from this menu."
 
     // MARK: Share extension and Shortcuts
     public static let shareSent = "Sent to ClipSync"
@@ -206,6 +223,19 @@ public enum Strings {
         "watchPhoneUnreachable": watchPhoneUnreachable,
         "watchTruncated": watchTruncated,
         "watchOmitted": watchOmitted,
+        "deviceFingerprint": deviceFingerprint,
+        "deviceJoined": deviceJoined,
+        "devicesCheckHint": devicesCheckHint,
+        "removedTitle": removedTitle,
+        "removedBody": removedBody,
+        "removedKeepsHistory": removedKeepsHistory,
+        "setUpAgain": setUpAgain,
+        "menuQuickPick": menuQuickPick,
+        "pickerPrompt": pickerPrompt,
+        "pickerHintCopy": pickerHintCopy,
+        "pickerHintPaste": pickerHintPaste,
+        "pickerCopiedNoPaste": pickerCopiedNoPaste,
+        "pickerHotkeyUnavailable": pickerHotkeyUnavailable,
     ]
 
     /// Fills `{name}` placeholders, e.g. `format(fromDevice, ["device": "iPhone"])`.

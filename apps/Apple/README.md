@@ -74,6 +74,54 @@ Shortcuts action then can't see its database and say "finish setup first". Paste
 
 Pause capture and Pair new device are in the `...` menu at the bottom.
 
+### Quick picker (⌃⌘V)
+
+Press ⌃⌘V anywhere for a small floating list of recent items near the pointer (or choose Quick picker in the `...`
+menu). Type to search, Up and Down to choose, Return to copy, Escape to close. The shortcut uses Carbon's
+`RegisterEventHotKey`, which needs no permission. Return also pastes into the app underneath, but only when
+ClipSync is allowed in System Settings > Privacy & Security > Accessibility (the app checks with
+`CGPreflightPostEventAccess` and never prompts). Without it the item is copied and the picker says to press ⌘V. If
+another app already holds ⌃⌘V, the menu says so and the menu item still works.
+
+## When a device is removed
+
+When another device removes this one (Devices > Remove, or `clipctl revoke`), the app shows "This device was
+removed" instead of the history, with a **Set up again** button. That button moves `clips.sqlite` (with its
+`-wal`/`-shm`), `blobs/`, `exports/` and `config.json` into `removed-<date>/` inside the same data folder, drops the
+dead vault key from the Keychain, makes a new device key, and goes back to onboarding. Nothing is deleted; delete the
+`removed-` folder yourself once you don't need the old history.
+
+The Devices screen shows each device's key fingerprint (`Key B486 2DD6 CA02 F69F`) and the date it joined. To
+spot a decoy, open Devices on each of your devices and check that the key next to This device matches the key
+shown for it everywhere else.
+
+## Measurements (simulator and proxy numbers, not the targets themselves)
+
+DEBUG builds take launch arguments that seed a separate, throwaway vault (`Shared/MeasurementMode.swift`):
+`-ClipSyncMeasureItems 10000` (plus optional `-ClipSyncMeasureHome <dir>`, `-ClipSyncMeasureServer <url>`,
+`-ClipSyncMeasureOpen devices|picker`). The vault key lives in memory only, so the real vault is never touched.
+The app prints `ClipSync measure: ...` lines to stdout.
+
+**N3 on the iOS Simulator, not a device (2026-10-06).** iPhone 16 Pro simulator, iOS 18.3, Debug build, MacBook Air
+under heavy load from other builds (load average 10 to 15). Time from the kernel starting the process to the first
+history rows on screen, 10,000 items, 10 launches after a seeding launch:
+
+| | median | range |
+| --- | --- | --- |
+| process start to app model ready | 1.18 s | 0.89 to 1.77 s |
+| process start to history on screen | 2.99 s | 2.44 to 4.11 s |
+
+Over the 500 ms target, but this says little about a phone: about 1.2 s passes before any ClipSync code runs
+(Debug dylib loading in a busy simulator), and the same launch with a 1-item vault took 2.9 s, so the 10,000 items
+aren't what costs the time. Measure on the iPhone with a Release-like build before reading anything into it.
+Reproduce: `xcrun simctl launch --console-pty <device> dev.jazz.clipsync.ios -ClipSyncMeasureItems 10000`.
+
+**N4 proxy on the Mac: CPU, not Energy Impact (2026-10-06).** Debug build launched headless (ad-hoc signed, so not
+sandboxed) with a 10,000-item measurement vault, long-polling a local relay, clipboard watcher running, menu closed.
+After 30 s to settle, over 61 s: 0.07 s of CPU time (`ps -o time`, about 0.1% of one core); `top -l 61 -s 1` averaged
+0.06% CPU, 11.4 idle wakeups per second and a power score of 0.07. The PRD target is Activity Monitor's Energy Impact
+"Low", which still needs a look in Activity Monitor on the signed app.
+
 ## Run on the iPhone
 
 1. Plug the iPhone in (or pair it over Wi-Fi in Xcode > Window > Devices and Simulators).

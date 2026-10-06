@@ -48,5 +48,6 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 - [x] T31 Apple Watch view of pinned items (F17): iPhone mirrors pinned items, Copy on iPhone by ID; opt-in target (`CLIPSYNC_WATCH=YES`), type-checked for watchOS only, not run (needs the watchOS platform and a simulator or watch)
 
 - [x] T35 Relay and transport hardening: stale-upload purge (7 days, startup + hourly), O(1) blob byte total kept in the same transaction (migration, crash-snapshot test), chunk responses capped while read, N10 bind check (loopback/tailnet only unless `--allow-non-tailnet`) and `scripts/deploy-relay.sh`, N12 crash test for the blob cache
+- [x] T34 Apple polish (branch t34-apple-polish): removed-device screen with Set up again (old files moved to `removed-<date>/`), key fingerprints and join dates in Devices (Mac, iOS, `clipctl devices`), Mac ⌃⌘V quick picker (Carbon hot key, paste only with Accessibility), watcher Sendable warning fixed, image cap at read time, DEBUG measurement mode; N3 on the simulator 2.99 s median (Debug, loaded machine) and N4 CPU proxy 0.1% recorded in apps/Apple/README.md
 
 ## Blocked

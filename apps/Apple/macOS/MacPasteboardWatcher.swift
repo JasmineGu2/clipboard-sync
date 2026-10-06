@@ -10,7 +10,7 @@ import ClipAppCore
 final class MacPasteboardWatcher {
     static let interval: TimeInterval = 0.5
 
-    private enum Suspension: Hashable {
+    private enum Suspension: Hashable, Sendable {
         case screenAsleep, systemAsleep, locked, sessionInactive
     }
 
@@ -35,16 +35,16 @@ final class MacPasteboardWatcher {
         guard !started else { return }
         started = true
         let workspace = NSWorkspace.shared.notificationCenter
-        observe(workspace, NSWorkspace.screensDidSleepNotification) { $0.suspend(.screenAsleep) }
-        observe(workspace, NSWorkspace.screensDidWakeNotification) { $0.resume(.screenAsleep) }
-        observe(workspace, NSWorkspace.willSleepNotification) { $0.suspend(.systemAsleep) }
-        observe(workspace, NSWorkspace.didWakeNotification) { $0.resume(.systemAsleep) }
-        observe(workspace, NSWorkspace.sessionDidResignActiveNotification) { $0.suspend(.sessionInactive) }
-        observe(workspace, NSWorkspace.sessionDidBecomeActiveNotification) { $0.resume(.sessionInactive) }
+        observe(workspace, NSWorkspace.screensDidSleepNotification, suspending: true, .screenAsleep)
+        observe(workspace, NSWorkspace.screensDidWakeNotification, suspending: false, .screenAsleep)
+        observe(workspace, NSWorkspace.willSleepNotification, suspending: true, .systemAsleep)
+        observe(workspace, NSWorkspace.didWakeNotification, suspending: false, .systemAsleep)
+        observe(workspace, NSWorkspace.sessionDidResignActiveNotification, suspending: true, .sessionInactive)
+        observe(workspace, NSWorkspace.sessionDidBecomeActiveNotification, suspending: false, .sessionInactive)
         // Screen lock has no public NSWorkspace notification; these distributed ones are what loginwindow posts.
         let distributed = DistributedNotificationCenter.default()
-        observe(distributed, Notification.Name("com.apple.screenIsLocked")) { $0.suspend(.locked) }
-        observe(distributed, Notification.Name("com.apple.screenIsUnlocked")) { $0.resume(.locked) }
+        observe(distributed, Notification.Name("com.apple.screenIsLocked"), suspending: true, .locked)
+        observe(distributed, Notification.Name("com.apple.screenIsUnlocked"), suspending: false, .locked)
         updateTimer()
     }
 
@@ -56,11 +56,17 @@ final class MacPasteboardWatcher {
         timer = nil
     }
 
-    private func observe(_ center: NotificationCenter, _ name: Notification.Name, _ handler: @escaping @MainActor (MacPasteboardWatcher) -> Void) {
+    /// The observer block is `@Sendable`, so it captures only Sendable values: the reason and the direction, not a
+    /// closure. It's delivered on the main queue, so it can step into the main actor.
+    private func observe(_ center: NotificationCenter, _ name: Notification.Name, suspending: Bool, _ reason: Suspension) {
         let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                handler(self)
+                if suspending {
+                    self.suspend(reason)
+                } else {
+                    self.resume(reason)
+                }
             }
         }
         observers.append((center, token))

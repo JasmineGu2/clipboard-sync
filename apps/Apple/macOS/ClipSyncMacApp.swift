@@ -1,5 +1,6 @@
 import AppKit
 import ClipAppCore
+import ClipCrypto
 import SwiftUI
 
 @main
@@ -21,17 +22,45 @@ final class MacAppController {
     let app: ClipApp
     @ObservationIgnored private let pasteboard: MacPasteboard
     @ObservationIgnored private var watcher: MacPasteboardWatcher?
+    @ObservationIgnored private let picker = QuickPicker()
+    @ObservationIgnored private var hotKey: GlobalHotKey?
+    /// False when another app holds ⌃⌘V; the menu says so and still opens the picker.
+    private(set) var hotKeyAvailable = true
 
     init() {
         let pasteboard = MacPasteboard()
         self.pasteboard = pasteboard
-        self.app = ClipApp.bootstrap(
-            home: AppPaths.home,
-            keyStore: KeychainKeyStore.appDefault,
-            deviceName: Host.current().localizedName ?? ProcessInfo.processInfo.hostName,
-            pasteboard: pasteboard
-        )
+        let deviceName = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        var home = AppPaths.home
+        var keyStore: any KeyStore = KeychainKeyStore.appDefault
+        #if DEBUG
+        if let measurement = MeasurementMode.prepare(deviceName: deviceName) {
+            home = measurement.home
+            keyStore = measurement.keyStore
+        }
+        #endif
+        self.app = ClipApp.bootstrap(home: home, keyStore: keyStore, deviceName: deviceName, pasteboard: pasteboard)
         startWatcherIfReady()
+        hotKey = GlobalHotKey.controlCommandV { [weak self] in self?.togglePicker() }
+        hotKeyAvailable = hotKey != nil
+        #if DEBUG
+        if MeasurementMode.openAtLaunch == "picker" {
+            DispatchQueue.main.async { [weak self] in self?.togglePicker() }
+        }
+        #endif
+    }
+
+    /// ⌃⌘V, or the menu item. Only once set up and still in the vault.
+    func togglePicker() {
+        guard app.state == .ready, !app.isRemoved, let history = app.history else { return }
+        picker.toggle(history: history)
+    }
+
+    /// After this device was removed: stop capturing into the old vault, then go back to onboarding.
+    func setUpAgain() {
+        picker.close()
+        watcher?.stop()
+        watcher = nil
     }
 
     /// Starts capturing once setup is done. Safe to call repeatedly.

@@ -12,15 +12,7 @@ struct ClipSynciOSApp: App {
         // F17: the Apple Watch gets the pinned items as they change, and can ask for one on this clipboard.
         let watch = WatchLink.shared
         watch.activate()
-        let app = ClipApp.bootstrap(
-            home: AppPaths.home,
-            keyStore: KeychainKeyStore.appDefault,
-            // Only the onboarding prefill: since iOS 16, UIDevice.name is the generic model name without a
-            // special entitlement, so onboarding asks for a name and saves it in the config.
-            deviceName: UIDevice.current.model,
-            pasteboard: IOSPasteboard(),
-            pinnedMirror: watch
-        )
+        let app = Self.makeApp(pinnedMirror: watch)
         watch.onCopyRequest = { id in app.history?.copyPinned(id: id) ?? false }
         _app = State(initialValue: app)
     }
@@ -39,6 +31,27 @@ struct ClipSynciOSApp: App {
                 }
             }
         }
+    }
+}
+
+extension ClipSynciOSApp {
+    @MainActor
+    static func makeApp(pinnedMirror: (any PinnedItemsMirror)?) -> ClipApp {
+        // Only the onboarding prefill: since iOS 16, UIDevice.name is the generic model name without a
+        // special entitlement, so onboarding asks for a name and saves it in the config.
+        let deviceName = UIDevice.current.model
+        #if DEBUG
+        if let measurement = MeasurementMode.prepare(deviceName: deviceName) {
+            let app = ClipApp.bootstrap(
+                home: measurement.home, keyStore: measurement.keyStore, deviceName: deviceName,
+                pasteboard: IOSPasteboard())
+            MeasurementMode.mark("app model ready")
+            return app
+        }
+        #endif
+        return ClipApp.bootstrap(
+            home: AppPaths.home, keyStore: KeychainKeyStore.appDefault, deviceName: deviceName,
+            pasteboard: IOSPasteboard(), pinnedMirror: pinnedMirror)
     }
 }
 
@@ -117,7 +130,9 @@ struct RootView: View {
     var body: some View {
         switch app.state {
         case .ready:
-            if let history = app.history {
+            if app.isRemoved {
+                RemovedView(app: app)
+            } else if let history = app.history {
                 HistoryView(history: history, app: app)
             }
         case .needsSetup, .working:

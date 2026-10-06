@@ -113,7 +113,7 @@ The code reads these from the `Strings` enum in `Sources/ClipAppCore/Strings.swi
 - `errorStorage`: Couldn't read or write the local database.
 - `errorKeychain`: Couldn't access the Keychain.
 - `errorNotSetUp`: Open ClipSync and finish setup first.
-- `errorFileTooLarge`: That file is too large to sync. The limit is 512 MB.
+- `errorFileTooLarge`: That file is too large to sync. The limit is {limit}.
 - `errorUnreadableFile`: Couldn't read that file.
 - `errorNotUploadedYet`: This is still uploading from the other device. Try again in a moment.
 - `errorDownloadFailed`: The download didn't match what was sent. Try again.

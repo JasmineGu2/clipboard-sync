@@ -164,6 +164,29 @@ final class BlobStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: partial.path))
     }
 
+    /// Seen in the end-to-end run: a process killed mid-write left the file a whole chunk longer, but that chunk
+    /// was zeros. Only chunks recorded after their fsync count.
+    func testResumeTrustsTheRecordedCountNotTheLength() throws {
+        let cache = try BlobCache(directory: try tempDirectory())
+        let data = Data("0123456789".utf8)
+        let blob = ref(data)
+        let first = try cache.beginDownload(blob)
+        try first.append(Data("0123".utf8))
+        first.close()
+        // The kill: chunk 1's length is there, its bytes aren't, and the count was never written.
+        let handle = try FileHandle(forWritingTo: cache.partialURL(for: blob.id))
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(count: 4))
+        try handle.close()
+
+        let second = try cache.beginDownload(blob)
+        XCTAssertEqual(second.verifiedChunks, 1, "the zero-filled chunk is fetched again")
+        try second.append(Data("4567".utf8))
+        try second.append(Data("89".utf8))
+        XCTAssertEqual(try Data(contentsOf: try second.finish()), data)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cache.progressURL(for: blob.id).path))
+    }
+
     func testDownloadRejectsWrongChunkLength() throws {
         let cache = try BlobCache(directory: try tempDirectory())
         let download = try cache.beginDownload(ref(Data("0123456789".utf8)))

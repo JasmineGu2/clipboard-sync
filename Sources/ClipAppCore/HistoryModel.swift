@@ -300,8 +300,9 @@ public final class HistoryModel {
         }
     }
 
-    /// `<exports>/<item ID>/<item name>`: a hard link to the cache file where the file system allows it (no
-    /// extra space), else a copy. Reused while it exists.
+    /// `<exports>/<item ID>/<item name>`: a copy (a clone on APFS, so no extra space), written to a temporary
+    /// name and renamed, so a half-finished copy is never reused. Not a hard link: an app editing the pasted file
+    /// in place would change the cached blob, and a later re-upload would no longer match its SHA-256.
     nonisolated static func export(_ cached: URL, as item: ClipItem, to exports: URL) throws -> URL {
         let folder = exports.appendingPathComponent(item.id.description, isDirectory: true)
         let name = FileTypes.safeFileName(item.text, fallback: item.id.description)
@@ -309,10 +310,13 @@ public final class HistoryModel {
         let files = FileManager.default
         if files.fileExists(atPath: destination.path) { return destination }
         try files.createDirectory(at: folder, withIntermediateDirectories: true)
+        let temp = folder.appendingPathComponent(".\(UUID().uuidString).tmp")
+        try files.copyItem(at: cached, to: temp)
         do {
-            try files.linkItem(at: cached, to: destination)
+            try files.moveItem(at: temp, to: destination)
         } catch {
-            try files.copyItem(at: cached, to: destination)
+            try? files.removeItem(at: temp)
+            if !files.fileExists(atPath: destination.path) { throw error }
         }
         return destination
     }

@@ -47,6 +47,7 @@ public final class BlobCache: Sendable {
     /// Read and write buffer for imports, exports and hashing.
     static let ioChunk = 1 << 20
     private static let partialSuffix = ".partial"
+    private static let progressSuffix = ".progress"
     private static let tempPrefix = "tmp-"
 
     public init(directory: URL) throws {
@@ -65,6 +66,11 @@ public final class BlobCache: Sendable {
 
     func partialURL(for id: BlobID) -> URL {
         directory.appendingPathComponent(id.description + Self.partialSuffix)
+    }
+
+    /// How many chunks of the partial file are known good: written only after their bytes were fsynced.
+    func progressURL(for id: BlobID) -> URL {
+        directory.appendingPathComponent(id.description + Self.progressSuffix)
     }
 
     public func contains(_ id: BlobID) -> Bool {
@@ -223,7 +229,11 @@ public final class BlobCache: Sendable {
     // MARK: Download
 
     /// Opens (or resumes) the download of `ref`. A partial file from an earlier attempt is cut back to its last
-    /// whole chunk and re-hashed, so the download continues from the last verified chunk (N5).
+    /// recorded chunk and re-hashed, so the download continues from the last verified chunk (N5).
+    ///
+    /// The file's length alone isn't proof: a process killed mid-write left a file a whole chunk longer whose new
+    /// chunk was all zeros (seen in scripts/e2e-blobs.sh). So each chunk's count goes into the `.progress` file
+    /// only after its bytes are fsynced, and a resume trusts the smaller of the two.
     public func beginDownload(_ ref: BlobRef) throws -> BlobDownload {
         let partial = partialURL(for: ref.id)
         if !FileManager.default.fileExists(atPath: partial.path) {
@@ -232,11 +242,13 @@ public final class BlobCache: Sendable {
             }
         }
         let existing = Self.fileSize(partial) ?? 0
+        let recorded = (try? String(contentsOf: progressURL(for: ref.id), encoding: .utf8))
+            .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
         // Whole chunks already on disk. Each was checked by GCM before it was written; the final SHA-256 check
         // catches anything a crash garbled after that.
         var chunks = 0
         var offset: Int64 = 0
-        while chunks < ref.chunkCount {
+        while chunks < min(ref.chunkCount, recorded) {
             let length = Int64(ref.plaintextLength(ofChunk: chunks))
             // `length > 0`: an empty blob's single empty chunk is still fetched and authenticated.
             guard length > 0, offset + length <= existing else { break }
@@ -273,6 +285,7 @@ public final class BlobCache: Sendable {
     public func remove(_ id: BlobID) {
         try? FileManager.default.removeItem(at: url(for: id))
         try? FileManager.default.removeItem(at: partialURL(for: id))
+        try? FileManager.default.removeItem(at: progressURL(for: id))
     }
 
     // MARK: Garbage collection
@@ -285,7 +298,10 @@ public final class BlobCache: Sendable {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
         var removed = 0
         for name in names {
-            let idText = name.hasSuffix(Self.partialSuffix) ? String(name.dropLast(Self.partialSuffix.count)) : name
+            var idText = name
+            for suffix in [Self.partialSuffix, Self.progressSuffix] where name.hasSuffix(suffix) {
+                idText = String(name.dropLast(suffix.count))
+            }
             let id = UUID(uuidString: idText).map(BlobID.init)
             if let id, live.contains(id) { continue }
             let file = directory.appendingPathComponent(name)
@@ -385,6 +401,9 @@ public final class BlobDownload {
         hasher.update(data: plaintext)
         bytes += Int64(plaintext.count)
         verifiedChunks += 1
+        // After the fsync above, so the count never runs ahead of bytes on disk. Losing this write only means
+        // fetching one chunk again.
+        try? Data(String(verifiedChunks).utf8).write(to: cache.progressURL(for: ref.id), options: .atomic)
     }
 
     /// Checks size and SHA-256, then moves the file into place. On a mismatch the partial file is removed.
@@ -396,9 +415,11 @@ public final class BlobDownload {
         let partial = cache.partialURL(for: ref.id)
         guard bytes == ref.size, digest == ref.sha256 else {
             try? FileManager.default.removeItem(at: partial)
+            try? FileManager.default.removeItem(at: cache.progressURL(for: ref.id))
             throw BlobCacheError.hashMismatch
         }
         try cache.moveIntoPlace(partial, cache.url(for: ref.id))
+        try? FileManager.default.removeItem(at: cache.progressURL(for: ref.id))
         return cache.url(for: ref.id)
     }
 

@@ -360,6 +360,42 @@ final class BlobTransferTests: XCTestCase {
         XCTAssertEqual(try sha256(of: awaited19), try sha256(of: file))
     }
 
+    /// Review finding: a job that can never succeed (here, its cache file is gone) must not block the ones behind it.
+    func testBrokenUploadDoesNotBlockTheQueue() async throws {
+        let relay = InMemoryRelay()
+        let a = try makePeer("A", transport: relay)
+        let broken = try await a.engine.addFile(at: try makeFile(bytes: 100, seed: 1))
+        let fine = try await a.engine.addFile(at: try makeFile(bytes: 100, seed: 2))
+        let brokenBlob = try XCTUnwrap(try a.db.item(broken)?.content?.blob)
+        // The file vanished after the import, but the cache still answers `contains` for a moment: truncate it.
+        try Data().write(to: a.cache.url(for: brokenBlob.id))
+        let sent = try await a.engine.uploadPendingBlobs()
+        XCTAssertEqual(sent, 1)
+        XCTAssertEqual(try a.db.pendingBlobUploads(), [])
+        let fineBlob = try XCTUnwrap(try a.db.item(fine)?.content?.blob).id.description
+        let status = try await relay.blobStatus(blobID: fineBlob)
+        XCTAssertEqual(status?.isComplete, true)
+    }
+
+    /// Review finding: one caller giving up must not cancel a download another caller still waits for.
+    func testCancellingOneWaiterKeepsTheSharedDownload() async throws {
+        let relay = InMemoryRelay()
+        let a = try makePeer("A", transport: relay)
+        let b = try makePeer("B", transport: relay)
+        let file = try makeFile(bytes: 8 * 1_048_576)
+        let item = try await a.engine.addFile(at: file)
+        try await a.engine.syncOnce()
+        try await a.engine.uploadPendingBlobs()
+        try await b.engine.syncOnce()
+        let engine = b.engine
+        let first = Task { try await engine.fetchBlob(for: item) }
+        let second = Task { try await engine.fetchBlob(for: item) }
+        try await Task.sleep(for: .milliseconds(5))
+        first.cancel()
+        let url = try await second.value
+        XCTAssertEqual(try sha256(of: url), try sha256(of: file))
+    }
+
     // MARK: Run loop
 
     func testRunLoopUploadsInTheBackground() async throws {

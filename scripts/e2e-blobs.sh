@@ -119,6 +119,6 @@ echo "== delete on A frees the blob on the relay and on B"
 a delete "$ITEM" >/dev/null
 a sync | sed 's/^/   A: /'
 b sync | sed 's/^/   B: /'
-echo "   relay chunks left: $(sqlite3 "$WORK/relay.sqlite3" 'SELECT count(*) FROM blob_chunks')"
+echo "   relay chunks left (C's second file, still live): $(sqlite3 "$WORK/relay.sqlite3" 'SELECT count(*) FROM blob_chunks')"
 echo "   B blob cache files left: $(ls "$WORK/b/blobs" | wc -l | tr -d ' ')"
 echo "== done"

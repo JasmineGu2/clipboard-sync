@@ -77,7 +77,8 @@ public actor BlobTransferer {
     public let meter: TransferMeter
     private let transport: any BlobTransport
     private let vaultKey: VaultKey
-    private var downloads: [BlobID: Task<URL, Error>] = [:]
+    /// Downloads in flight, each with the callers waiting on it. Cancelled only when every waiter has left.
+    private var downloads: [BlobID: (task: Task<URL, Error>, waiters: Set<UUID>)] = [:]
 
     public init(cache: BlobCache, transport: any BlobTransport, vaultKey: VaultKey, meter: TransferMeter = TransferMeter()) {
         self.cache = cache
@@ -147,14 +148,32 @@ public actor BlobTransferer {
     public func download(_ ref: BlobRef, item: ItemID, progress: BlobProgressHandler? = nil) async throws -> URL {
         guard Self.isValid(ref) else { throw BlobTransferError.invalidBlobRef }
         if cache.contains(ref.id) { return cache.url(for: ref.id) }
-        if let running = downloads[ref.id] { return try await running.value }
-        let task = Task { try await self.performDownload(ref, item: item, progress: progress) }
-        downloads[ref.id] = task
-        defer { downloads[ref.id] = nil }
+        let waiter = UUID()
+        let task: Task<URL, Error>
+        if let running = downloads[ref.id] {
+            task = running.task
+            downloads[ref.id]?.waiters.insert(waiter)
+        } else {
+            task = Task { try await self.performDownload(ref, item: item, progress: progress) }
+            downloads[ref.id] = (task, [waiter])
+        }
+        defer { leave(ref.id, waiter, cancelling: false) }
+        let id = ref.id
         return try await withTaskCancellationHandler {
             try await task.value
         } onCancel: {
-            task.cancel()
+            Task { await self.leave(id, waiter, cancelling: true) }
+        }
+    }
+
+    /// One caller stops waiting. A cancelled caller cancels the download only if nobody else still wants it.
+    private func leave(_ blob: BlobID, _ waiter: UUID, cancelling: Bool) {
+        guard var entry = downloads[blob], entry.waiters.remove(waiter) != nil else { return }
+        if entry.waiters.isEmpty {
+            if cancelling { entry.task.cancel() }
+            downloads[blob] = nil
+        } else {
+            downloads[blob] = entry
         }
     }
 

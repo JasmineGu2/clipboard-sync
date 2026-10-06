@@ -210,12 +210,15 @@ public actor SyncEngine {
     @discardableResult
     public func addFile(
         at url: URL, kind: ContentKind = .file, name: String? = nil, contentType: String? = nil, thumbnail: Data? = nil
-    ) throws -> ItemID {
+    ) async throws -> ItemID {
         guard let blobCache else { throw SyncError.blobsUnavailable }
         let blob = BlobID()
         let imported: BlobCache.Imported
         do {
-            imported = try blobCache.importFile(at: url, as: blob, maxBytes: WireLimits.maxBlobBytes)
+            // Off the actor: copying up to 512 MB mustn't stall sync.
+            imported = try await Task.detached {
+                try blobCache.importFile(at: url, as: blob, maxBytes: WireLimits.maxBlobBytes)
+            }.value
         } catch BlobCacheError.tooLarge(let bytes) {
             throw SyncError.fileTooLarge(bytes: bytes)
         } catch {
@@ -229,12 +232,14 @@ public actor SyncEngine {
     @discardableResult
     public func addData(
         _ data: Data, kind: ContentKind = .image, name: String, contentType: String? = nil, thumbnail: Data? = nil
-    ) throws -> ItemID {
+    ) async throws -> ItemID {
         guard let blobCache else { throw SyncError.blobsUnavailable }
         let blob = BlobID()
         let imported: BlobCache.Imported
         do {
-            imported = try blobCache.importData(data, as: blob, maxBytes: WireLimits.maxBlobBytes)
+            imported = try await Task.detached {
+                try blobCache.importData(data, as: blob, maxBytes: WireLimits.maxBlobBytes)
+            }.value
         } catch BlobCacheError.tooLarge(let bytes) {
             throw SyncError.fileTooLarge(bytes: bytes)
         } catch {
@@ -312,8 +317,8 @@ public actor SyncEngine {
             }
             do {
                 if case .uploaded = try await transferer.upload(ref, item: state.id, progress: progress) { uploaded += 1 }
-            } catch let error as BlobTransferError {
-                // Not a network problem: retrying won't help, so drop the job rather than block the queue.
+            } catch where Self.isPermanentUploadFailure(error) {
+                // Retrying won't help, so drop the job rather than block every upload queued behind it.
                 log("dropping upload of blob \(job.blob): \(error)")
             }
             try db.finishBlobUpload(job.blob)
@@ -323,6 +328,21 @@ public actor SyncEngine {
             }
         }
         return uploaded
+    }
+
+    /// Failures that will happen again on retry: a broken local copy, a reference outside the limits, or the
+    /// relay refusing the request as such. Network trouble, 5xx, 507 and 429 are worth retrying; 401 too, since
+    /// the token may be rotated back.
+    static func isPermanentUploadFailure(_ error: any Error) -> Bool {
+        switch error {
+        case is BlobTransferError, is BlobCacheError, is CryptoError: return true
+        case let error as TransportError:
+            switch error {
+            case .badRequest, .payloadTooLarge, .conflict, .notFound: return true
+            default: return false
+            }
+        default: return false
+        }
     }
 
     public struct GarbageCollection: Equatable, Sendable {
@@ -391,7 +411,7 @@ public actor SyncEngine {
             return
         }
         let timer = Task { [weak self] in
-            try? await Task.sleep(for: timeout)
+            guard (try? await Task.sleep(for: timeout)) != nil else { return }  // cancelled: real work came first
             await self?.wakeBlobs()
         }
         await withTaskCancellationHandler {

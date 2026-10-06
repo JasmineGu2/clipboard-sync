@@ -182,9 +182,11 @@ so a large file never holds up text. It asks the relay which chunks it already h
 the resume (N5). Until the upload finishes, a download stops at the first missing chunk with "not uploaded yet",
 keeping what it has.
 
-**Download.** `fetchBlob` opens (or resumes) `<blob>.partial`: an earlier attempt is cut back to its last whole
-chunk and re-hashed, one chunk at a time. Each new chunk is opened (GCM checks it) before it's written and
-fsynced. When all chunks are in, the size and SHA-256 must match the op; only then is the file renamed into place
+**Download.** `fetchBlob` opens (or resumes) `<blob>.partial`. Each new chunk is opened (GCM checks it) before
+it's written and fsynced, and only then is the chunk count written to `<blob>.progress`. A resume cuts the
+partial file back to that count (or its length, if shorter) and re-hashes it, one chunk at a time. The length
+alone isn't enough: in the end-to-end run, a process killed mid-write left the file one chunk longer with that
+chunk all zeros. When all chunks are in, the size and SHA-256 must match the op; only then is the file renamed into place
 (N12). A mismatch removes the partial file so the next attempt starts clean. Two requests for the same blob share
 one download.
 

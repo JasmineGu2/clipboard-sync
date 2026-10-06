@@ -1,6 +1,7 @@
 import ClipCrypto
 import ClipStore
 import ClipSync
+import ClipWire
 import Foundation
 
 /// Errors from setting up the app itself (not from the sync layers).
@@ -49,7 +50,10 @@ public enum AppMessage: String, Equatable, Sendable, CaseIterable {
         case .storage: Strings.errorStorage
         case .keychain: Strings.errorKeychain
         case .notSetUp: Strings.errorNotSetUp
-        case .fileTooLarge: Strings.errorFileTooLarge
+        case .fileTooLarge:
+            Strings.format(Strings.errorFileTooLarge, [
+                "limit": ByteCountFormatter.string(fromByteCount: WireLimits.maxBlobBytes, countStyle: .file),
+            ])
         case .unreadableFile: Strings.errorUnreadableFile
         case .notUploadedYet: Strings.errorNotUploadedYet
         case .downloadFailed: Strings.errorDownloadFailed

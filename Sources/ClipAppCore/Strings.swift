@@ -105,7 +105,7 @@ public enum Strings {
     public static let errorStorage = "Couldn't read or write the local database."
     public static let errorKeychain = "Couldn't access the Keychain."
     public static let errorNotSetUp = "Open ClipSync and finish setup first."
-    public static let errorFileTooLarge = "That file is too large to sync. The limit is 512 MB."
+    public static let errorFileTooLarge = "That file is too large to sync. The limit is {limit}."
     public static let errorUnreadableFile = "Couldn't read that file."
     public static let errorNotUploadedYet = "This is still uploading from the other device. Try again in a moment."
     public static let errorDownloadFailed = "The download didn't match what was sent. Try again."

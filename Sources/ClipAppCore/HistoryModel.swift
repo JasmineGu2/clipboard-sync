@@ -13,6 +13,16 @@ public struct ClipItem: Identifiable, Hashable, Sendable {
     public let isPinned: Bool
     public let sourceDeviceName: String
     public let createdAt: Date
+    public let kind: ContentKind
+    /// A small JPEG for image items, synced with the item (F11).
+    public let thumbnail: Data?
+    /// Images and files: the payload, which downloads on demand (F12).
+    public let blobID: BlobID?
+    public let fileSize: Int64?
+    public let contentType: String?
+
+    /// True for image and file items: copying one downloads it first.
+    public var isFile: Bool { blobID != nil }
 
     /// nil for items that aren't visible (no create op yet, or deleted).
     public init?(_ state: ItemState) {
@@ -24,6 +34,11 @@ public struct ClipItem: Identifiable, Hashable, Sendable {
         isPinned = state.pinned.value
         sourceDeviceName = content.sourceDeviceName
         createdAt = content.createdAt
+        kind = content.kind
+        thumbnail = content.thumbnail
+        blobID = content.blob?.id
+        fileSize = content.blob?.size
+        contentType = content.blob?.contentType
     }
 
     /// The title when set, else the first non-empty line of the text, cut to 200 characters (F4).
@@ -68,6 +83,8 @@ public final class HistoryModel {
     /// Bumps on every copy. Use it as the haptics trigger: unlike `lastCopied`, it changes even when the
     /// same item is copied twice in a row.
     public private(set) var copyCount = 0
+    /// Image and file items downloading for a copy, with progress from 0 to 1.
+    public private(set) var downloading: [ItemID: Double] = [:]
 
     /// Bound to the search field. Changes are debounced before querying.
     public var searchText = "" {
@@ -98,6 +115,9 @@ public final class HistoryModel {
     private var refreshTask: Task<Void, Never>?
     private var copiedResetTask: Task<Void, Never>?
     private var follower: LatestClipFollower
+    private let thumbnails: any ThumbnailMaker
+    /// Copies of downloaded files named like their items, for the clipboard (the cache names files by blob ID).
+    public let exportsDirectory: URL
 
     public init(
         engine: SyncEngine,
@@ -105,11 +125,15 @@ public final class HistoryModel {
         pasteboard: any PasteboardWriter,
         pageSize: Int = 200,
         debounce: Duration = .milliseconds(250),
-        copiedDuration: Duration = .milliseconds(1500)
+        copiedDuration: Duration = .milliseconds(1500),
+        thumbnails: any ThumbnailMaker = NoThumbnails(),
+        exportsDirectory: URL = FileManager.default.temporaryDirectory.appendingPathComponent("ClipSyncExports")
     ) {
         self.engine = engine
         self.db = db
         self.pasteboard = pasteboard
+        self.thumbnails = thumbnails
+        self.exportsDirectory = exportsDirectory
         self.pageSize = pageSize
         self.debounce = debounce
         self.copiedDuration = copiedDuration
@@ -243,10 +267,68 @@ public final class HistoryModel {
 
     // MARK: Actions
 
-    /// F3: puts the item's text on this device's clipboard.
+    /// F3: puts the item on this device's clipboard. Text goes at once; an image or file downloads first
+    /// (resuming an earlier try), then goes on as a file named like the item.
     public func copy(_ item: ClipItem) {
+        if item.isFile {
+            Task { await copyFile(item) }
+            return
+        }
         pasteboard.write(text: item.text)
-        lastCopied = item.id
+        markCopied(item.id)
+    }
+
+    /// The image-or-file half of `copy`, awaitable for tests. A second tap while it downloads does nothing.
+    public func copyFile(_ item: ClipItem) async {
+        guard item.isFile, downloading[item.id] == nil else { return }
+        downloading[item.id] = 0
+        defer { downloading[item.id] = nil }
+        let id = item.id
+        do {
+            let cached = try await engine.fetchBlob(for: id) { [weak self] progress in
+                let fraction = Double(progress.done) / Double(max(1, progress.total))
+                Task { @MainActor in
+                    // Only while still downloading: a late update mustn't bring the entry back.
+                    if self?.downloading[id] != nil { self?.downloading[id] = fraction }
+                }
+            }
+            let exported = try Self.export(cached, as: item, to: exportsDirectory)
+            pasteboard.write(fileAt: exported, contentType: item.contentType)
+            markCopied(id)
+        } catch {
+            message = AppMessage(error)
+        }
+    }
+
+    /// `<exports>/<item ID>/<item name>`: a hard link to the cache file where the file system allows it (no
+    /// extra space), else a copy. Reused while it exists.
+    nonisolated static func export(_ cached: URL, as item: ClipItem, to exports: URL) throws -> URL {
+        let folder = exports.appendingPathComponent(item.id.description, isDirectory: true)
+        let name = FileTypes.safeFileName(item.text, fallback: item.id.description)
+        let destination = folder.appendingPathComponent(name)
+        let files = FileManager.default
+        if files.fileExists(atPath: destination.path) { return destination }
+        try files.createDirectory(at: folder, withIntermediateDirectories: true)
+        do {
+            try files.linkItem(at: cached, to: destination)
+        } catch {
+            try files.copyItem(at: cached, to: destination)
+        }
+        return destination
+    }
+
+    /// Removes exported copies older than `age`; called at launch. By then nothing still needs them on the
+    /// clipboard, and the cache keeps the real copy.
+    nonisolated public static func cleanExports(in exports: URL, olderThan age: TimeInterval, now: Date = Date()) {
+        let files = FileManager.default
+        for folder in (try? files.contentsOfDirectory(at: exports, includingPropertiesForKeys: nil)) ?? [] {
+            let modified = (try? files.attributesOfItem(atPath: folder.path)[.modificationDate]) as? Date
+            if let modified, now.timeIntervalSince(modified) > age { try? files.removeItem(at: folder) }
+        }
+    }
+
+    private func markCopied(_ id: ItemID) {
+        lastCopied = id
         copyCount += 1
         copiedResetTask?.cancel()
         let delay = copiedDuration
@@ -258,6 +340,80 @@ public final class HistoryModel {
             }
             self?.lastCopied = nil
         }
+    }
+
+    // MARK: Images and files (F11, F12)
+
+    /// The Mac watcher's path for anything it captured. Like `capture(_ text:)`, problems are quiet: the user
+    /// didn't ask to send this, so an alert about a too-large file later would be confusing.
+    @discardableResult
+    public func capture(_ clip: Clip) async -> Bool {
+        switch clip {
+        case .text(let text):
+            return await capture(text)
+        case .image(let image):
+            return await addImage(image, quietly: true)
+        case .files(let urls):
+            var added = false
+            for url in urls where await addFile(url, name: nil, quietly: true) { added = true }
+            return added
+        }
+    }
+
+    /// F2 for images and files on iOS (paste button, share sheet in the app): adds it and syncs once.
+    /// The upload itself runs in the background; the item shows on other devices straight away.
+    @discardableResult
+    public func sendFile(_ url: URL, name: String? = nil) async -> Bool {
+        guard await addFile(url, name: name, quietly: false) else { return false }
+        try? await engine.syncOnce()
+        await updateStatus()
+        return true
+    }
+
+    @discardableResult
+    public func sendImage(_ image: PasteboardImage) async -> Bool {
+        guard await addImage(image, quietly: false) else { return false }
+        try? await engine.syncOnce()
+        await updateStatus()
+        return true
+    }
+
+    private func addImage(_ image: PasteboardImage, quietly: Bool) async -> Bool {
+        let ext = FileTypes.fileExtension(forContentType: image.contentType) ?? "png"
+        let thumbnails = self.thumbnails
+        let data = image.data
+        let thumbnail = await Task.detached {
+            thumbnails.thumbnail(for: data, maxBytes: ItemContent.maxThumbnailBytes)
+        }.value
+        let name = Strings.format(Strings.clipboardImageName, ["ext": ext])
+        return await addBlob(quietly: quietly) {
+            try await $0.addData(data, kind: .image, name: name, contentType: image.contentType, thumbnail: thumbnail)
+        }
+    }
+
+    private func addFile(_ url: URL, name: String?, quietly: Bool) async -> Bool {
+        let shown = name ?? url.lastPathComponent
+        let type = FileTypes.contentType(forName: shown)
+        let kind = FileTypes.kind(forContentType: type)
+        let thumbnails = self.thumbnails
+        // ImageIO can take a while on a large photo, so not on the main actor.
+        let thumbnail = kind == .image
+            ? await Task.detached { thumbnails.thumbnail(forFileAt: url, maxBytes: ItemContent.maxThumbnailBytes) }.value
+            : nil
+        return await addBlob(quietly: quietly) {
+            try await $0.addFile(at: url, kind: kind, name: shown, contentType: type, thumbnail: thumbnail)
+        }
+    }
+
+    private func addBlob(quietly: Bool, _ body: (SyncEngine) async throws -> ItemID) async -> Bool {
+        do {
+            _ = try await body(engine)
+        } catch {
+            if !quietly { message = AppMessage(error) }
+            return false
+        }
+        await refresh()
+        return true
     }
 
     /// Puts the newest item on the clipboard when another device just made it (see `LatestClipFollower`).

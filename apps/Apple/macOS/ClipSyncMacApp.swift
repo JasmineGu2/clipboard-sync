@@ -37,8 +37,8 @@ final class MacAppController {
     /// Starts capturing once setup is done. Safe to call repeatedly.
     func startWatcherIfReady() {
         guard watcher == nil, app.state == .ready, let history = app.history else { return }
-        let watcher = MacPasteboardWatcher(reader: pasteboard, isPaused: app.capturePaused) { text in
-            Task { await history.capture(text) }
+        let watcher = MacPasteboardWatcher(reader: pasteboard, isPaused: app.capturePaused) { clip in
+            Task { await history.capture(clip) }
         }
         watcher.start()
         self.watcher = watcher

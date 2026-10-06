@@ -10,12 +10,25 @@ import Foundation
 @MainActor
 final class FakePasteboard: PasteboardWriter, PasteboardReader {
     private(set) var written: [String] = []
+    /// Files and images put on the clipboard, with their content type.
+    private(set) var writtenFiles: [(url: URL, contentType: String?)] = []
     private(set) var changeCount = 0
     private var contents = PasteboardContents(types: [], text: nil)
 
     func write(text: String) {
         written.append(text)
         set(types: ["public.utf8-plain-text", CaptureFilter.ownMarkerType], text: text)
+    }
+
+    func write(fileAt url: URL, contentType: String?) {
+        writtenFiles.append((url, contentType))
+        set(PasteboardContents(types: ["public.file-url", CaptureFilter.ownMarkerType], text: nil, fileURLs: [url]))
+    }
+
+    /// Another app copied files or an image.
+    func set(_ newContents: PasteboardContents) {
+        contents = newContents
+        changeCount += 1
     }
 
     /// Another app copied something.

@@ -1,12 +1,57 @@
 import ClipAppCore
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
-/// One history row: headline, source device, age and tags (F4).
+/// One history row: headline, source device, age and tags (F4). Images show their thumbnail and files an icon,
+/// with the size (F11, F12); a download for a copy shows its progress.
 struct HistoryRow: View {
     let item: ClipItem
     var justCopied = false
+    /// 0...1 while the image or file downloads for a copy.
+    var downloading: Double?
 
     var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            if item.isFile {
+                preview
+            }
+            details
+        }
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var preview: some View {
+        Group {
+            if let image = thumbnailImage {
+                image
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: item.kind == .image ? "photo" : "doc")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 44, height: 44)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .accessibilityLabel(item.kind == .image ? Strings.kindImage : Strings.kindFile)
+    }
+
+    private var thumbnailImage: Image? {
+        guard let data = item.thumbnail else { return nil }
+        #if os(macOS)
+        return NSImage(data: data).map(Image.init(nsImage:))
+        #else
+        return UIImage(data: data).map(Image.init(uiImage:))
+        #endif
+    }
+
+    private var details: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if item.isPinned {
@@ -24,7 +69,14 @@ struct HistoryRow: View {
                         .accessibilityLabel(Strings.copied)
                 }
             }
+            if let downloading {
+                ProgressView(value: downloading)
+                    .accessibilityLabel(Strings.downloading)
+            }
             HStack(spacing: 6) {
+                if let size = item.fileSize {
+                    Text(size, format: .byteCount(style: .file))
+                }
                 Text(Strings.format(Strings.fromDevice, ["device": item.sourceDeviceName]))
                 // A fixed format, not `.relative` style: that one re-renders every second (N4).
                 Text(item.createdAt, format: .relative(presentation: .named))
@@ -39,7 +91,6 @@ struct HistoryRow: View {
             .foregroundStyle(.secondary)
             .lineLimit(1)
         }
-        .contentShape(Rectangle())
     }
 }
 

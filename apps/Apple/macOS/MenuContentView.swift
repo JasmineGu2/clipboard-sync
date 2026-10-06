@@ -161,7 +161,7 @@ struct MacHistoryView: View {
         Button {
             history.copy(item)
         } label: {
-            HistoryRow(item: item, justCopied: history.lastCopied == item.id)
+            HistoryRow(item: item, justCopied: history.lastCopied == item.id, downloading: history.downloading[item.id])
         }
         .buttonStyle(.plain)
         .contextMenu {

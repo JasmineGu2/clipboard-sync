@@ -19,6 +19,10 @@ public enum Strings {
     public static let loadMore = "Load more"
     public static let fromDevice = "From {device}"
     public static let copied = "Copied"
+    public static let kindImage = "Image"
+    public static let kindFile = "File"
+    public static let downloading = "Downloading…"
+    public static let clipboardImageName = "Clipboard image.{ext}"
 
     // MARK: Item actions
     public static let actionCopy = "Copy"
@@ -78,6 +82,7 @@ public enum Strings {
     // MARK: Share extension and Shortcuts
     public static let shareSent = "Sent to ClipSync"
     public static let shareSavedOffline = "Saved. It syncs when the server is reachable."
+    public static let shareUploadLater = "Saved. The file finishes uploading the next time ClipSync is open."
     // The App Intents compiler needs literal strings, so these five are repeated as literals in
     // apps/Apple/Shared/SendClipboardIntent.swift. `StringsTests.testIntentLiteralsMatchStrings` checks them.
     public static let intentTitle = "Send Clipboard to ClipSync"
@@ -112,6 +117,8 @@ public enum Strings {
         "historyTitle": historyTitle, "sectionPinned": sectionPinned, "sectionRecent": sectionRecent,
         "searchPrompt": searchPrompt, "emptyHistory": emptyHistory, "noResults": noResults, "loadMore": loadMore,
         "fromDevice": fromDevice, "copied": copied,
+        "kindImage": kindImage, "kindFile": kindFile, "downloading": downloading,
+        "clipboardImageName": clipboardImageName, "shareUploadLater": shareUploadLater,
         "actionCopy": actionCopy, "actionPin": actionPin, "actionUnpin": actionUnpin, "actionRename": actionRename,
         "actionAddTag": actionAddTag, "actionRemoveTag": actionRemoveTag, "actionDelete": actionDelete,
         "renameTitle": renameTitle, "renamePlaceholder": renamePlaceholder, "tagTitle": tagTitle,

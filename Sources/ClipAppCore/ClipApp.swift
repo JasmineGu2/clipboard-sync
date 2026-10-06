@@ -41,6 +41,10 @@ public final class ClipApp {
     public private(set) var deviceName: String
 
     nonisolated public static let databaseFileName = "clips.sqlite"
+    /// Folder (next to the database) for local copies of image and file payloads.
+    nonisolated public static let blobsFolderName = "blobs"
+    /// Folder for copies named like their items, handed to the clipboard.
+    nonisolated public static let exportsFolderName = "exports"
     nonisolated public static let configFileName = "config.json"
 
     @ObservationIgnored private let home: URL
@@ -49,6 +53,8 @@ public final class ClipApp {
     @ObservationIgnored private let makeTransport: TransportFactory
     @ObservationIgnored private let autoSync: Bool
     @ObservationIgnored private let db: ClipDatabase?
+    @ObservationIgnored private let blobCache: BlobCache?
+    @ObservationIgnored private let thumbnails: any ThumbnailMaker
     @ObservationIgnored private var config: AppConfig?
     @ObservationIgnored private var vaultKey: VaultKey?
     @ObservationIgnored private var engine: SyncEngine?
@@ -62,8 +68,11 @@ public final class ClipApp {
 
     private init(
         home: URL, keyStore: any KeyStore, deviceName: String, pasteboard: any PasteboardWriter,
-        makeTransport: @escaping TransportFactory, autoSync: Bool, db: ClipDatabase?, state: OnboardingState
+        makeTransport: @escaping TransportFactory, autoSync: Bool, db: ClipDatabase?, state: OnboardingState,
+        thumbnails: any ThumbnailMaker = NoThumbnails()
     ) {
+        self.blobCache = db == nil ? nil : try? BlobCache(directory: home.appendingPathComponent(Self.blobsFolderName))
+        self.thumbnails = thumbnails
         self.home = home
         self.keyStore = keyStore
         self.deviceName = deviceName
@@ -84,7 +93,8 @@ public final class ClipApp {
         deviceName: String,
         pasteboard: any PasteboardWriter,
         makeTransport: @escaping TransportFactory = ClipApp.httpTransport,
-        autoSync: Bool = true
+        autoSync: Bool = true,
+        thumbnails: any ThumbnailMaker = platformThumbnailMaker()
     ) -> ClipApp {
         let db: ClipDatabase
         do {
@@ -97,7 +107,8 @@ public final class ClipApp {
         }
         let app = ClipApp(
             home: home, keyStore: keyStore, deviceName: deviceName, pasteboard: pasteboard,
-            makeTransport: makeTransport, autoSync: autoSync, db: db, state: .needsSetup)
+            makeTransport: makeTransport, autoSync: autoSync, db: db, state: .needsSetup, thumbnails: thumbnails)
+        HistoryModel.cleanExports(in: home.appendingPathComponent(exportsFolderName), olderThan: 24 * 60 * 60)
         do {
             if let config = try AppConfig.load(from: app.configURL), let key = try keyStore.loadVaultKey() {
                 try app.becomeReady(config: config, key: key)
@@ -257,7 +268,7 @@ public final class ClipApp {
     private func makeEngine(db: ClipDatabase, config: AppConfig, key: VaultKey) throws -> SyncEngine {
         try SyncEngine(
             db: db, vaultKey: key, transport: makeTransport(config.serverURL, key.authToken),
-            device: DeviceID(config.deviceID), deviceName: config.deviceName)
+            device: DeviceID(config.deviceID), deviceName: config.deviceName, blobCache: blobCache)
     }
 
     private func save(config: AppConfig, key: VaultKey) throws {
@@ -279,7 +290,9 @@ public final class ClipApp {
         capturePaused = config.capturePaused
         receivesLatest = config.receivesLatest
         expiryDays = config.expiryDays
-        let history = HistoryModel(engine: engine, db: db, pasteboard: pasteboard)
+        let history = HistoryModel(
+            engine: engine, db: db, pasteboard: pasteboard, thumbnails: thumbnails,
+            exportsDirectory: home.appendingPathComponent(Self.exportsFolderName))
         history.receivesLatest = config.receivesLatest
         self.history = history
         history.start()
@@ -304,12 +317,15 @@ public enum SendResult: Equatable, Sendable {
     case sent
     /// Saved locally; the server didn't answer in time, so the app pushes it later.
     case savedOffline
+    /// An image or file: saved and announced, but its upload didn't finish in time. The app finishes it.
+    case uploadingLater
     case failed(AppMessage)
 
     public var text: String {
         switch self {
         case .sent: Strings.shareSent
         case .savedOffline: Strings.shareSavedOffline
+        case .uploadingLater: Strings.shareUploadLater
         case .failed(let message): message.text
         }
     }
@@ -349,5 +365,58 @@ extension ClipApp {
             return first
         }
         return synced ? .sent : .savedOffline
+    }
+
+    /// `sendOnce` for an image or file (share extension). Copies it into the shared blob cache, records it,
+    /// then pushes the item and uploads the payload until `timeout`. Whatever doesn't finish stays queued in
+    /// the shared database, and the app's run loop completes it.
+    public nonisolated static func sendFileOnce(
+        _ url: URL,
+        name: String? = nil,
+        home: URL,
+        keyStore: any KeyStore,
+        timeout: Duration = .seconds(5),
+        thumbnails: any ThumbnailMaker = platformThumbnailMaker(),
+        makeTransport: @escaping TransportFactory = ClipApp.httpTransport
+    ) async -> SendResult {
+        let engine: SyncEngine
+        do {
+            guard let config = try AppConfig.load(from: home.appendingPathComponent(configFileName)),
+                  let key = try keyStore.loadVaultKey()
+            else { return .failed(.notSetUp) }
+            let db = try ClipDatabase(url: home.appendingPathComponent(databaseFileName))
+            engine = try SyncEngine(
+                db: db, vaultKey: key, transport: makeTransport(config.serverURL, key.authToken),
+                device: DeviceID(config.deviceID), deviceName: config.deviceName,
+                blobCache: try BlobCache(directory: home.appendingPathComponent(blobsFolderName)))
+            let shown = name ?? url.lastPathComponent
+            let type = FileTypes.contentType(forName: shown)
+            let kind = FileTypes.kind(forContentType: type)
+            let thumbnail = kind == .image ? thumbnails.thumbnail(forFileAt: url, maxBytes: ItemContent.maxThumbnailBytes) : nil
+            try await engine.addFile(at: url, kind: kind, name: shown, contentType: type, thumbnail: thumbnail)
+        } catch {
+            return .failed(AppMessage(error))
+        }
+        let deadline = ContinuousClock.now + timeout
+        guard await finishes(within: timeout, { try await engine.syncOnce() }) else { return .savedOffline }
+        let uploaded = await finishes(within: deadline - ContinuousClock.now) { _ = try await engine.uploadPendingBlobs() }
+        return uploaded ? .sent : .uploadingLater
+    }
+
+    /// Runs `body` until it finishes or `limit` passes. True when it finished without throwing.
+    private nonisolated static func finishes(
+        within limit: Duration, _ body: @escaping @Sendable () async throws -> Void
+    ) async -> Bool {
+        guard limit > .zero else { return false }
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask { (try? await body()) != nil }
+            group.addTask {
+                try? await Task.sleep(for: limit)
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
     }
 }

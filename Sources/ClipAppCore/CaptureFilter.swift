@@ -1,3 +1,4 @@
+import ClipCore
 import Foundation
 
 /// Decides whether a clipboard change gets captured (F1, F9). Pure logic, shared by every platform watcher.
@@ -36,6 +37,65 @@ public enum CaptureFilter {
         if text.utf8.count > maxBytes { return .tooLarge }
         return .capture(text)
     }
+
+    // MARK: Images and files (F11, F12)
+
+    /// A clipboard image bigger than this is skipped: it's read into memory to capture it.
+    public static let maxImageBytes = 50 * 1024 * 1024
+    /// Files copied in Finder are captured automatically only up to this size each, so copying a large video
+    /// to move it doesn't quietly upload it. Bigger files can still be sent on purpose (`clipctl send-file`).
+    public static let maxAutoCaptureFileBytes: Int64 = 100 * 1024 * 1024
+    /// At most this many files from one copy.
+    public static let maxFilesPerCopy = 10
+
+    public enum ClipDecision: Equatable, Sendable {
+        case capture(Clip)
+        case concealed
+        case ownWrite
+        case empty
+        case tooLarge
+    }
+
+    /// The whole capture decision. The privacy markers win first, exactly as for text (F9, F15 is the poller's).
+    /// Then files beat text (Finder also puts the file name as text), and text beats an image (Office and
+    /// others add a picture of copied text). `fileSize` returns nil for anything that isn't a regular file.
+    public static func decide(_ contents: PasteboardContents, fileSize: (URL) -> Int64?) -> ClipDecision {
+        if contents.types.contains(ownMarkerType) { return .ownWrite }
+        if contents.types.contains(where: concealedTypes.contains) { return .concealed }
+        let files = contents.fileURLs.filter(\.isFileURL)
+        if !files.isEmpty {
+            let sized = files.prefix(maxFilesPerCopy).compactMap { url in fileSize(url).map { (url, $0) } }
+            let small = sized.filter { $0.1 <= maxAutoCaptureFileBytes }.map(\.0)
+            if !small.isEmpty { return .capture(.files(small)) }
+            return sized.isEmpty ? .empty : .tooLarge
+        }
+        switch decide(types: contents.types, text: contents.text) {
+        case .capture(let text): return .capture(.text(text))
+        case .tooLarge: return .tooLarge
+        case .concealed: return .concealed
+        case .ownWrite: return .ownWrite
+        case .empty: break
+        }
+        guard let image = contents.image, !image.data.isEmpty else { return .empty }
+        return image.data.count > maxImageBytes ? .tooLarge : .capture(.image(image))
+    }
+}
+
+/// Image bytes from a clipboard, with their MIME type.
+public struct PasteboardImage: Equatable, Sendable {
+    public var data: Data
+    public var contentType: String
+    public init(data: Data, contentType: String) {
+        self.data = data
+        self.contentType = contentType
+    }
+}
+
+/// Something worth capturing from a clipboard.
+public enum Clip: Equatable, Sendable {
+    case text(String)
+    case image(PasteboardImage)
+    case files([URL])
 }
 
 /// What a platform reads off its clipboard.
@@ -44,10 +104,16 @@ public struct PasteboardContents: Equatable, Sendable {
     public var types: [String]
     /// The plain text, if any.
     public var text: String?
+    /// File URLs (a copy in Finder). Readers fill this only when nothing marks the contents concealed.
+    public var fileURLs: [URL]
+    /// Image bytes. Readers fill this only when there's no text and no file, so text copies never load images.
+    public var image: PasteboardImage?
 
-    public init(types: [String], text: String?) {
+    public init(types: [String], text: String?, fileURLs: [URL] = [], image: PasteboardImage? = nil) {
         self.types = types
         self.text = text
+        self.fileURLs = fileURLs
+        self.image = image
     }
 
     /// True when a password manager marked the contents concealed or transient (F9).
@@ -59,6 +125,8 @@ public struct PasteboardContents: Equatable, Sendable {
 @MainActor
 public protocol PasteboardWriter: AnyObject {
     func write(text: String)
+    /// Puts an image or file on the clipboard (F3 for F11/F12). `url` is a local copy named like the item.
+    func write(fileAt url: URL, contentType: String?)
 }
 
 /// Reads the platform clipboard.
@@ -86,14 +154,26 @@ public final class ClipboardPoller {
     /// Returns text to capture when the clipboard changed since the last poll and the filter allows it.
     /// While paused, changes are noted but dropped, so resuming doesn't capture something copied during the pause.
     public func poll() -> String? {
+        if case .text(let text) = pollClip() { return text }
+        return nil
+    }
+
+    /// Like `poll()`, for text, images and files.
+    public func pollClip(fileSize: (URL) -> Int64? = ClipboardPoller.regularFileSize) -> Clip? {
         let count = reader.changeCount
         guard count != lastChangeCount else { return nil }
         lastChangeCount = count
         guard !isPaused else { return nil }
-        let contents = reader.read()
-        if case .capture(let text) = CaptureFilter.decide(types: contents.types, text: contents.text) {
-            return text
-        }
+        if case .capture(let clip) = CaptureFilter.decide(reader.read(), fileSize: fileSize) { return clip }
         return nil
+    }
+
+    /// The size of a regular file; nil for folders, links to nowhere, and anything unreadable.
+    nonisolated public static func regularFileSize(_ url: URL) -> Int64? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = attributes[.size] as? NSNumber
+        else { return nil }
+        return size.int64Value
     }
 }

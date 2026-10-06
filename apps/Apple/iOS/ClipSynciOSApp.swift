@@ -1,6 +1,7 @@
 import ClipAppCore
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 @main
 struct ClipSynciOSApp: App {
@@ -33,6 +34,67 @@ struct ClipSynciOSApp: App {
 final class IOSPasteboard: PasteboardWriter {
     func write(text: String) {
         UIPasteboard.general.string = text
+    }
+
+    /// An item provider backed by the file, so a large file isn't read into memory up front; apps that paste
+    /// it read it from the provider.
+    func write(fileAt url: URL, contentType: String?) {
+        guard let provider = NSItemProvider(contentsOf: url) else { return }
+        provider.suggestedName = url.lastPathComponent
+        UIPasteboard.general.setItemProviders([provider], localOnly: false, expirationDate: nil)
+    }
+}
+
+/// What the paste button handed over, loaded from its item providers.
+enum PastedItem {
+    case text(String)
+    /// A temporary copy (the provider's own file only lives during its callback), and the name to show.
+    case file(URL, name: String)
+
+    static let supportedTypes: [UTType] = [.plainText, .image, .data]
+
+    static func load(_ providers: [NSItemProvider]) async -> PastedItem? {
+        guard let provider = providers.first else { return nil }
+        if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier),
+           let text = await loadText(provider) {
+            return .text(text)
+        }
+        for type in [UTType.image, .data] where provider.hasItemConformingToTypeIdentifier(type.identifier) {
+            if let url = await copyFile(provider, type) {
+                return .file(url, name: provider.suggestedName.map { name in
+                    url.pathExtension.isEmpty || name.contains(".") ? name : "\(name).\(url.pathExtension)"
+                } ?? url.lastPathComponent)
+            }
+        }
+        return nil
+    }
+
+    /// Removes the temporary copy once ClipSync has its own in the blob cache.
+    static func discard(_ url: URL) {
+        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+    }
+
+    private static func loadText(_ provider: NSItemProvider) async -> String? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadObject(ofClass: String.self) { string, _ in continuation.resume(returning: string) }
+        }
+    }
+
+    private static func copyFile(_ provider: NSItemProvider, _ type: UTType) async -> URL? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { url, _ in
+                guard let url else { return continuation.resume(returning: nil) }
+                let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                let copy = folder.appendingPathComponent(url.lastPathComponent)
+                do {
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    try FileManager.default.copyItem(at: url, to: copy)
+                    continuation.resume(returning: copy)
+                } catch {
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
     }
 }
 

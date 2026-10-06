@@ -53,10 +53,18 @@ struct HistoryView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    // F2: the system paste button reads the clipboard without the "Allow Paste" prompt.
-                    PasteButton(payloadType: String.self) { strings in
-                        guard let text = strings.first else { return }
-                        Task { @MainActor in await history.send(text) }
+                    // F2, F11, F12: the system paste button reads the clipboard without the "Allow Paste" prompt.
+                    // Text first; otherwise an image or a file.
+                    PasteButton(supportedContentTypes: PastedItem.supportedTypes) { providers in
+                        Task { @MainActor in
+                            switch await PastedItem.load(providers) {
+                            case .text(let text): await history.send(text)
+                            case .file(let url, let name):
+                                await history.sendFile(url, name: name)
+                                PastedItem.discard(url)
+                            case nil: break
+                            }
+                        }
                     }
                     .buttonBorderShape(.capsule)
                 }
@@ -106,7 +114,7 @@ struct HistoryView: View {
         Button {
             history.copy(item)  // F3
         } label: {
-            HistoryRow(item: item, justCopied: history.lastCopied == item.id)
+            HistoryRow(item: item, justCopied: history.lastCopied == item.id, downloading: history.downloading[item.id])
         }
         .tint(.primary)
         .swipeActions(edge: .leading) {

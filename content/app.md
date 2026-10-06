@@ -21,6 +21,10 @@ The code reads these from the `Strings` enum in `Sources/ClipAppCore/Strings.swi
 - `loadMore`: Load more
 - `fromDevice`: From {device}
 - `copied`: Copied
+- `kindImage`: Image
+- `kindFile`: File
+- `downloading`: Downloading…
+- `clipboardImageName`: Clipboard image.{ext}
 
 ## Item actions
 
@@ -87,6 +91,7 @@ The code reads these from the `Strings` enum in `Sources/ClipAppCore/Strings.swi
 
 - `shareSent`: Sent to ClipSync
 - `shareSavedOffline`: Saved. It syncs when the server is reachable.
+- `shareUploadLater`: Saved. The file finishes uploading the next time ClipSync is open.
 - `intentTitle`: Send Clipboard to ClipSync
 - `intentDescription`: Adds text to your ClipSync history and syncs it to your other devices.
 - `intentTextParameter`: Text

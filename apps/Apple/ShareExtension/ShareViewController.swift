@@ -2,8 +2,10 @@ import ClipAppCore
 import UIKit
 import UniformTypeIdentifiers
 
-/// F2 via the share sheet: takes shared text or a URL, adds it to the App Group database, syncs once with a
-/// short timeout, shows the result for a moment, and closes. No storyboard, no SwiftUI, to stay small and quick.
+/// F2 via the share sheet: takes shared text or a URL, or an image or file (F11, F12), adds it to the App Group
+/// database, syncs once with a short timeout, shows the result for a moment, and closes. An upload that doesn't
+/// finish in time stays queued in the shared database, and the app finishes it. No storyboard, no SwiftUI, to
+/// stay small and quick.
 final class ShareViewController: UIViewController {
     private let label = UILabel()
     private let spinner = UIActivityIndicatorView(style: .medium)
@@ -38,7 +40,12 @@ final class ShareViewController: UIViewController {
 
     private func send() async {
         let result: SendResult
-        if let text = await sharedText() {
+        if let (file, name) = await sharedFile() {
+            result = await ClipApp.sendFileOnce(
+                file, name: name, home: AppPaths.home, keyStore: KeychainKeyStore.appDefault, timeout: .seconds(8))
+            // The blob cache has its own copy now.
+            try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+        } else if let text = await sharedText() {
             result = await ClipApp.sendOnce(
                 text, home: AppPaths.home, keyStore: KeychainKeyStore.appDefault, timeout: .seconds(4))
         } else {
@@ -49,6 +56,42 @@ final class ShareViewController: UIViewController {
         label.text = result.text
         try? await Task.sleep(for: .milliseconds(result == .sent ? 600 : 1500))
         extensionContext?.completeRequest(returningItems: nil)
+    }
+
+    /// The first shared image or file (not a web URL or text), copied into a temporary folder: the provider's
+    /// own file only lives during its callback.
+    private func sharedFile() async -> (URL, String)? {
+        let providers = (extensionContext?.inputItems as? [NSExtensionItem] ?? [])
+            .flatMap { $0.attachments ?? [] }
+        for provider in providers {
+            for type in [UTType.image, .fileURL, .data] where provider.hasItemConformingToTypeIdentifier(type.identifier) {
+                // A web page shares a URL and text too; those stay text items.
+                if type == .data, provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) { continue }
+                if type == .data, provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) { continue }
+                if let url = await copy(provider, type) {
+                    return (url, provider.suggestedName.map { $0.contains(".") ? $0 : "\($0).\(url.pathExtension)" }
+                        ?? url.lastPathComponent)
+                }
+            }
+        }
+        return nil
+    }
+
+    private func copy(_ provider: NSItemProvider, _ type: UTType) async -> URL? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { url, _ in
+                guard let url else { return continuation.resume(returning: nil) }
+                let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                let copy = folder.appendingPathComponent(url.lastPathComponent)
+                do {
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    try FileManager.default.copyItem(at: url, to: copy)
+                    continuation.resume(returning: copy)
+                } catch {
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
     }
 
     /// The first URL or plain text among the shared items. A URL wins, since Safari shares both.

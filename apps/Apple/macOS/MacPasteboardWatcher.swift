@@ -4,7 +4,8 @@ import ClipAppCore
 /// F1 on the Mac. macOS has no clipboard-change notification, so this reads NSPasteboard.changeCount
 /// (a cheap integer read) every 0.5 s with generous timer tolerance, and stops the timer entirely while the
 /// screen is asleep or locked, the Mac is asleep, or the user session is switched out (N4: "Low" energy).
-/// The capture decision itself is ClipboardPoller + CaptureFilter in ClipAppCore, tested on every platform.
+/// The capture decision itself is ClipboardPoller + CaptureFilter in ClipAppCore, tested on every platform:
+/// text, images and copied files (F1, F11, F12), with the same concealed and pause rules for all of them.
 @MainActor
 final class MacPasteboardWatcher {
     static let interval: TimeInterval = 0.5
@@ -14,7 +15,7 @@ final class MacPasteboardWatcher {
     }
 
     private let poller: ClipboardPoller
-    private let onCapture: (String) -> Void
+    private let onCapture: (Clip) -> Void
     private var timer: Timer?
     private var suspensions: Set<Suspension> = []
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
@@ -25,7 +26,7 @@ final class MacPasteboardWatcher {
         set { poller.isPaused = newValue }
     }
 
-    init(reader: any PasteboardReader, isPaused: Bool, onCapture: @escaping (String) -> Void) {
+    init(reader: any PasteboardReader, isPaused: Bool, onCapture: @escaping (Clip) -> Void) {
         self.poller = ClipboardPoller(reader: reader, isPaused: isPaused)
         self.onCapture = onCapture
     }
@@ -93,8 +94,8 @@ final class MacPasteboardWatcher {
     }
 
     private func tick() {
-        if let text = poller.poll() {
-            onCapture(text)
+        if let clip = poller.pollClip() {
+            onCapture(clip)
         }
     }
 }

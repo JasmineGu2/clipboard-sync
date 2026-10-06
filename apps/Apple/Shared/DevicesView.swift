@@ -44,6 +44,10 @@ struct DevicesView: View {
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            Text(Strings.devicesCheckHint)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Text(Strings.devicesMissingHint)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -78,11 +82,27 @@ struct DevicesView: View {
     private func row(_ device: VaultDevice) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(device.name)
-                if device.isThisDevice {
-                    Text(Strings.deviceThis)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(device.name)
+                    if device.isThisDevice {
+                        Text(Strings.deviceThis)
+                            .font(.caption)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(.quaternary, in: Capsule())
+                    }
+                }
+                // The key fingerprint is what tells a decoy apart: compare it with the one on the device itself.
+                Text(Strings.format(Strings.deviceFingerprint, ["fingerprint": device.fingerprint]))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                if let joined = device.joinedAt {
+                    Text(Strings.format(Strings.deviceJoined, [
+                        "date": joined.formatted(date: .abbreviated, time: .shortened),
+                    ]))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
             }
             Spacer()

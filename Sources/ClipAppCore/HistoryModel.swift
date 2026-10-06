@@ -226,6 +226,17 @@ public final class HistoryModel {
         await refresh()
     }
 
+    /// Items for another view of the history (the Mac's quick picker), independent of `searchText`: the newest
+    /// `limit` items, pinned ones included, or the matches for `query`. Errors give an empty list.
+    public func lookup(_ query: String, limit: Int) async -> [ClipItem] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let db = self.db
+        let result = await Task.detached { () -> Result<[ItemState], any Error> in
+            Result { query.isEmpty ? try db.items(limit: limit) : try db.search(query, limit: limit) }
+        }.value
+        return ((try? result.get()) ?? []).compactMap(ClipItem.init)
+    }
+
     /// Waits for a pending debounced search. For tests.
     public func waitForSearch() async {
         await searchTask?.value

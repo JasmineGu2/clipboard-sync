@@ -27,9 +27,17 @@ final class MacPasteboard: PasteboardWriter, PasteboardReader {
     }
 
     /// PNG or JPEG as they are; TIFF (what many apps put up) re-encoded as PNG, which is far smaller.
+    ///
+    /// The 50 MB cap (`CaptureFilter.maxImageBytes`) is checked on each representation the moment it arrives, before
+    /// anything copies, decodes or keeps it. NSPasteboard has no public call that reports a type's size without
+    /// transferring the data, so "before reading" can't go earlier than this. An over-cap PNG or JPEG ends the
+    /// capture: the other representations are the same picture, so trying them would only read more bytes.
     private func readImage() -> PasteboardImage? {
-        if let png = pasteboard.data(forType: .png) { return PasteboardImage(data: png, contentType: "image/png") }
-        if let jpeg = pasteboard.data(forType: Self.jpeg) { return PasteboardImage(data: jpeg, contentType: "image/jpeg") }
+        for (type, mime) in [(NSPasteboard.PasteboardType.png, "image/png"), (Self.jpeg, "image/jpeg")] {
+            guard let data = pasteboard.data(forType: type) else { continue }
+            guard data.count <= CaptureFilter.maxImageBytes else { return nil }
+            return PasteboardImage(data: data, contentType: mime)
+        }
         if let tiff = pasteboard.data(forType: .tiff), tiff.count <= CaptureFilter.maxImageBytes * 4,
            let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
             return PasteboardImage(data: png, contentType: "image/png")

@@ -33,6 +33,8 @@ struct Config: Codable, Sendable {
     var serverURL: String
     var deviceID: UUID
     var deviceName: String
+    /// When this client was set up; other devices show it in their device list. Older configs lack it.
+    var joinedAt: Date?
 }
 
 /// The files of one client. `--home` lets two independent clients share a PC.
@@ -174,7 +176,10 @@ struct Client: Sendable {
         let membership = SyncEngine.Membership(
             deviceKey: try store.loadOrCreateDeviceKey(),
             makeTransport: { HTTPTransport(baseURL: url, token: $0) },
-            saveVaultKey: { try store.saveVaultKey($0) })
+            saveVaultKey: { try store.saveVaultKey($0) },
+            // Older configs: the file was written at setup, so its creation date stands in.
+            joinedAt: config.joinedAt
+                ?? (try? FileManager.default.attributesOfItem(atPath: home.configURL.path))?[.creationDate] as? Date)
         let engine = try SyncEngine(
             db: db, vaultKey: key, transport: transport,
             device: DeviceID(config.deviceID), deviceName: config.deviceName,

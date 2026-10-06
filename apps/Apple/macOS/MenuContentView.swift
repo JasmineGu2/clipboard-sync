@@ -25,11 +25,18 @@ struct MenuContentView: View {
                 }
                 .frame(height: 640)
             case .ready:
-                if showingPair {
+                if controller.app.isRemoved {
+                    VStack(spacing: 0) {
+                        RemovedView(app: controller.app) { controller.setUpAgain() }
+                        Divider()
+                        QuitButton()
+                            .padding(8)
+                    }
+                } else if showingPair {
                     PairView(app: controller.app) { showingPair = false }
                 } else if showingDevices {
                     DevicesView(app: controller.app) { showingDevices = false }
-                        .frame(height: 480)
+                        .frame(height: 560)
                 } else if let history = controller.app.history {
                     MacHistoryView(
                         history: history, controller: controller, showingPair: $showingPair,
@@ -90,6 +97,13 @@ struct MacHistoryView: View {
             }
             .frame(height: 420)
 
+            if !controller.hotKeyAvailable {
+                Text(Strings.pickerHotkeyUnavailable)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 8)
+            }
             Divider()
             footer
                 .padding(8)
@@ -152,6 +166,7 @@ struct MacHistoryView: View {
                     }
                 }
                 .pickerStyle(.menu)
+                Button(Strings.menuQuickPick) { controller.togglePicker() }
                 Button(Strings.menuPairDevice) { showingPair = true }
                 Button(Strings.menuDevices) { showingDevices = true }
                 Divider()

@@ -19,13 +19,19 @@ public struct VaultDevice: Equatable, Hashable, Sendable, Identifiable {
     public let name: String
     public let publicKey: Data
     public let isThisDevice: Bool
+    /// When the device says it joined (sealed in its record). nil for devices that predate it.
+    public let joinedAt: Date?
 
-    public init(id: String, name: String, publicKey: Data, isThisDevice: Bool) {
+    public init(id: String, name: String, publicKey: Data, isThisDevice: Bool, joinedAt: Date? = nil) {
         self.id = id
         self.name = name
         self.publicKey = publicKey
         self.isThisDevice = isThisDevice
+        self.joinedAt = joinedAt
     }
+
+    /// The short fingerprint of the device's public key, for checking the list by eye (`DeviceFingerprint`).
+    public var fingerprint: String { DeviceFingerprint.of(publicKey: publicKey) }
 }
 
 extension SyncEngine {
@@ -37,15 +43,19 @@ extension SyncEngine {
         public var makeTransport: @Sendable (String) -> any SyncTransport
         /// Persists a new vault key (Keychain, DPAPI). Called before the engine starts using the key.
         public var saveVaultKey: @Sendable (VaultKey) throws -> Void
+        /// When this device joined the vault (its config's setup time), sealed into its record for the device list.
+        public var joinedAt: Date?
 
         public init(
             deviceKey: DeviceKey,
             makeTransport: @escaping @Sendable (String) -> any SyncTransport,
-            saveVaultKey: @escaping @Sendable (VaultKey) throws -> Void
+            saveVaultKey: @escaping @Sendable (VaultKey) throws -> Void,
+            joinedAt: Date? = nil
         ) {
             self.deviceKey = deviceKey
             self.makeTransport = makeTransport
             self.saveVaultKey = saveVaultKey
+            self.joinedAt = joinedAt
         }
     }
 
@@ -72,7 +82,7 @@ extension SyncEngine {
             }
             return VaultDevice(
                 id: record.deviceID, name: info.name, publicKey: record.publicKey,
-                isThisDevice: record.deviceID == mine)
+                isThisDevice: record.deviceID == mine, joinedAt: info.joinedAt)
         }
         .sorted { ($0.isThisDevice ? 0 : 1, $0.name.lowercased(), $0.id) < ($1.isThisDevice ? 0 : 1, $1.name.lowercased(), $1.id) }
     }
@@ -123,7 +133,7 @@ extension SyncEngine {
         let newKey = VaultKey.generate()
         let records = try kept.map {
             try DeviceDirectory.seal(
-                deviceID: $0.id, publicKey: $0.publicKey, info: DeviceInfo(name: $0.name), vaultKey: newKey)
+                deviceID: $0.id, publicKey: $0.publicKey, info: DeviceInfo(name: $0.name, joinedAt: $0.joinedAt), vaultKey: newKey)
         }
         // This device gets a handoff too: if it crashes before saving the new key, its next 401 recovers it.
         let handoffs = try kept.map {
@@ -219,7 +229,7 @@ extension SyncEngine {
         guard registeredUnder != tokenHash else { return }
         let record = try DeviceDirectory.seal(
             deviceID: deviceIDString, publicKey: membership.deviceKey.publicKey,
-            info: DeviceInfo(name: deviceName), vaultKey: vaultKey)
+            info: DeviceInfo(name: deviceName, joinedAt: membership.joinedAt), vaultKey: vaultKey)
         do {
             try await transport.putDevice(record)
         } catch TransportError.notFound {

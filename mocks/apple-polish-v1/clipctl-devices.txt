@@ -1,0 +1,5 @@
+$ clipctl --home <scratch> --insecure-file-key devices      (2026-10-06, local relay on 127.0.0.1:8799, iOS Simulator joined)
+b54245ba  key C67B 9E42 B077 82A8  joined 2026-10-06  Work PC  (this device)
+cd9a6af2  key D426 F7E4 D6D9 F24C  joined 2026-10-06  iPhone
+A device shows here once it has synced with this version. Any device not listed has to pair again after a revoke.
+To check a device, run `clipctl devices` on it (or open Devices in the app): the key next to "this device" should match its key here. Revoke anything you don't recognize.

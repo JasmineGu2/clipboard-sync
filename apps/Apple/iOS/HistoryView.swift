@@ -132,7 +132,20 @@ struct HistoryView: View {
             // copyCount, not lastCopied: copying the same item twice still changes it, so it buzzes again.
             .sensoryFeedback(.success, trigger: history.copyCount)
         }
-        .onAppear { history.setVisible(true) }
+        .onAppear {
+            history.setVisible(true)
+            #if DEBUG
+            MeasurementMode.mark("history view appeared")
+            if MeasurementMode.openAtLaunch == "devices" { showingDevices = true }
+            if MeasurementMode.openAtLaunch == "settings" { showingSettings = true }
+            #endif
+        }
+        #if DEBUG
+        // N3: the first time rows are on screen.
+        .onChange(of: history.recent.count, initial: true) { _, count in
+            if count > 0 { MeasurementMode.historyOnScreen(itemsShown: count + history.pinned.count) }
+        }
+        #endif
         .onDisappear { history.setVisible(false) }
     }
 

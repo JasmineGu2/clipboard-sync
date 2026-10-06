@@ -103,6 +103,8 @@ struct Simulation {
         }
         // Only draws from the RNG when expiry is on, so expiry-off seeds (seed 488 included) replay unchanged.
         if config.expiry != .off, rng.chance(config.expirySweepRate) { try expirySweep(randomDevice()) }
+        // Same rule: no RNG draws unless blobs are on.
+        if config.blobGC != .off, rng.chance(config.blobGCSweepRate) { blobGCSweep(randomDevice()) }
         let d = randomDevice()
         switch Int.random(in: 0..<100, using: &rng) {
         case 0..<40: try userAction(d)
@@ -123,11 +125,16 @@ struct Simulation {
             itemLabels[item] = itemsByLabel.count
             itemsByLabel.append(item)
             let millis = devices[d].wall.millis
+            let text = "t\(rng.next() % 1000)"
+            let blob = config.blobGC == .off
+                ? nil : BlobRef(id: BlobID(rng.uuid()), size: 1, sha256: Data(count: 32), contentType: nil)
             kind = .create(ItemContent(
-                text: "t\(rng.next() % 1000)",
+                kind: blob == nil ? .text : .file,
+                text: text,
                 sourceDevice: devices[d].id,
                 sourceDeviceName: devices[d].name,
-                createdAt: Date(timeIntervalSince1970: TimeInterval(millis) / 1000)
+                createdAt: Date(timeIntervalSince1970: TimeInterval(millis) / 1000),
+                blob: blob
             ))
         } else {
             // Sometimes act on an item this device only just learned about.
@@ -195,6 +202,23 @@ struct Simulation {
                 try noteIssued(op, by: d, note: " (expired)")
             }
         }
+    }
+
+    /// Deletes blobs from the relay by the configured rule (see `BlobGCMode`).
+    private mutating func blobGCSweep(_ d: Int) {
+        guard devices[d].online else { return }
+        let items = devices[d].store.items.values
+        let before = relay.blobs.count
+        switch config.blobGC {
+        case .off: return
+        case .deadItemsOnly:
+            relay.blobs.subtract(items.filter(\.deleted).compactMap { $0.content?.blob?.id })
+        case .unreferencedOnRelay:
+            relay.blobs.formIntersection(items.filter(\.isVisible).compactMap { $0.content?.blob?.id })
+        }
+        stats.blobGCSweeps += 1
+        stats.blobsCollected += before - relay.blobs.count
+        log("\(devices[d].name) blob GC: \(before - relay.blobs.count) collected, \(relay.blobs.count) left on the relay")
     }
 
     private mutating func push(_ d: Int, faulty: Bool) throws(HarnessFailure) {
@@ -322,6 +346,19 @@ struct Simulation {
             let onlyThis = device.shownItems.subtracting(devices[0].shownItems).map(label).sorted()
             throw fail("devices show different items: only \(devices[0].name) shows \(onlyFirst), "
                 + "only \(device.name) shows \(onlyThis)")
+        }
+        // (6) Blobs: no visible item lost its blob to garbage collection, and once every device has swept after
+        // healing, the relay holds exactly the visible items' blobs (nothing leaked).
+        if config.blobGC != .off {
+            let visible = devices[0].store.items.values.filter(\.isVisible)
+            if let lost = visible.first(where: { $0.content?.blob.map { !relay.blobs.contains($0.id) } ?? false }) {
+                throw fail("visible item \(label(lost.id))'s blob was garbage-collected from the relay")
+            }
+            for i in devices.indices { blobGCSweep(i) }
+            let wanted = Set(visible.compactMap { $0.content?.blob?.id })
+            if relay.blobs != wanted {
+                throw fail("after a final sweep the relay holds \(relay.blobs.count) blobs, visible items use \(wanted.count)")
+            }
         }
         // (2) Each equals ClipCore's Replica built from every op, in a random order.
         var shuffled = allOps

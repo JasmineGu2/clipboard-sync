@@ -16,6 +16,8 @@ struct SimRelay {
     }
 
     private(set) var log: [Entry] = []
+    /// Blobs the relay holds: a create op's blob arrives with the op and leaves only by garbage collection.
+    var blobs: Set<BlobID> = []
     private var known: Set<OpID> = []
 
     var latestSeq: Int64 { log.last?.seq ?? 0 }
@@ -25,6 +27,7 @@ struct SimRelay {
         var inserted = 0
         for op in ops where known.insert(op.id).inserted {
             log.append(Entry(seq: latestSeq + 1, op: op))
+            if case .create(let content) = op.kind, let blob = content.blob { blobs.insert(blob.id) }
             inserted += 1
         }
         return inserted

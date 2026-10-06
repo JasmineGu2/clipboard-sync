@@ -36,6 +36,19 @@ public enum ExpiryMode: String, CaseIterable, Sendable {
     case hideLocally
 }
 
+/// Image and file items, and how simulated devices garbage-collect their blobs on the relay (F11, F12).
+/// A create op's blob lands on the relay with the op itself (the real client uploads it right after).
+public enum BlobGCMode: String, CaseIterable, Sendable {
+    /// No blobs. The default, so seeds without blobs replay exactly as before they existed.
+    case off
+    /// Creates carry a blob. A sweep deletes from the relay only blobs of items its replica shows as deleted,
+    /// like SyncEngine.collectGarbage. Deletes are sticky, so those can never be needed again. Should pass.
+    case deadItemsOnly
+    /// Broken on purpose: a sweep deletes every relay blob that no visible item in its replica points at, so it
+    /// also deletes blobs of items it hasn't pulled yet. Proves the harness catches unsafe collection.
+    case unreferencedOnRelay
+}
+
 public struct HarnessConfig: Sendable {
     public var seed: UInt64
     /// Number of devices, 2...5. nil picks one from the seed.
@@ -68,6 +81,10 @@ public struct HarnessConfig: Sendable {
     /// Simulated time moves 0–2 ms per step, so this is a few hundred steps.
     public var expiryAfterMillis: UInt64 = 100
 
+    public var blobGC: BlobGCMode = .off
+    /// Per step, when blobs are on: chance one online device runs a blob garbage-collection sweep.
+    public var blobGCSweepRate: Double = 0.03
+
     public init(seed: UInt64, devices: Int? = nil, steps: Int = 400) {
         self.seed = seed
         self.devices = devices
@@ -90,6 +107,8 @@ public struct HarnessStats: Equatable, Sendable {
     public var healRounds = 0
     public var expirySweeps = 0
     public var expiredItems = 0
+    public var blobGCSweeps = 0
+    public var blobsCollected = 0
 
     public var drops: Int { pushRequestDrops + pushResponseDrops + pullResponseDrops }
 
@@ -110,6 +129,8 @@ public struct HarnessStats: Equatable, Sendable {
         s.healRounds = a.healRounds + b.healRounds
         s.expirySweeps = a.expirySweeps + b.expirySweeps
         s.expiredItems = a.expiredItems + b.expiredItems
+        s.blobGCSweeps = a.blobGCSweeps + b.blobGCSweeps
+        s.blobsCollected = a.blobsCollected + b.blobsCollected
         return s
     }
 }

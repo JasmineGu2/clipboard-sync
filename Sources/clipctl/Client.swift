@@ -3,6 +3,7 @@ import ClipCore
 import ClipCrypto
 import ClipStore
 import ClipSync
+import ClipWire
 import Foundation
 
 /// Options every command accepts, before or after the subcommand name.
@@ -108,6 +109,28 @@ func describe(_ error: any Error) -> String {
         case .pairingNotFound: return "no pairing for that code: it's wrong, already used, or expired"
         case .pairingDecryptionFailed: return "the pairing blob didn't open with that code"
         case .expiryStalled: return "expiry stopped: the local database didn't record the deletes"
+        case .blobsUnavailable: return "this client can't sync images or files"
+        case .fileTooLarge(let bytes): return "the file is \(bytes) bytes; the limit is \(WireLimits.maxBlobBytes)"
+        case .unreadableFile: return "the file can't be read"
+        }
+    }
+    if let error = error as? BlobTransferError {
+        switch error {
+        case .notABlobItem: return "that item is text, not an image or file"
+        case .noLocalCopy: return "this device has no copy of that file"
+        case .notUploadedYet(let chunk): return "the sending device hasn't uploaded it yet (chunk \(chunk)); try again later"
+        case .relayCountMismatch: return "the relay holds a different blob under that ID"
+        case .invalidBlobRef: return "the item's file reference is outside the limits"
+        case .corruptChunk(let index): return "chunk \(index) didn't decrypt: tampered with or corrupted on the relay"
+        }
+    }
+    if let error = error as? BlobCacheError {
+        switch error {
+        case .hashMismatch: return "the downloaded file didn't match its SHA-256; the partial file was removed, try again"
+        case .tooLarge(let bytes): return "the file is \(bytes) bytes; the limit is \(WireLimits.maxBlobBytes)"
+        case .missing: return "no local copy"
+        case .wrongChunkLength: return "a chunk had the wrong length"
+        case .io(let message): return "file error: \(message)"
         }
     }
     return String(describing: error)

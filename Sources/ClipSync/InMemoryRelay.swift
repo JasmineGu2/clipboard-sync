@@ -5,7 +5,7 @@ import Foundation
 /// server-assigned seq, paging with `hasMore`, long-poll that wakes on push, `cursorAhead` when a cursor is past
 /// the log, an epoch on every push and pull response, one-time pairing blobs (no overwrite, at most `WireLimits.maxLivePairings`), and the same limits
 /// (mapped to `TransportError` the way HTTPTransport maps status codes). It has no token, so it doesn't model auth.
-public actor InMemoryRelay: SyncTransport {
+public actor InMemoryRelay: SyncTransport, BlobTransport {
     public let maxPullLimit: Int
     public let pairingTTL: TimeInterval
     private let now: @Sendable () -> Date
@@ -17,6 +17,9 @@ public actor InMemoryRelay: SyncTransport {
     private var log: [Envelope] = []
     private var seenOpIDs: Set<String> = []
     private var pairings: [String: (blob: Data, expires: Date)] = [:]
+    private var blobs: [String: (count: Int, chunks: [Int: Data])] = [:]
+    private var blobPutsBeforeFailure: Int?
+    private var blobGetsBeforeFailure: Int?
     private var waiters: [UUID: (continuation: CheckedContinuation<Void, Never>, timeout: Task<Void, Never>)] = [:]
 
     // Fault knobs.
@@ -50,6 +53,21 @@ public actor InMemoryRelay: SyncTransport {
     /// The next `count` pushes are stored, then the response is lost (the caller sees a network error).
     public func loseNextPushResponses(_ count: Int) { lostPushResponses = count }
     public func failNextPulls(_ count: Int) { pullFailures = count }
+    /// After `count` more successful chunk uploads, every upload fails (a dropped connection mid-transfer)
+    /// until `healBlobTransfers()`.
+    public func failBlobUploads(after count: Int) { blobPutsBeforeFailure = count }
+    /// The same for chunk downloads.
+    public func failBlobDownloads(after count: Int) { blobGetsBeforeFailure = count }
+    public func healBlobTransfers() {
+        blobPutsBeforeFailure = nil
+        blobGetsBeforeFailure = nil
+    }
+    /// Chunk uploads and downloads that reached the relay, for resume checks.
+    public private(set) var blobPutCount = 0
+    public private(set) var blobGetCount = 0
+    /// Replaces a stored chunk's bytes, to test tampering.
+    public func tamperBlobChunk(blobID: String, index: Int, with data: Data) { blobs[blobID]?.chunks[index] = data }
+    public var blobIDs: Set<String> { Set(blobs.keys) }
 
     /// The relay loses its log and starts over with a new epoch, as when its database is deleted or replaced.
     /// Pending pairings go too; a long-poll in progress sees the new state on its next wakeup.
@@ -58,6 +76,7 @@ public actor InMemoryRelay: SyncTransport {
         log = []
         seenOpIDs = []
         pairings = [:]
+        blobs = [:]
     }
 
     public func setSendsEpoch(_ value: Bool) { sendsEpoch = value }
@@ -125,6 +144,47 @@ public actor InMemoryRelay: SyncTransport {
         try validatePairingID(id)
         guard let entry = pairings.removeValue(forKey: id), entry.expires > now() else { return nil }
         return entry.blob
+    }
+
+    // MARK: BlobTransport (mirrors the relay's blob routes)
+
+    public func putBlobChunk(blobID: String, index: Int, count: Int, data: Data) async throws {
+        if let remaining = blobPutsBeforeFailure {
+            guard remaining > 0 else { throw TransportError.network("simulated dropped upload") }
+            blobPutsBeforeFailure = remaining - 1
+        }
+        guard WireLimits.isValidBlobID(blobID) else { throw TransportError.badRequest("blob id must be a UUID") }
+        guard (1...WireLimits.maxBlobChunks).contains(count), (0..<count).contains(index) else {
+            throw TransportError.badRequest("bad index or count")
+        }
+        guard data.count <= WireLimits.maxBlobChunkBodyBytes else { throw TransportError.payloadTooLarge }
+        guard data.count >= WireLimits.blobChunkOverheadBytes else { throw TransportError.badRequest("chunk too short") }
+        var blob = blobs[blobID] ?? (count, [:])
+        guard blob.count == count else { throw TransportError.conflict }
+        blobPutCount += 1
+        if blob.chunks[index] == nil { blob.chunks[index] = data }
+        blobs[blobID] = blob
+    }
+
+    public func blobStatus(blobID: String) async throws -> BlobStatus? {
+        guard WireLimits.isValidBlobID(blobID) else { throw TransportError.badRequest("blob id must be a UUID") }
+        guard let blob = blobs[blobID] else { return nil }
+        return BlobStatus(blobID: blobID, chunkCount: blob.count, received: blob.chunks.keys.sorted())
+    }
+
+    public func blobChunk(blobID: String, index: Int) async throws -> Data? {
+        if let remaining = blobGetsBeforeFailure {
+            guard remaining > 0 else { throw TransportError.network("simulated dropped download") }
+            blobGetsBeforeFailure = remaining - 1
+        }
+        guard WireLimits.isValidBlobID(blobID) else { throw TransportError.badRequest("blob id must be a UUID") }
+        blobGetCount += 1
+        return blobs[blobID]?.chunks[index]
+    }
+
+    public func deleteBlob(blobID: String) async throws {
+        guard WireLimits.isValidBlobID(blobID) else { throw TransportError.badRequest("blob id must be a UUID") }
+        blobs[blobID] = nil
     }
 
     // MARK: Internals

@@ -9,6 +9,17 @@ import Glibc
 import Musl
 #endif
 
+/// Runs `body` inside an autorelease pool on Apple platforms, and plainly elsewhere. Chunk loops use it so
+/// Foundation buffers are freed every chunk rather than when the whole transfer ends (N6).
+@inline(__always)
+public func withAutoreleasePool<T>(_ body: () throws -> T) rethrows -> T {
+    #if canImport(ObjectiveC)
+    return try autoreleasepool(invoking: body)
+    #else
+    return try body()
+    #endif
+}
+
 public enum BlobCacheError: Error, Equatable, Sendable {
     /// The file is over the size limit for one blob.
     case tooLarge(bytes: Int64)
@@ -85,9 +96,13 @@ public final class BlobCache: Sendable {
         }
         defer { try? input.close() }
         return try write(as: id, maxBytes: maxBytes) { sink in
-            while let data = try input.read(upToCount: Self.ioChunk), !data.isEmpty {
+            // One pool per chunk: on Apple platforms a read can return an autoreleased buffer, and without a
+            // pool per iteration every chunk of the file would stay alive until the copy ends (N6).
+            while try withAutoreleasePool({
+                guard let data = try input.read(upToCount: Self.ioChunk), !data.isEmpty else { return false }
                 try sink(data)
-            }
+                return true
+            }) {}
         }
     }
 
@@ -154,7 +169,9 @@ public final class BlobCache: Sendable {
         defer { try? handle.close() }
         do {
             try handle.seek(toOffset: UInt64(index) * UInt64(chunkSize))
-            let data = try handle.read(upToCount: length) ?? Data()
+            // Measured: without a pool here each call leaves its 1 MiB buffer in the caller's autorelease pool,
+            // and an async transfer's pool isn't drained between chunks, so a 200 MB upload grew by 200 MB.
+            let data = try withAutoreleasePool { try handle.read(upToCount: length) ?? Data() }
             guard data.count == length else { throw BlobCacheError.wrongChunkLength }
             return data
         } catch let error as BlobCacheError {
@@ -182,9 +199,11 @@ public final class BlobCache: Sendable {
         do {
             let output = try FileHandle(forWritingTo: temp)
             defer { try? output.close() }
-            while let data = try source.read(upToCount: Self.ioChunk), !data.isEmpty {
+            while try withAutoreleasePool({
+                guard let data = try source.read(upToCount: Self.ioChunk), !data.isEmpty else { return false }
                 try output.write(contentsOf: data)
-            }
+                return true
+            }) {}
             try output.synchronize()
         } catch {
             try? FileManager.default.removeItem(at: temp)
@@ -233,10 +252,12 @@ public final class BlobCache: Sendable {
             var remaining = offset
             while remaining > 0 {
                 let want = Int(min(Int64(Self.ioChunk), remaining))
-                guard let data = try handle.read(upToCount: want), data.count == want else {
-                    throw BlobCacheError.io("short read re-hashing \(partial.path)")
+                try withAutoreleasePool {
+                    guard let data = try handle.read(upToCount: want), data.count == want else {
+                        throw BlobCacheError.io("short read re-hashing \(partial.path)")
+                    }
+                    hasher.update(data: data)
                 }
-                hasher.update(data: data)
                 remaining -= Int64(want)
             }
             try handle.seek(toOffset: UInt64(offset))

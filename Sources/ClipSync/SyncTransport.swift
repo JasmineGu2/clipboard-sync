@@ -16,6 +16,19 @@ public protocol SyncTransport: Sendable {
     func takePairing(id: String) async throws -> Data?
 }
 
+/// The relay's blob routes (F11, F12; see ClipWire). `HTTPTransport` and `InMemoryRelay` implement it.
+/// Chunks are opaque sealed bytes here; ClipCrypto.BlobCipher makes and opens them.
+public protocol BlobTransport: Sendable {
+    /// PUT /v1/blobs/<id>/chunks/<index>?count=<n>. Storing a chunk the relay already has is a no-op.
+    func putBlobChunk(blobID: String, index: Int, count: Int, data: Data) async throws
+    /// GET /v1/blobs/<id>: which chunks the relay holds; nil when it holds none.
+    func blobStatus(blobID: String) async throws -> BlobStatus?
+    /// GET /v1/blobs/<id>/chunks/<index>; nil when that chunk isn't there (not uploaded yet, or collected).
+    func blobChunk(blobID: String, index: Int) async throws -> Data?
+    /// DELETE /v1/blobs/<id>. Deleting a missing blob is not an error.
+    func deleteBlob(blobID: String) async throws
+}
+
 public enum TransportError: Error, Equatable, Sendable, CustomStringConvertible {
     /// 401/403: wrong or missing bearer token.
     case unauthorized

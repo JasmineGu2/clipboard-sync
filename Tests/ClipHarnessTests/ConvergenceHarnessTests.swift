@@ -113,6 +113,47 @@ final class ConvergenceHarnessTests: XCTestCase {
         XCTAssertEqual(runSimulation(explicit).stats.expirySweeps, 0)
     }
 
+    /// Blob garbage collection that deletes only blobs of items known to be deleted (SyncEngine.collectGarbage)
+    /// never loses a visible item's payload and leaves nothing behind once every device has swept.
+    func testBlobGCOfDeadItemsConverges() {
+        var total = HarnessStats()
+        for seed in UInt64(1)...50 {
+            var config = HarnessConfig(seed: seed)
+            config.blobGC = .deadItemsOnly
+            config.expiry = seed % 2 == 0 ? .deleteOps : .off
+            let result = runSimulation(config)
+            total = total + result.stats
+            XCTAssertTrue(result.converged, result.failure ?? "seed \(seed)")
+        }
+        XCTAssertGreaterThan(total.blobGCSweeps, 0)
+        XCTAssertGreaterThan(total.blobsCollected, 0, "sweeps should actually collect blobs")
+    }
+
+    /// Collecting every relay blob that no visible item points at also deletes blobs of items a device hasn't
+    /// pulled yet. This is why the real rule is "only blobs of deleted items".
+    func testBlobGCOfUnreferencedBlobsIsCaught() {
+        var caught = 0
+        var example: String?
+        for seed in UInt64(1)...20 {
+            var config = HarnessConfig(seed: seed)
+            config.blobGC = .unreferencedOnRelay
+            let result = runSimulation(config)
+            if !result.converged {
+                caught += 1
+                example = example ?? result.failure
+            }
+        }
+        XCTAssertGreaterThanOrEqual(caught, 15, "only \(caught)/20 seeds caught unsafe blob collection")
+        XCTAssertTrue(example?.contains("blob was garbage-collected") ?? false, example ?? "")
+    }
+
+    func testBlobsOffLeavesSeedsUnchanged() {
+        var explicit = HarnessConfig(seed: 42)
+        explicit.blobGC = .off
+        XCTAssertEqual(runSimulation(explicit).trace, runSimulation(HarnessConfig(seed: 42)).trace)
+        XCTAssertEqual(runSimulation(explicit).stats.blobGCSweeps, 0)
+    }
+
     /// Real bug found by this harness: HybridClock keeps its state only in memory. A device that restarts with a
     /// fresh clock while its wall clock is behind re-issues timestamps it already used. The strict-tick
     /// invariant catches the backwards tick on most seeds.

@@ -13,6 +13,7 @@ struct Options {
     var clockRecovery = ClockRecovery.persistedHighWater
     var clockCheck = true
     var expiry = ExpiryMode.off
+    var blobGC = BlobGCMode.off
 
     func config(seed: UInt64) -> HarnessConfig {
         var c = HarnessConfig(seed: seed, devices: devices, steps: steps)
@@ -20,6 +21,7 @@ struct Options {
         c.clockRecovery = clockRecovery
         c.checkClockMonotonic = clockCheck
         c.expiry = expiry
+        c.blobGC = blobGC
         return c
     }
 
@@ -31,6 +33,7 @@ struct Options {
         if clockRecovery != .persistedHighWater { s += " --clock-recovery \(clockRecovery.rawValue)" }
         if !clockCheck { s += " --no-clock-check" }
         if expiry != .off { s += " --expiry \(expiry.rawValue)" }
+        if blobGC != .off { s += " --blob-gc \(blobGC.rawValue)" }
         return s
     }
 }
@@ -41,6 +44,7 @@ func usage() -> Never {
                [--mutation \(MergeMutation.allCases.map(\.rawValue).joined(separator: "|"))]
                [--clock-recovery \(ClockRecovery.allCases.map(\.rawValue).joined(separator: "|"))] [--no-clock-check]
                [--expiry \(ExpiryMode.allCases.map(\.rawValue).joined(separator: "|"))]
+               [--blob-gc \(BlobGCMode.allCases.map(\.rawValue).joined(separator: "|"))]
         """)
     exit(2)
 }
@@ -75,6 +79,9 @@ func parseOptions(_ args: [String]) -> Options {
         case "--expiry":
             guard let raw = it.next(), let e = ExpiryMode(rawValue: raw) else { usage() }
             options.expiry = e
+        case "--blob-gc":
+            guard let raw = it.next(), let b = BlobGCMode(rawValue: raw) else { usage() }
+            options.blobGC = b
         case "--help", "-h": usage()
         default:
             print("unknown argument \(arg)")
@@ -113,6 +120,7 @@ let converged = options.seeds - failures.count
 print("\(converged)/\(options.seeds) seeds converged (ops=\(total.ops), pushes=\(total.pushes), drops=\(total.drops),"
     + " duplicate pushes=\(total.duplicatePushes), restarts=\(total.restarts)"
     + (options.expiry == .off ? "" : ", expiry sweeps=\(total.expirySweeps), expired=\(total.expiredItems)")
+    + (options.blobGC == .off ? "" : ", blob GC sweeps=\(total.blobGCSweeps), blobs collected=\(total.blobsCollected)")
     + ") in \(String(format: "%.1f", seconds))s")
 
 if let first = failures.first, let failure = first.failure {

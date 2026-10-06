@@ -66,6 +66,45 @@ public struct RelayRequestBuilder: Sendable {
         return request
     }
 
+    /// For blob chunk uploads and downloads: up to 1 MiB each way, so longer than `shortTimeout` for slow links.
+    /// Not above the session's ceiling (`HTTPTransport`), which some platforms apply instead.
+    public static let blobChunkTimeout: TimeInterval = TimeInterval(WireLimits.maxWaitSeconds) + longPollGrace
+
+    public func putBlobChunk(blobID: String, index: Int, count: Int, data: Data) -> URLRequest {
+        var request = URLRequest(url: url(
+            "v1/blobs/\(blobID)/chunks/\(index)", query: [URLQueryItem(name: "count", value: String(count))]))
+        request.httpMethod = "PUT"
+        request.httpBody = data
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = Self.blobChunkTimeout
+        authorize(&request)
+        return request
+    }
+
+    public func blobStatus(blobID: String) -> URLRequest {
+        var request = URLRequest(url: url("v1/blobs/\(blobID)"))
+        request.httpMethod = "GET"
+        request.timeoutInterval = Self.shortTimeout
+        authorize(&request)
+        return request
+    }
+
+    public func blobChunk(blobID: String, index: Int) -> URLRequest {
+        var request = URLRequest(url: url("v1/blobs/\(blobID)/chunks/\(index)"))
+        request.httpMethod = "GET"
+        request.timeoutInterval = Self.blobChunkTimeout
+        authorize(&request)
+        return request
+    }
+
+    public func deleteBlob(blobID: String) -> URLRequest {
+        var request = URLRequest(url: url("v1/blobs/\(blobID)"))
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = Self.shortTimeout
+        authorize(&request)
+        return request
+    }
+
     /// Maps a pull response's status: 409 carries `CursorAheadResponse` and becomes `.cursorAhead`.
     public static func checkPull(status: Int, body: Data) throws {
         if status == 409 {
@@ -159,7 +198,7 @@ public struct HTTPTransport: SyncTransport {
 
     /// A data task wrapped by hand: FoundationNetworking's async API varies by version,
     /// and run() relies on cancellation to cut a long-poll short.
-    private func send(_ request: URLRequest) async throws -> (Data, Int) {
+    fileprivate func send(_ request: URLRequest) async throws -> (Data, Int) {
         let box = DataTaskBox()
         let result: (Data, Int) = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(Data, Int), Error>) in
@@ -179,6 +218,36 @@ public struct HTTPTransport: SyncTransport {
         }
         try Task.checkCancellation()
         return result
+    }
+}
+
+extension HTTPTransport: BlobTransport {
+    public func putBlobChunk(blobID: String, index: Int, count: Int, data: Data) async throws {
+        let (body, status) = try await send(builder.putBlobChunk(blobID: blobID, index: index, count: count, data: data))
+        try RelayRequestBuilder.check(status: status, body: body)
+    }
+
+    public func blobStatus(blobID: String) async throws -> BlobStatus? {
+        let (data, status) = try await send(builder.blobStatus(blobID: blobID))
+        if status == 404 { return nil }
+        try RelayRequestBuilder.check(status: status, body: data)
+        do {
+            return try JSONDecoder().decode(BlobStatus.self, from: data)
+        } catch {
+            throw TransportError.decoding
+        }
+    }
+
+    public func blobChunk(blobID: String, index: Int) async throws -> Data? {
+        let (data, status) = try await send(builder.blobChunk(blobID: blobID, index: index))
+        if status == 404 { return nil }
+        try RelayRequestBuilder.check(status: status, body: data)
+        return data
+    }
+
+    public func deleteBlob(blobID: String) async throws {
+        let (data, status) = try await send(builder.deleteBlob(blobID: blobID))
+        try RelayRequestBuilder.check(status: status, body: data)
     }
 }
 

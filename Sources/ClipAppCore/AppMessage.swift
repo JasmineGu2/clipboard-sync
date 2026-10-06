@@ -27,6 +27,10 @@ public enum AppMessage: String, Equatable, Sendable, CaseIterable {
     case storage
     case keychain
     case notSetUp
+    case fileTooLarge
+    case unreadableFile
+    case notUploadedYet
+    case downloadFailed
     case unknown
 
     /// The copy for this message, from `Strings`.
@@ -45,6 +49,10 @@ public enum AppMessage: String, Equatable, Sendable, CaseIterable {
         case .storage: Strings.errorStorage
         case .keychain: Strings.errorKeychain
         case .notSetUp: Strings.errorNotSetUp
+        case .fileTooLarge: Strings.errorFileTooLarge
+        case .unreadableFile: Strings.errorUnreadableFile
+        case .notUploadedYet: Strings.errorNotUploadedYet
+        case .downloadFailed: Strings.errorDownloadFailed
         case .unknown: Strings.errorUnknown
         }
     }
@@ -61,6 +69,21 @@ public enum AppMessage: String, Equatable, Sendable, CaseIterable {
             case .pairingDecryptionFailed: self = .codeMismatch
             case .missingSeq: self = .server
             case .expiryStalled: self = .storage
+            case .blobsUnavailable: self = .unknown
+            case .fileTooLarge: self = .fileTooLarge
+            case .unreadableFile: self = .unreadableFile
+            }
+        case let error as BlobTransferError:
+            switch error {
+            case .notUploadedYet: self = .notUploadedYet
+            case .corruptChunk, .relayCountMismatch, .invalidBlobRef: self = .downloadFailed
+            case .noLocalCopy, .notABlobItem: self = .unknown
+            }
+        case let error as BlobCacheError:
+            switch error {
+            case .hashMismatch, .wrongChunkLength: self = .downloadFailed
+            case .tooLarge: self = .fileTooLarge
+            case .missing, .io: self = .storage
             }
         case let error as TransportError:
             switch error {

@@ -25,6 +25,12 @@ public enum SyncError: Error, Equatable, Sendable {
     case pairingDecryptionFailed
     /// An expiry sweep found the same items twice: the local deletes didn't take.
     case expiryStalled
+    /// Images and files need a blob cache and a transport with blob routes; this engine has neither.
+    case blobsUnavailable
+    /// The file is over `WireLimits.maxBlobBytes`.
+    case fileTooLarge(bytes: Int64)
+    /// The file couldn't be read.
+    case unreadableFile
 }
 
 /// Records local changes as ops, pushes them, pulls everyone else's, and keeps the local database current.
@@ -47,6 +53,14 @@ public actor SyncEngine {
     private var clock: HybridClock
     /// Highest timestamp issued or observed; persisted so the clock survives restarts.
     private var highWater: (wall: UInt64, counter: UInt32)
+
+    /// The local copies of image and file payloads (nil: this engine syncs text only).
+    public nonisolated let blobCache: BlobCache?
+    /// Moves blobs to and from the relay; nil without a blob cache or a transport with blob routes.
+    public nonisolated let transferer: BlobTransferer?
+    private var uploadTask: Task<Int, Error>?
+    private var blobWaiter: CheckedContinuation<Void, Never>?
+    private var blobWorkPending = false
 
     private var syncTask: Task<Void, Error>?
     private var longPollTask: Task<PullResponse, Error>?
@@ -76,9 +90,17 @@ public actor SyncEngine {
         device: DeviceID,
         deviceName: String,
         now: @escaping @Sendable () -> Date = { Date() },
-        log: @escaping @Sendable (String) -> Void = SyncEngine.logToStandardError
+        log: @escaping @Sendable (String) -> Void = SyncEngine.logToStandardError,
+        blobCache: BlobCache? = nil,
+        transferMeter: TransferMeter = TransferMeter()
     ) throws {
         self.db = db
+        self.blobCache = blobCache
+        if let blobCache, let blobTransport = transport as? any BlobTransport {
+            self.transferer = BlobTransferer(cache: blobCache, transport: blobTransport, vaultKey: vaultKey, meter: transferMeter)
+        } else {
+            self.transferer = nil
+        }
         self.cipher = OpCipher(vaultKey: vaultKey)
         self.transport = transport
         self.device = device
@@ -164,15 +186,227 @@ public actor SyncEngine {
     /// The longest expiry the apps and clipctl accept: 100 years. Keeps `days * 86_400` far from overflow.
     public static let maxExpiryDays = 36_500
 
-    private func record(_ item: ItemID, _ kind: OpKind) throws {
+    private func record(_ item: ItemID, _ kind: OpKind, blobUploads: [BlobUpload] = []) throws {
         let op = Op(itemID: item, timestamp: clock.tick(), kind: kind)
         let size = try cipher.seal(op, device: device).ciphertext.count
         guard size <= WireLimits.maxCiphertextBytes else { throw SyncError.opTooLarge(bytes: size) }
         // Clock first: if we crash between the two writes, the stored clock is ahead, which is safe.
         try advanceHighWater(op.timestamp)
-        try db.insert([op], outbound: true)
+        try db.insert([op], outbound: true, blobUploads: blobUploads)
         changesContinuation.yield()
         wake()
+        if !blobUploads.isEmpty || kind == .delete { wakeBlobs() }
+    }
+
+    // MARK: Images and files (F11, F12; design §6)
+
+    /// Records an image or file item. The file is copied into the blob cache (hashed on the way, one chunk at a
+    /// time), the create op carries its blob reference and thumbnail, and the upload is queued in the same
+    /// transaction. The bytes go to the relay later, by `uploadPendingBlobs` or the run loop.
+    /// Copying the same file again right after returns the newest item instead, like `addText`.
+    /// - Parameters:
+    ///   - name: the name shown in the history and used when saving; defaults to the file's name.
+    ///   - thumbnail: a small JPEG for images. Dropped when over `ItemContent.maxThumbnailBytes`.
+    @discardableResult
+    public func addFile(
+        at url: URL, kind: ContentKind = .file, name: String? = nil, contentType: String? = nil, thumbnail: Data? = nil
+    ) throws -> ItemID {
+        guard let blobCache else { throw SyncError.blobsUnavailable }
+        let blob = BlobID()
+        let imported: BlobCache.Imported
+        do {
+            imported = try blobCache.importFile(at: url, as: blob, maxBytes: WireLimits.maxBlobBytes)
+        } catch BlobCacheError.tooLarge(let bytes) {
+            throw SyncError.fileTooLarge(bytes: bytes)
+        } catch {
+            throw SyncError.unreadableFile
+        }
+        return try recordBlob(blob, imported, kind: kind, name: name ?? url.lastPathComponent,
+                              contentType: contentType, thumbnail: thumbnail)
+    }
+
+    /// Records an image or file from bytes in memory, such as an image on the clipboard.
+    @discardableResult
+    public func addData(
+        _ data: Data, kind: ContentKind = .image, name: String, contentType: String? = nil, thumbnail: Data? = nil
+    ) throws -> ItemID {
+        guard let blobCache else { throw SyncError.blobsUnavailable }
+        let blob = BlobID()
+        let imported: BlobCache.Imported
+        do {
+            imported = try blobCache.importData(data, as: blob, maxBytes: WireLimits.maxBlobBytes)
+        } catch BlobCacheError.tooLarge(let bytes) {
+            throw SyncError.fileTooLarge(bytes: bytes)
+        } catch {
+            throw SyncError.unreadableFile
+        }
+        return try recordBlob(blob, imported, kind: kind, name: name, contentType: contentType, thumbnail: thumbnail)
+    }
+
+    private func recordBlob(
+        _ blob: BlobID, _ imported: BlobCache.Imported, kind: ContentKind, name: String, contentType: String?,
+        thumbnail: Data?
+    ) throws -> ItemID {
+        if let newest = try db.items(limit: 1).first, let ref = newest.content?.blob,
+           ref.sha256 == imported.sha256, ref.size == imported.size {
+            blobCache?.remove(blob)
+            return newest.id
+        }
+        let ref = BlobRef(id: blob, size: imported.size, sha256: imported.sha256, contentType: contentType)
+        let item = ItemID()
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = ItemContent(
+            kind: kind, text: String((trimmed.isEmpty ? blob.description : trimmed).prefix(255)),
+            sourceDevice: device, sourceDeviceName: deviceName,
+            createdAt: Date(timeIntervalSince1970: Double(Self.millis(now())) / 1000),
+            blob: ref,
+            thumbnail: thumbnail.flatMap { $0.count <= ItemContent.maxThumbnailBytes ? $0 : nil })
+        do {
+            try record(item, .create(content), blobUploads: [BlobUpload(blob: blob, item: item)])
+        } catch {
+            blobCache?.remove(blob)
+            throw error
+        }
+        return item
+    }
+
+    /// The local file of an image or file item, once it's in the cache (sent from here, or downloaded).
+    public func localFile(for item: ItemID) throws -> URL? {
+        guard let blobCache, let ref = try db.item(item)?.content?.blob, blobCache.contains(ref.id) else { return nil }
+        return blobCache.url(for: ref.id)
+    }
+
+    /// F12: downloads an image or file item's payload on demand (resuming an earlier attempt) and returns its
+    /// file in the cache.
+    public func fetchBlob(for item: ItemID, progress: BlobProgressHandler? = nil) async throws -> URL {
+        guard let transferer else { throw SyncError.blobsUnavailable }
+        guard let state = try db.item(item), state.isVisible, let ref = state.content?.blob else {
+            throw BlobTransferError.notABlobItem
+        }
+        return try await transferer.download(ref, item: item, progress: progress)
+    }
+
+    /// Uploads every queued blob, each resuming from what the relay already has. Returns how many were sent.
+    /// Runs one at a time; a second call waits for the first. Network errors are thrown and the jobs stay queued.
+    @discardableResult
+    public func uploadPendingBlobs(progress: BlobProgressHandler? = nil) async throws -> Int {
+        guard let transferer else { return 0 }
+        while let running = uploadTask { _ = await running.result }
+        let task = Task { try await self.performUploads(transferer, progress: progress) }
+        uploadTask = task
+        defer { uploadTask = nil }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func performUploads(_ transferer: BlobTransferer, progress: BlobProgressHandler?) async throws -> Int {
+        var uploaded = 0
+        while let job = try db.pendingBlobUploads(limit: 1).first {
+            try Task.checkCancellation()
+            guard let state = try db.item(forBlob: job.blob), let ref = state.content?.blob else {
+                try db.finishBlobUpload(job.blob)  // the item was deleted: nothing to send
+                continue
+            }
+            do {
+                if case .uploaded = try await transferer.upload(ref, item: state.id, progress: progress) { uploaded += 1 }
+            } catch let error as BlobTransferError {
+                // Not a network problem: retrying won't help, so drop the job rather than block the queue.
+                log("dropping upload of blob \(job.blob): \(error)")
+            }
+            try db.finishBlobUpload(job.blob)
+            // Deleted while uploading: garbage collection may already have run, so remove what just landed.
+            if try db.item(forBlob: job.blob) == nil, let transport = transport as? any BlobTransport {
+                try? await transport.deleteBlob(blobID: job.blob.description)
+            }
+        }
+        return uploaded
+    }
+
+    public struct GarbageCollection: Equatable, Sendable {
+        /// Files removed from the local blob cache.
+        public var localFiles = 0
+        /// Blobs deleted from the relay.
+        public var relayBlobs = 0
+    }
+
+    /// How long a cache file nothing points at is kept before it's removed (an import whose item was never
+    /// recorded, or a crashed write).
+    public static let orphanBlobAge: TimeInterval = 24 * 60 * 60
+
+    /// Frees the payloads of deleted and expired items. Locally: their cache files, plus old orphans. On the
+    /// relay: each dead blob once (best effort; offline just means later). Only blobs of items this device knows
+    /// are deleted ever leave the relay. Deletes are sticky, so those can't be needed again; an item this device
+    /// hasn't heard of yet is never touched (the harness's `--blob-gc` modes check that rule).
+    @discardableResult
+    public func collectGarbage() async -> GarbageCollection {
+        var result = GarbageCollection()
+        guard let blobCache else { return result }
+        do {
+            let live = try db.liveBlobIDs()
+            let dead = Set(try db.deadBlobIDs(limit: Int(Int32.max)))
+            result.localFiles = blobCache.collectGarbage(live: live, dead: dead, orphanAge: Self.orphanBlobAge, now: now())
+            guard let transport = transport as? any BlobTransport else { return result }
+            for blob in try db.deadBlobIDs(uncollectedOnly: true, limit: 100) {
+                try await transport.deleteBlob(blobID: blob.description)
+                try db.markRelayCollected([blob])
+                result.relayBlobs += 1
+            }
+        } catch {
+            log("garbage collection stopped: \(error)")
+        }
+        return result
+    }
+
+    /// Background blob work for `run()`: uploads, then garbage collection, then waits for new work or a minute.
+    private func runBlobWork() async {
+        var failures = 0
+        while !Task.isCancelled {
+            do {
+                try await uploadPendingBlobs()
+                await collectGarbage()
+                failures = 0
+                await waitForBlobWork(timeout: .seconds(60))
+            } catch {
+                if Task.isCancelled { return }
+                failures += 1
+                let delay = Self.backoff(failures: failures)
+                log("blob upload failed (attempt \(failures)), retrying in \(String(format: "%.1f", delay)) s: \(error)")
+                try? await Task.sleep(for: .seconds(delay))
+            }
+        }
+    }
+
+    private func wakeBlobs() {
+        blobWorkPending = true
+        blobWaiter?.resume()
+        blobWaiter = nil
+    }
+
+    private func waitForBlobWork(timeout: Duration) async {
+        if blobWorkPending {
+            blobWorkPending = false
+            return
+        }
+        let timer = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            await self?.wakeBlobs()
+        }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled {
+                    continuation.resume()
+                    return
+                }
+                blobWaiter = continuation
+            }
+        } onCancel: {
+            Task { await self.wakeBlobs() }
+        }
+        timer.cancel()
+        blobWorkPending = false
     }
 
     // MARK: Sync
@@ -301,6 +535,7 @@ public actor SyncEngine {
         let cursor = max(try db.syncCursor(), lastSeq)
         let inserted = try db.insertRemote(ops, newCursor: cursor)
         if !inserted.isEmpty { changesContinuation.yield() }
+        if inserted.contains(where: { $0.kind == .delete }) { wakeBlobs() }
     }
 
     // MARK: Relay reset
@@ -319,6 +554,7 @@ public actor SyncEngine {
         let cursor = try db.syncCursor()
         log("relay log ends at seq \(relayLatestSeq), before our cursor \(cursor); re-pushing all ops, re-pulling from 0")
         try db.markAllOutbound()
+        wakeBlobs()
     }
 
     /// Checks a response's epoch during a sync. Returns true when it revealed a relay reset that was just
@@ -358,6 +594,7 @@ public actor SyncEngine {
         log("relay epoch changed from \(stored) to \(epoch), so it lost its log; re-pushing all ops, re-pulling from 0")
         try db.markAllOutbound()
         try db.setMeta(Self.relayEpochKey, epoch)
+        wakeBlobs()
     }
 
     private func recordUndecryptable(_ opIDs: [String]) throws {
@@ -378,6 +615,9 @@ public actor SyncEngine {
 
     /// Syncs, then long-polls; backs off on errors. Returns when the calling task is cancelled.
     public func run() async {
+        // Blob uploads run beside the op loop, so a large file never holds up text.
+        let blobWork = transferer == nil ? nil : Task { await self.runBlobWork() }
+        defer { blobWork?.cancel() }
         var failures = 0
         while !Task.isCancelled {
             do {

@@ -99,7 +99,8 @@ Only swift-crypto primitives (same API as CryptoKit).
 - `pendingOutbound(limit:) -> [Op]`, `markSent(_ ids: [OpID])`
 - `syncCursor() -> Int64`, `setSyncCursor(_:)`, `meta(_:)`, `setMeta(_:_:)`
 - Crash safety (N12): WAL + every mutation in a transaction; the cursor moves in the same transaction as the
-  ops it covers.
+  ops it covers. `CrashInjectionTests` kills a writer process (`ClipStoreCrashWriter`) mid-write and checks the
+  reopened file.
 
 **ClipSync**
 - `protocol SyncTransport`: `push`, `pull(after:limit:wait:)`, `putPairing(id:blob:)`, `takePairing(id:)`

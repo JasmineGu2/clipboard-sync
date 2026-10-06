@@ -72,7 +72,7 @@ From the requirements in [docs/prd.md](docs/prd.md). "Written, not built" means 
 | F16 | Direct device-to-device sync | Not yet | P2 |
 | F17 | Apple Watch | Not yet | P2 |
 | N1 | Sync latency | Partly | Measured on one PC over localhost only. See below. |
-| N2 | 10k search under 50 ms | Partly | Measured on Windows only |
+| N2 | 10k search under 50 ms | Partly | Measured on Windows and Mac. Not on iPhone yet. |
 | N3 | iPhone launch under 500 ms | Not yet | Not measured |
 | N4 | Mac idle energy "Low" | Not yet | Not measured |
 | N5 | Resumable transfers | Not yet | Blobs not built (M4) |
@@ -82,17 +82,17 @@ From the requirements in [docs/prd.md](docs/prd.md). "Written, not built" means 
 | N9 | Keys in Keychain or DPAPI | Partly | DPAPI done. Keychain written, not built. clipctl on macOS and Linux has an opt-in plain-file key for testing. |
 | N10 | Relay only inside the tailnet | Partly | The relay binds the address you give it (default `127.0.0.1`) and warns on `0.0.0.0`. Not deployed to the VM yet. |
 | N11 | Convergence under any order, duplicates, drops | Done | Harness, 500 of 500 seeds |
-| N12 | A crash never corrupts data | Partly | WAL, one transaction per mutation, `synchronous=FULL`. No crash-injection test against SQLite yet. |
+| N12 | A crash never corrupts data | Partly | WAL, one transaction per mutation, `synchronous=FULL`. A crash test kills a writer process mid-write and checks the file each time (500 kills, no failures). Power loss isn't tested, and payload files aren't built yet. |
 | N13 | Applying an op twice does nothing | Done | A replica ignores an op it has seen, and the relay dedupes by op ID. Tested, and exercised by the harness. |
 
 ## Measured numbers
 
-All measured on Windows 11 with WSL Ubuntu 24.04, debug builds unless noted.
+All measured on Windows 11 with WSL Ubuntu 24.04, debug builds unless noted. Mac numbers are from a MacBook Air (M3, macOS 14.6, Swift 6.0.3).
 
 | ID | Target | Measured | How | Missing |
 | --- | --- | --- | --- | --- |
 | N1 | p50 under 1 s, p95 under 3 s | p50 about 100 ms, max about 175 ms, over 5 items | `scripts/e2e.ps1`: relay in WSL, two clipctl clients on one PC over localhost. The time includes starting a clipctl process for each poll. | Not over Tailscale yet, and not across real devices. No p95 from 5 samples. |
-| N2 | under 50 ms | median about 14 ms over 20 queries, 10,000 items | A ClipStore perf test on Windows (it asserts the median is under 50 ms) | iPhone and Mac. Release builds. |
+| N2 | under 50 ms | Windows: median about 14 ms over 20 queries, 10,000 items. Mac: median 4.2 ms (debug) and 2.0 ms (release), max 6.7 ms | `testSearchPerformanceOn10kItems` in ClipStoreTests (it asserts the median is under 50 ms). On the Mac, 3 runs each; release with `swift test -c release -Xswiftc -enable-testing`. | iPhone. A Windows release build. |
 | N3 | under 500 ms | not measured | | Needs the iPhone app built |
 | N4 | Energy Impact "Low" | not measured | | Needs the Mac app built |
 | N5 | resume from last verified chunk | not built | | M4 |
@@ -186,6 +186,6 @@ See [apps/Apple/README.md](apps/Apple/README.md). It uses XcodeGen and a `CLIPSY
 - **Relay hardening (review).** The relay buffered push bodies up to about 175 MB before checking size, and anyone who knew a pairing ID could replace its blob. Bodies are now capped before decoding (4 MiB for pushes), pairing uploads need the token and never overwrite, and the token can be pinned and rotated. Details are in the [threat model](docs/threat-model.md#crypto-review-findings).
 - **Relay reset.** A relay that lost its log could leave ops stranded. Devices now re-push everything they hold when the relay's epoch changes.
 
-Testing has four layers. Unit tests use known-answer vectors for HKDF (RFC 5869), AES-GCM (Test Case 16 from the GCM paper) and the derived keys, plus tamper tests. The convergence harness is deterministic per seed. It drops requests and responses, makes clients retry pushes the relay already has, takes devices offline, crashes them and moves their clocks. Its mutation mode swaps in 4 broken merge rules to prove it notices: last-writer-wins keeping the older write fails 500 of 500 seeds, last-arrival-wins 496 of 500, ignoring deletes 500 of 500, and edits undoing deletes 500 of 500. The relay has route and storage tests on Linux. The smoke test and end-to-end script drive the real clipctl binary.
+Testing has four layers. Unit tests use known-answer vectors for HKDF (RFC 5869), AES-GCM (Test Case 16 from the GCM paper) and the derived keys, plus tamper tests. The convergence harness is deterministic per seed. It drops requests and responses, makes clients retry pushes the relay already has, takes devices offline, crashes them and moves their clocks. Its mutation mode swaps in 4 broken merge rules to prove it notices: last-writer-wins keeping the older write fails 500 of 500 seeds, last-arrival-wins 496 of 500, ignoring deletes 500 of 500, and edits undoing deletes 500 of 500. The relay has route and storage tests on Linux. The smoke test and end-to-end script drive the real clipctl binary. The store has a crash test: a helper process writes to a real database file and gets killed at random points. After each kill the test reopens the file and runs SQLite's integrity check and the search index's own check. It also checks that every transaction the helper reported as committed is there, and that the one it was in the middle of is either all there or not there at all. `CLIPSTORE_CRASH_ITERATIONS=500 swift test --filter CrashInjectionTests` runs a long one.
 
 CI is in `.github/workflows`. `ci.yml` builds and tests on Linux, Windows and macOS, runs the relay tests, and runs the harness for 2,000 seeds in release. `nightly.yml` runs 20,000 new seeds a night and uploads the log. **Neither has run yet**, because the repo isn't on GitHub yet.

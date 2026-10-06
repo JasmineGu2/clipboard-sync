@@ -29,7 +29,11 @@ USER relay
 VOLUME /data
 EXPOSE 8787
 
-# Inside the container the relay must listen on 0.0.0.0 so the published port reaches it.
-# Publish ONLY on the host's Tailscale IP:  docker run -p 100.x.y.z:8787:8787 ...
+# No --host here: it comes from CLIP_RELAY_HOST, and the relay refuses anything outside loopback and the tailnet
+# (N10). Recommended (scripts/deploy-relay.sh): host networking, binding the host's Tailscale IP:
+#   docker run --network host -e CLIP_RELAY_HOST=100.x.y.z -e CLIP_RELAY_TOKEN_SHA256=<pin> ...
+# Bridge networking instead needs 0.0.0.0 inside the container, so an explicit opt-in, and the published port
+# pinned to the Tailscale IP:
+#   docker run -p 100.x.y.z:8787:8787 -e CLIP_RELAY_HOST=0.0.0.0 -e CLIP_RELAY_ALLOW_NON_TAILNET=1 ...
 ENTRYPOINT ["/usr/local/bin/ClipRelay"]
-CMD ["--host", "0.0.0.0", "--port", "8787", "--db", "/data/relay.sqlite3"]
+CMD ["--port", "8787", "--db", "/data/relay.sqlite3"]

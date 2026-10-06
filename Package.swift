@@ -44,8 +44,12 @@ let package = Package(
             "ClipCore", "CSQLite",
             .product(name: "Crypto", package: "swift-crypto"),
         ]),
-        // Test helper: writes to a ClipDatabase until killed. CrashInjectionTests launches it (PRD N12).
-        .executableTarget(name: "ClipStoreCrashWriter", dependencies: ["ClipStore", "ClipCore"]),
+        // Test helper: writes to a ClipDatabase (or, in blob mode, a BlobCache) until killed. CrashInjectionTests
+        // and BlobCrashInjectionTests launch it (PRD N12).
+        .executableTarget(name: "ClipStoreCrashWriter", dependencies: [
+            "ClipStore", "ClipCore",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ]),
         .target(name: "ClipSync", dependencies: ["ClipCore", "ClipCrypto", "ClipStore", "ClipWire"]),
         // Win32 pieces shared by clipctl and the tray app: the clipboard (capture with concealed-content skip, write)
         // and the DPAPI key store. All but WindowsError.swift are `#if os(Windows)`, so elsewhere it is nearly empty.

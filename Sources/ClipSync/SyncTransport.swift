@@ -36,8 +36,20 @@ public protocol BlobTransport: Sendable {
     func blobStatus(blobID: String) async throws -> BlobStatus?
     /// GET /v1/blobs/<id>/chunks/<index>; nil when that chunk isn't there (not uploaded yet, or collected).
     func blobChunk(blobID: String, index: Int) async throws -> Data?
+    /// `blobChunk`, refusing a body over `maxBytes` with `TransportError.responseTooLarge`. `HTTPTransport` checks
+    /// the declared length before reading and stops reading as soon as the body passes the cap, so a hostile relay
+    /// can't make a device buffer more than one chunk. The default reads the whole body first (in-memory relays).
+    func blobChunk(blobID: String, index: Int, maxBytes: Int) async throws -> Data?
     /// DELETE /v1/blobs/<id>. Deleting a missing blob is not an error.
     func deleteBlob(blobID: String) async throws
+}
+
+extension BlobTransport {
+    public func blobChunk(blobID: String, index: Int, maxBytes: Int) async throws -> Data? {
+        guard let data = try await blobChunk(blobID: blobID, index: index) else { return nil }
+        guard data.count <= maxBytes else { throw TransportError.responseTooLarge(limit: maxBytes) }
+        return data
+    }
 }
 
 public enum TransportError: Error, Equatable, Sendable, CustomStringConvertible {
@@ -60,6 +72,8 @@ public enum TransportError: Error, Equatable, Sendable, CustomStringConvertible 
     case network(String)
     /// The response body wasn't what the wire contract promises.
     case decoding
+    /// The response body was (or declared it would be) over `limit` bytes; reading stopped there.
+    case responseTooLarge(limit: Int)
 
     public var description: String {
         switch self {
@@ -73,6 +87,7 @@ public enum TransportError: Error, Equatable, Sendable, CustomStringConvertible 
         case .server(let status): "server error \(status)"
         case .network(let message): "network error: \(message)"
         case .decoding: "malformed response"
+        case .responseTooLarge(let limit): "response over \(limit) bytes"
         }
     }
 }

@@ -47,4 +47,6 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 - [x] Revoke x blobs: the revoke wipes relay blobs, remaining devices re-upload what they hold under the new key, blob routes re-check the token in storage; harness `--revoke-blobs reuploadHeld` 500/500, `keepRelayBlobs` and `opsOnly` caught; `scripts/e2e-revoke-blobs.sh` (three clipctl clients)
 - [x] T31 Apple Watch view of pinned items (F17): iPhone mirrors pinned items, Copy on iPhone by ID; opt-in target (`CLIPSYNC_WATCH=YES`), type-checked for watchOS only, not run (needs the watchOS platform and a simulator or watch)
 
+- [x] T35 Relay and transport hardening: stale-upload purge (7 days, startup + hourly), O(1) blob byte total kept in the same transaction (migration, crash-snapshot test), chunk responses capped while read, N10 bind check (loopback/tailnet only unless `--allow-non-tailnet`) and `scripts/deploy-relay.sh`, N12 crash test for the blob cache
+
 ## Blocked

@@ -187,9 +187,17 @@ public actor BlobTransferer {
         while !download.isComplete {
             try Task.checkCancellation()
             let index = download.verifiedChunks
-            guard let sealed = try await transport.blobChunk(blobID: blobID, index: index) else {
-                throw BlobTransferError.notUploadedYet(chunk: index)
+            // The sealed size is exact (plaintext plus nonce and tag), so anything else is refused, and a body
+            // over it is cut off while it's read rather than after (a hostile relay can't make this buffer more).
+            let expected = ref.plaintextLength(ofChunk: index) + WireLimits.blobChunkOverheadBytes
+            let fetched: Data?
+            do {
+                fetched = try await transport.blobChunk(blobID: blobID, index: index, maxBytes: expected)
+            } catch TransportError.responseTooLarge {
+                throw BlobTransferError.corruptChunk(index: index)
             }
+            guard let sealed = fetched else { throw BlobTransferError.notUploadedYet(chunk: index) }
+            guard sealed.count == expected else { throw BlobTransferError.corruptChunk(index: index) }
             meter.hold(sealed.count)
             defer { meter.release(sealed.count) }
             let plaintext: Data

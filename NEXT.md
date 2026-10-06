@@ -2,6 +2,12 @@
 
 **Now:** Test receiving between the Mac and the PC. The Mac app is set up against the local relay (127.0.0.1:8788, shared on the tailnet as `http://macbook-air.tailc07d02.ts.net:8788`; restart it with `cd Server && nohup ./.build/debug/ClipRelay --port 8788 --db ../.relay/relay.sqlite3 > ../.relay/relay.log 2>&1 &`). On the PC: `git pull`, pair clipctl with a code from the Mac menu's Pair new device, run `clipctl watch`, then copy on one and paste on the other. Then the iPhone (apps/Apple/README.md).
 
+## T35 hardening (2026-10-06, branch t35-hardening, not merged)
+- Relay: unfinished blob uploads idle for 7 days are purged at startup and hourly (`--blob-max-age-days`); the 20 GiB cap reads a running total kept in the same transaction as every chunk change (older databases migrate on open).
+- Relay refuses a `--host` outside loopback and the tailnet unless `--allow-non-tailnet` (N10). The Docker image no longer binds 0.0.0.0 by default. `scripts/deploy-relay.sh <host> --token-sha256 <pin>` deploys to the VM (Docker, host networking, Tailscale IP); only dry-run so far.
+- Clients cap a chunk response at its exact sealed size while reading it. New crash test for the blob cache (N12).
+- Check: 296 package tests, 76 relay tests, both harness modes 500/500, `scripts/e2e-blobs.sh 50 8945` passes.
+
 ## Where things stand (2026-10-05, branch t29-blobs)
 - M4 images and files (F11, F12) are on t29-blobs, with master merged in (revoke F13, expiry UI, crash test). Not merged into master yet.
 - Revoke and blobs work together: a revoke wipes relay blobs with the log, and the remaining devices upload the files they hold again under the new key. A file only the lost device had keeps its thumbnail and can't be downloaded. Decision in docs/decisions.md.

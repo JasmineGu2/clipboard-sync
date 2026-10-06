@@ -44,13 +44,18 @@ jobs:
           $url = "https://download.swift.org/swift-6.4.0-release/windows10/swift-6.4.0-RELEASE/swift-6.4.0-RELEASE-windows10.exe"
           $exe = Join-Path $env:RUNNER_TEMP "swift-installer.exe"
           Invoke-WebRequest $url -OutFile $exe
-          $p = Start-Process $exe -ArgumentList "-q" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Swift installer exited with $($p.ExitCode)" }
-          # The bundle can exit before its toolchain package has written its files (2026-10-06: an empty
-          # Toolchains folder). Wait for swift.exe itself, up to 5 minutes.
+          # The bundle fetches some packages while it runs, and that sometimes fails on runners (2026-10-06: exit
+          # 12006, a WinINet error, and once exit 0 with an empty Toolchains folder). Retry, and show the log.
           $swift = Join-Path $env:LOCALAPPDATA "Programs\Swift\Toolchains\*\usr\bin\swift.exe"
-          for ($i = 0; $i -lt 60 -and -not (Test-Path $swift); $i++) { Start-Sleep 5 }
-          if (-not (Test-Path $swift)) { throw "swift.exe never appeared at $swift" }
+          foreach ($attempt in 1..3) {
+            $log = Join-Path $env:RUNNER_TEMP "swift-install-$attempt.log"
+            $p = Start-Process $exe -ArgumentList "-q", "-log", "`"$log`"" -Wait -PassThru
+            if ($p.ExitCode -eq 0 -and (Test-Path $swift)) { break }
+            Write-Host "Attempt $attempt failed (exit $($p.ExitCode), swift.exe present: $(Test-Path $swift)). Log tail:"
+            Get-ChildItem $env:RUNNER_TEMP -Filter "swift-install-$attempt*.log" | ForEach-Object { Get-Content $_ -Tail 40 } | Out-Host
+            if ($attempt -eq 3) { throw "Swift install failed 3 times" }
+            Start-Sleep 20
+          }
       # Mirrors scripts/swiftenv.sh: toolchain and runtime on PATH, SDKROOT set.
       - name: Put Swift on PATH
         shell: pwsh

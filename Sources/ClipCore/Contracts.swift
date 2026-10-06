@@ -48,21 +48,79 @@ public enum ContentKind: String, Codable, Sendable {
     case file    // P1
 }
 
+public struct BlobID: Hashable, Codable, Sendable, CustomStringConvertible {
+    public let rawValue: UUID
+    public init(_ rawValue: UUID = UUID()) { self.rawValue = rawValue }
+    public var description: String { rawValue.uuidString }
+}
+
+/// Points an image or file item at its payload (F11, F12). The payload's bytes never enter the op log: they
+/// live in the local blob cache and, encrypted in chunks, on the relay's blob routes. See docs/design.md §6.
+///
+/// Part of `ItemContent`, so it is set once by the create op and never changes: blobs add no merge rule.
+public struct BlobRef: Hashable, Codable, Sendable {
+    public var id: BlobID
+    /// Plaintext size in bytes.
+    public var size: Int64
+    /// SHA-256 of the whole plaintext, 32 bytes. Checked before a download is marked complete (N12).
+    public var sha256: Data
+    /// Plaintext bytes per chunk; every chunk but the last is exactly this long.
+    public var chunkSize: Int
+    /// MIME type when known, e.g. "image/png".
+    public var contentType: String?
+
+    public init(id: BlobID, size: Int64, sha256: Data, chunkSize: Int = BlobRef.defaultChunkSize, contentType: String?) {
+        self.id = id
+        self.size = size
+        self.sha256 = sha256
+        self.chunkSize = chunkSize
+        self.contentType = contentType
+    }
+
+    /// 1 MiB. Matches `WireLimits.blobChunkPlaintextBytes` (a ClipSync test checks they agree).
+    public static let defaultChunkSize = 1 << 20
+
+    /// Number of chunks: at least one, so an empty file still has one authenticated (empty) chunk.
+    public var chunkCount: Int {
+        guard chunkSize > 0, size > 0 else { return 1 }
+        return Int((size + Int64(chunkSize) - 1) / Int64(chunkSize))
+    }
+
+    /// Plaintext length of chunk `index`: `chunkSize`, except the last chunk, which holds the rest.
+    public func plaintextLength(ofChunk index: Int) -> Int {
+        guard index == chunkCount - 1 else { return chunkSize }
+        return Int(size - Int64(chunkSize) * Int64(chunkCount - 1))
+    }
+}
+
 /// Immutable content captured once, at creation.
 public struct ItemContent: Hashable, Codable, Sendable {
     public var kind: ContentKind
-    /// Text for `.text`; for images/files a display name. Blob payloads travel separately (M4).
+    /// Text for `.text`; for images and files the display name (also what search matches).
     public var text: String
     public var sourceDevice: DeviceID
     public var sourceDeviceName: String
     public var createdAt: Date
+    /// The payload of an image or file item; nil for text. Encoded only when set, so text ops keep their bytes.
+    public var blob: BlobRef?
+    /// A small JPEG preview of an image item (at most `ItemContent.maxThumbnailBytes`). It travels inside the
+    /// encrypted create op, so the history can show it before the full image is downloaded.
+    public var thumbnail: Data?
 
-    public init(kind: ContentKind = .text, text: String, sourceDevice: DeviceID, sourceDeviceName: String, createdAt: Date) {
+    /// Thumbnails stay well under the relay's 256 KiB per-op cap even as base64 in JSON.
+    public static let maxThumbnailBytes = 32 * 1024
+
+    public init(
+        kind: ContentKind = .text, text: String, sourceDevice: DeviceID, sourceDeviceName: String, createdAt: Date,
+        blob: BlobRef? = nil, thumbnail: Data? = nil
+    ) {
         self.kind = kind
         self.text = text
         self.sourceDevice = sourceDevice
         self.sourceDeviceName = sourceDeviceName
         self.createdAt = ClipCoding.normalized(createdAt)
+        self.blob = blob
+        self.thumbnail = thumbnail
     }
 }
 

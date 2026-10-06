@@ -2,6 +2,16 @@ import ClipCore
 import CSQLite
 import Foundation
 
+/// A blob this device has to upload, and the item it belongs to.
+public struct BlobUpload: Hashable, Sendable {
+    public var blob: BlobID
+    public var item: ItemID
+    public init(blob: BlobID, item: ItemID) {
+        self.blob = blob
+        self.item = item
+    }
+}
+
 /// A SQLite failure: the result code and SQLite's message.
 public struct StoreError: Error, CustomStringConvertible, Sendable {
     public let code: Int32
@@ -92,8 +102,23 @@ public final class ClipDatabase: @unchecked Sendable {
     /// Returns the ops that were new; duplicates are ignored. `outbound: true` queues them for push.
     @discardableResult
     public func insert(_ ops: [Op], outbound: Bool) throws -> [Op] {
+        try insert(ops, outbound: outbound, blobUploads: [])
+    }
+
+    /// `insert`, plus queues blob uploads in the same transaction, so a crash can't leave an image or file item
+    /// whose payload nobody will ever upload (N12).
+    @discardableResult
+    public func insert(_ ops: [Op], outbound: Bool, blobUploads: [BlobUpload]) throws -> [Op] {
         try locked {
-            try inTransaction { try insertOps(ops, outbound: outbound) }
+            try inTransaction {
+                let inserted = try insertOps(ops, outbound: outbound)
+                for upload in blobUploads {
+                    try run(
+                        "INSERT OR IGNORE INTO blob_uploads (blob_id, item_id) VALUES (?, ?)",
+                        [.text(upload.blob.description), .text(upload.item.description)])
+                }
+                return inserted
+            }
         }
     }
 
@@ -144,12 +169,88 @@ public final class ClipDatabase: @unchecked Sendable {
     /// Queues every stored op for push again and resets the sync cursor to 0, in one transaction.
     /// Used when the relay lost its log: ops that lived only on the old relay go back up, and the relay
     /// dedupes by opID, so devices re-pushing the same ops is harmless.
+    ///
+    /// The relay's blobs went with its log, so every visible item's blob is queued for upload too. A device that
+    /// doesn't hold a blob's file drops that job (`finishBlobUpload`); one that does puts the blob back.
     public func markAllOutbound() throws {
         try locked {
             try inTransaction {
                 try run("UPDATE ops SET outbound_pending = 1 WHERE outbound_pending = 0")
                 try writeMeta(Self.cursorKey, "0")
+                try run(
+                    """
+                    INSERT OR IGNORE INTO blob_uploads (blob_id, item_id)
+                    SELECT blob_id, item_id FROM items WHERE visible = 1 AND blob_id IS NOT NULL
+                    """)
+                try run("DELETE FROM blob_relay_gc")
             }
+        }
+    }
+
+    // MARK: Blobs (F11, F12)
+
+    /// Blob uploads still to do, oldest first.
+    public func pendingBlobUploads(limit: Int = 100) throws -> [BlobUpload] {
+        try locked {
+            var uploads: [BlobUpload] = []
+            try query("SELECT blob_id, item_id FROM blob_uploads ORDER BY rowid LIMIT ?", [.int(Int64(limit))]) { stmt in
+                if let blob = columnText(stmt, 0).flatMap(UUID.init(uuidString:)),
+                   let item = columnText(stmt, 1).flatMap(UUID.init(uuidString:)) {
+                    uploads.append(BlobUpload(blob: BlobID(blob), item: ItemID(item)))
+                }
+            }
+            return uploads
+        }
+    }
+
+    /// Drops an upload job: the relay holds every chunk, the item is gone, or this device has no copy.
+    public func finishBlobUpload(_ blob: BlobID) throws {
+        try locked { try run("DELETE FROM blob_uploads WHERE blob_id = ?", [.text(blob.description)]) }
+    }
+
+    /// Blobs that some visible item points at. Everything else in the blob cache may be collected.
+    public func liveBlobIDs() throws -> Set<BlobID> {
+        try locked {
+            var ids: Set<BlobID> = []
+            try query("SELECT blob_id FROM items WHERE visible = 1 AND blob_id IS NOT NULL") { stmt in
+                if let id = columnText(stmt, 0).flatMap(UUID.init(uuidString:)) { ids.insert(BlobID(id)) }
+            }
+            return ids
+        }
+    }
+
+    /// Blobs of deleted (or expired) items. Deletes are sticky, so these are never needed again on any device.
+    /// `uncollectedOnly` leaves out the ones already deleted from the relay (`markRelayCollected`).
+    public func deadBlobIDs(uncollectedOnly: Bool = false, limit: Int = 500) throws -> [BlobID] {
+        try locked {
+            var ids: [BlobID] = []
+            let filter = uncollectedOnly ? "AND blob_id NOT IN (SELECT blob_id FROM blob_relay_gc)" : ""
+            try query(
+                "SELECT blob_id FROM items WHERE visible = 0 AND blob_id IS NOT NULL \(filter) ORDER BY id LIMIT ?",
+                [.int(Int64(limit))]
+            ) { stmt in
+                if let id = columnText(stmt, 0).flatMap(UUID.init(uuidString:)) { ids.append(BlobID(id)) }
+            }
+            return ids
+        }
+    }
+
+    /// Remembers that these blobs were deleted from the relay, so garbage collection doesn't ask again.
+    public func markRelayCollected(_ blobs: [BlobID]) throws {
+        try locked {
+            try inTransaction {
+                for blob in blobs {
+                    try run("INSERT OR IGNORE INTO blob_relay_gc (blob_id) VALUES (?)", [.text(blob.description)])
+                    try run("DELETE FROM blob_uploads WHERE blob_id = ?", [.text(blob.description)])
+                }
+            }
+        }
+    }
+
+    /// The visible item that points at `blob`, if any.
+    public func item(forBlob blob: BlobID) throws -> ItemState? {
+        try locked {
+            try states("SELECT state FROM items WHERE blob_id = ? AND visible = 1", [.text(blob.description)]).first
         }
     }
 
@@ -308,6 +409,7 @@ public final class ClipDatabase: @unchecked Sendable {
             { try self.exec(Self.schemaV1) },
             { try self.exec(Self.schemaV2); try self.reindexAllItems() },
             { try self.exec(Self.schemaV3) },
+            { try self.exec(Self.schemaV4) },
         ]
     }
 
@@ -399,6 +501,17 @@ public final class ClipDatabase: @unchecked Sendable {
         CREATE INDEX ops_outbound ON ops(outbound_pending) WHERE outbound_pending = 1;
         """
 
+    /// v4 (blobs, F11/F12): items.blob_id mirrors `content.blob.id`, so garbage collection can ask which blobs
+    /// visible items still use. No backfill: no item had a blob before v4.
+    /// blob_uploads: payloads this device still has to upload (queued with the create op, in one transaction).
+    /// blob_relay_gc: dead blobs this device already deleted from the relay.
+    private static let schemaV4 = """
+        ALTER TABLE items ADD COLUMN blob_id TEXT;
+        CREATE INDEX items_blob ON items(blob_id) WHERE blob_id IS NOT NULL;
+        CREATE TABLE blob_uploads (blob_id TEXT PRIMARY KEY, item_id TEXT NOT NULL);
+        CREATE TABLE blob_relay_gc (blob_id TEXT PRIMARY KEY);
+        """
+
     private func migrate() throws {
         var version = 0
         try query("PRAGMA user_version") { version = Int(sqlite3_column_int64($0, 0)) }
@@ -461,12 +574,13 @@ public final class ClipDatabase: @unchecked Sendable {
         var id: Int64 = 0
         try query(
             """
-            INSERT INTO items (item_id, state, visible, pinned, created_wall, created_counter, created_device, preview)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO items (item_id, state, visible, pinned, created_wall, created_counter, created_device, preview,
+                               blob_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(item_id) DO UPDATE SET
                 state = excluded.state, visible = excluded.visible, pinned = excluded.pinned,
                 created_wall = excluded.created_wall, created_counter = excluded.created_counter,
-                created_device = excluded.created_device, preview = excluded.preview
+                created_device = excluded.created_device, preview = excluded.preview, blob_id = excluded.blob_id
             RETURNING id
             """,
             [
@@ -476,6 +590,7 @@ public final class ClipDatabase: @unchecked Sendable {
                 created.map { SQLValue.int(Int64($0.counter)) } ?? SQLValue.null,
                 created.map { SQLValue.text($0.device.description) } ?? SQLValue.null,
                 state.content.map { SQLValue.text(String($0.text.prefix(200))) } ?? SQLValue.null,
+                state.content?.blob.map { SQLValue.text($0.id.description) } ?? SQLValue.null,
             ]
         ) { id = sqlite3_column_int64($0, 0) }
 

@@ -1,3 +1,4 @@
+import ClipCore
 import Crypto
 import Foundation
 
@@ -47,6 +48,12 @@ public struct VaultKey: Sendable {
     /// Encrypts ops: HKDF-SHA256(vault, salt "clip.v1", info "clip.data.v1", 32 bytes).
     var dataKey: SymmetricKey {
         derive(info: "clip.data.v1")
+    }
+
+    /// Encrypts one blob's chunks: HKDF-SHA256(vault, salt "clip.v1", info "clip.blob.v1|<blobID>", 32 bytes).
+    /// A key per blob keeps each key's nonce count tiny and means a chunk can't open under another blob's key.
+    func blobKey(for blob: BlobID) -> SymmetricKey {
+        derive(info: "clip.blob.v1|\(blob.rawValue.uuidString)")
     }
 
     private func derive(info: String) -> SymmetricKey {

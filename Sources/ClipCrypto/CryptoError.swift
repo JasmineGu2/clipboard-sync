@@ -10,4 +10,6 @@ public enum CryptoError: Error, Equatable, Sendable {
     case invalidPairingCode
     /// An op could not be encoded, or decrypted bytes could not be decoded as an op.
     case encodingFailed
+    /// A blob chunk index out of range, or a chunk whose plaintext isn't the length its position requires.
+    case invalidChunk
 }

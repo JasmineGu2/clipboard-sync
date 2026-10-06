@@ -94,6 +94,38 @@ public struct RotateTokenRequest: Codable, Sendable, Equatable {
     public init(newTokenSHA256: String) { self.newTokenSHA256 = newTokenSHA256 }
 }
 
+// MARK: - Blobs (F11, F12)
+//
+// Image and file payloads travel outside the op log, as encrypted chunks addressed by blob ID (a UUID string).
+// The relay stores each chunk's bytes as sent: nonce || ciphertext || tag (see ClipCrypto.BlobCipher). It never
+// learns which item a blob belongs to. Every blob route needs the bearer token.
+//
+// PUT    /v1/blobs/<blobID>/chunks/<index>?count=<n>   body: the sealed chunk, raw bytes
+//          (application/octet-stream), at most `WireLimits.maxBlobChunkBodyBytes`. 204 when stored, and also
+//          when that chunk was already stored (the first copy is kept, so retries are safe). `count` is the blob's
+//          chunk count, fixed by its first chunk: a different count is 409, an index >= count is 400.
+// GET    /v1/blobs/<blobID>                            200 `BlobStatus` (which chunks the relay holds), 404 when
+//          it holds none. Uploads resume by sending only the missing chunks.
+// GET    /v1/blobs/<blobID>/chunks/<index>             200 with the chunk's bytes, 404 when not (yet) uploaded.
+// DELETE /v1/blobs/<blobID>                            204, also when nothing was stored (garbage collection).
+
+/// GET /v1/blobs/<blobID>
+public struct BlobStatus: Codable, Sendable, Equatable {
+    public var blobID: String
+    /// The chunk count given with the blob's first chunk.
+    public var chunkCount: Int
+    /// Indexes the relay holds, ascending.
+    public var received: [Int]
+
+    public init(blobID: String, chunkCount: Int, received: [Int]) {
+        self.blobID = blobID
+        self.chunkCount = chunkCount
+        self.received = received
+    }
+
+    public var isComplete: Bool { received.count == chunkCount }
+}
+
 public enum WireHeaders {
     /// `Authorization: Bearer <token>`. Token = HKDF(vaultKey, "clip.auth.v1"), hex.
     /// The server stores only SHA-256(token). It's either pinned by the operator (`--token-sha256`) or
@@ -117,6 +149,16 @@ public enum WireLimits {
     /// opID, itemID and deviceID: 1...128 UTF-8 bytes, no NUL or other control characters.
     public static let maxIDBytes = 128
     public static let maxWaitSeconds = 30
+
+    /// Plaintext bytes per blob chunk, 1 MiB (ClipCore `BlobRef.defaultChunkSize`).
+    public static let blobChunkPlaintextBytes = 1 << 20
+    /// A sealed chunk is its plaintext plus a 12-byte nonce and a 16-byte tag.
+    public static let blobChunkOverheadBytes = 28
+    /// The largest chunk body the relay accepts.
+    public static let maxBlobChunkBodyBytes = blobChunkPlaintextBytes + blobChunkOverheadBytes
+    /// Most chunks in one blob: 512 chunks of 1 MiB, so the largest image or file is 512 MiB.
+    public static let maxBlobChunks = 512
+    public static let maxBlobBytes = Int64(maxBlobChunks) * Int64(blobChunkPlaintextBytes)
 }
 
 extension WireLimits {
@@ -126,6 +168,22 @@ extension WireLimits {
         let count = id.utf8.count
         guard count > 0, count <= maxIDBytes else { return false }
         return !id.unicodeScalars.contains { $0.value < 0x20 || (0x7f...0x9f).contains($0.value) }
+    }
+
+    /// Blob IDs are UUID strings: 36 characters, hex digits (either case) and dashes at 8, 13, 18 and 23.
+    /// Strict because they go into URL paths.
+    public static func isValidBlobID(_ id: String) -> Bool {
+        let bytes = Array(id.utf8)
+        guard bytes.count == 36 else { return false }
+        for (index, byte) in bytes.enumerated() {
+            if [8, 13, 18, 23].contains(index) {
+                guard byte == 0x2d else { return false }
+            } else {
+                guard (0x30...0x39).contains(byte) || (0x61...0x66).contains(byte) || (0x41...0x46).contains(byte)
+                else { return false }
+            }
+        }
+        return true
     }
 
     /// Pairing IDs are exactly 32 lowercase hex characters (design §3).

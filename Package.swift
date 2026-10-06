@@ -38,7 +38,11 @@ let package = Package(
                 .define("SQLITE_OMIT_LOAD_EXTENSION"),
             ]
         ),
-        .target(name: "ClipStore", dependencies: ["ClipCore", "CSQLite"]),
+        // Crypto only for SHA-256 of blob files in BlobCache.
+        .target(name: "ClipStore", dependencies: [
+            "ClipCore", "CSQLite",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ]),
         .target(name: "ClipSync", dependencies: ["ClipCore", "ClipCrypto", "ClipStore", "ClipWire"]),
         .executableTarget(name: "clipctl", dependencies: [
             "ClipSync",

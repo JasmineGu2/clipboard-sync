@@ -311,7 +311,7 @@ final class ClipDatabaseTests: XCTestCase {
         let db = try ClipDatabase(url: try tempDirectory().appendingPathComponent("durable.sqlite"))
         defer { db.close() }
         XCTAssertEqual(try db.pragma("synchronous"), 2, "synchronous = FULL: a commit is fsynced before insert returns")
-        XCTAssertEqual(try db.pragma("user_version"), 3)
+        XCTAssertEqual(try db.pragma("user_version"), 4)
     }
 
     func testV1DatabaseMigratesInPlace() throws {
@@ -374,7 +374,7 @@ final class ClipDatabaseTests: XCTestCase {
         raw.close()
 
         let db = try ClipDatabase(url: url)
-        XCTAssertEqual(try db.pragma("user_version"), 3)
+        XCTAssertEqual(try db.pragma("user_version"), 4)
         XCTAssertEqual(try db.count(), 2)
         XCTAssertEqual(try db.items().map(\.id), [tagged.itemID, fox.itemID])
         for (id, state) in states { XCTAssertEqual(try db.item(id), state) }
@@ -445,7 +445,7 @@ final class ClipDatabaseTests: XCTestCase {
         let late = op(item, .setTitle("late"), at: ts(1))
         do {
             let db = try ClipDatabase(url: url)
-            XCTAssertEqual(try db.pragma("user_version"), 3)
+            XCTAssertEqual(try db.pragma("user_version"), 4)
             XCTAssertEqual(try db.pendingOutbound(limit: 10), pendingInOrder)
             XCTAssertEqual(try db.syncCursor(), 42)
             try db.refoldAll()
@@ -472,7 +472,7 @@ final class ClipDatabaseTests: XCTestCase {
 
         let reopened = try ClipDatabase(url: url)
         defer { reopened.close() }
-        XCTAssertEqual(try reopened.pragma("user_version"), 3)
+        XCTAssertEqual(try reopened.pragma("user_version"), 4)
         XCTAssertEqual(try reopened.pendingOutbound(limit: 10), pendingInOrder + [late], "order survives VACUUM")
         try reopened.markAllOutbound()
         XCTAssertEqual(try reopened.pendingOutbound(limit: 10), ops + [late])

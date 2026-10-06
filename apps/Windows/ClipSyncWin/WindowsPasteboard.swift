@@ -1,0 +1,21 @@
+#if os(Windows)
+import ClipAppCore
+import ClipWindows
+
+/// The Win32 clipboard behind ClipAppCore's `PasteboardWriter` (copies from history, receiving the newest copy
+/// from another device). `WindowsClipboard.write` adds ExcludeClipboardContentFromMonitorProcessing, so the
+/// capture listener skips our own writes the same way it skips a password manager's.
+@MainActor
+final class WindowsPasteboard: PasteboardWriter {
+    /// Called when the clipboard couldn't be written (another app held it through every retry).
+    var onFailure: (@MainActor () -> Void)?
+
+    func write(text: String) {
+        do {
+            try WindowsClipboard.write(text)
+        } catch {
+            onFailure?()
+        }
+    }
+}
+#endif

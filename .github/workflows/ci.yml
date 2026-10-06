@@ -64,6 +64,8 @@ jobs:
           restore-keys: windows-build-
       # swift-argument-parser is pinned below 1.8 in Package.swift: 1.8 ships symlinks Windows can't check out.
       - run: swift build
+      # The M3 tray app (apps/Windows). `swift build` already builds it; this step names it in the log.
+      - run: swift build --product ClipSyncWin
       - run: swift test
 
   macos:

@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "ClipAppCore", targets: ["ClipAppCore"]),
         .executable(name: "clipctl", targets: ["clipctl"]),
         .executable(name: "ConvergenceHarness", targets: ["ConvergenceHarness"]),
+        .executable(name: "ClipSyncWin", targets: ["ClipSyncWin"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
@@ -46,8 +47,12 @@ let package = Package(
         // Test helper: writes to a ClipDatabase until killed. CrashInjectionTests launches it (PRD N12).
         .executableTarget(name: "ClipStoreCrashWriter", dependencies: ["ClipStore", "ClipCore"]),
         .target(name: "ClipSync", dependencies: ["ClipCore", "ClipCrypto", "ClipStore", "ClipWire"]),
+        // Win32 pieces shared by clipctl and the tray app: the clipboard (capture with concealed-content skip, write)
+        // and the DPAPI key store. All but WindowsError.swift are `#if os(Windows)`, so elsewhere it is nearly empty.
+        .target(name: "ClipWindows", dependencies: ["ClipCrypto"]),
         .executableTarget(name: "clipctl", dependencies: [
             "ClipSync", "ClipAppCore",
+            "ClipWindows",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ]),
         // Randomized convergence simulation; the executable is a thin CLI over it.
@@ -60,6 +65,23 @@ let package = Package(
         .testTarget(name: "ClipHarnessTests", dependencies: ["ClipHarness", "ClipCore"]),
         // Shared app model for the Apple apps (apps/Apple). No UI frameworks, so it builds and tests on Windows.
         .target(name: "ClipAppCore", dependencies: ["ClipSync", "ClipStore", "ClipCrypto", "ClipCore"]),
+        // M3 Windows tray app (apps/Windows). Win32 through the WinSDK module; on other OSes main.swift only
+        // prints that it's Windows only, so `swift build` stays green everywhere.
+        // /SUBSYSTEM:WINDOWS: no console window. /ENTRY:mainCRTStartup: Swift emits `main`, not `WinMain`.
+        .executableTarget(
+            name: "ClipSyncWin",
+            dependencies: ["ClipAppCore", "ClipWindows", "ClipSync", "ClipStore", "ClipCrypto", "ClipCore"],
+            path: "apps/Windows/ClipSyncWin",
+            linkerSettings: [
+                .linkedLibrary("User32", .when(platforms: [.windows])),
+                .linkedLibrary("Shell32", .when(platforms: [.windows])),
+                .linkedLibrary("Gdi32", .when(platforms: [.windows])),
+                .linkedLibrary("Advapi32", .when(platforms: [.windows])),
+                .unsafeFlags(
+                    ["-Xlinker", "/SUBSYSTEM:WINDOWS", "-Xlinker", "/ENTRY:mainCRTStartup"],
+                    .when(platforms: [.windows])),
+            ]
+        ),
         .testTarget(name: "ClipAppCoreTests", dependencies: ["ClipAppCore", "ClipSync", "ClipStore", "ClipCrypto", "ClipCore", "ClipWire"]),
     ]
 )

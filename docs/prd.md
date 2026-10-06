@@ -34,7 +34,7 @@ P0 items ship in v1. P1 items ship if time allows before the outreach. P2 items 
 | F14 | Unpinned items expire after a set number of days | P1 |
 | F15 | Pause capture on a device | P1 |
 | F16 | Direct device-to-device sync over the tailnet when the VM is unreachable | P2 |
-| F17 | Apple Watch view of pinned items | P2 |
+| F17 | ~~Apple Watch view of pinned items~~ Dropped 2026-10-06 (see docs/decisions.md) | P2 |
 
 ## Non-functional requirements
 

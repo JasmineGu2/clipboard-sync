@@ -267,3 +267,8 @@
 - **Why:** Jazz doesn't want Claude listed as a contributor on GitHub.
 - **Trade-offs:** Every commit ID on master changed. The file contents didn't: the final tree is identical. Any other checkout (the Windows PC and its worktrees) must reset to the new master. The old history is in `../swift-history-backup-2026-10-06.bundle`.
 - **Alternatives:** Only stop adding the line from now on (old commits would still list Claude).
+
+## 2026-10-06: Drop the Apple Watch app (F17)
+- **Decision:** The watch app, the iPhone's WatchConnectivity link and the pinned-items mirror in ClipAppCore are removed. The sources are kept in `_to_delete/watch-2026-10-06/`.
+- **Why:** Jazz asked for it to go. A watch can't paste anywhere, so it adds little to daily use. It also needs a 5 GB watchOS download to build, and it would put pinned items in plaintext on a second device.
+- **Alternatives:** Keep it opt-in and unbuilt (more code to maintain, and a threat-model entry, for a feature nobody runs).

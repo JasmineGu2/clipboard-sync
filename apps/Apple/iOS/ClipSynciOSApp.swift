@@ -5,17 +5,8 @@ import UniformTypeIdentifiers
 
 @main
 struct ClipSynciOSApp: App {
-    @State private var app: ClipApp
+    @State private var app = ClipSynciOSApp.makeApp()
     @Environment(\.scenePhase) private var scenePhase
-
-    init() {
-        // F17: the Apple Watch gets the pinned items as they change, and can ask for one on this clipboard.
-        let watch = WatchLink.shared
-        watch.activate()
-        let app = Self.makeApp(pinnedMirror: watch)
-        watch.onCopyRequest = { id in app.history?.copyPinned(id: id) ?? false }
-        _app = State(initialValue: app)
-    }
 
     var body: some Scene {
         WindowGroup {
@@ -36,12 +27,12 @@ struct ClipSynciOSApp: App {
 
 extension ClipSynciOSApp {
     @MainActor
-    static func makeApp(pinnedMirror: (any PinnedItemsMirror)?) -> ClipApp {
+    static func makeApp() -> ClipApp {
         // Only the onboarding prefill: since iOS 16, UIDevice.name is the generic model name without a
         // special entitlement, so onboarding asks for a name and saves it in the config.
         let deviceName = UIDevice.current.model
         #if DEBUG
-        // Measurement mode: no Watch link and no direct sync (its vault key is a fixed throwaway).
+        // Measurement mode: no direct sync (its vault key is a fixed throwaway).
         if let measurement = MeasurementMode.prepare(deviceName: deviceName) {
             let app = ClipApp.bootstrap(
                 home: measurement.home, keyStore: measurement.keyStore, deviceName: deviceName,
@@ -52,7 +43,7 @@ extension ClipSynciOSApp {
         #endif
         return ClipApp.bootstrap(
             home: AppPaths.home, keyStore: KeychainKeyStore.appDefault, deviceName: deviceName,
-            pasteboard: IOSPasteboard(), pinnedMirror: pinnedMirror, peerSupport: PeerSockets.dialOnly)
+            pasteboard: IOSPasteboard(), peerSupport: PeerSockets.dialOnly)
     }
 }
 

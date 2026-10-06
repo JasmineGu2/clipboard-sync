@@ -58,8 +58,6 @@ It keeps whatever it already had. See Known gaps.
 - Uploads that never finish are purged: a blob with missing chunks and no new chunk for 7 days (`--blob-max-age-days`) is deleted, at startup and hourly.
 - Clients read a chunk response with a cap at the chunk's exact sealed size: a declared length over it is refused before the body is read, and an undeclared body is cut off as soon as it passes the cap.
 
-**The Apple Watch (F17).** The watch isn't a vault member. It never gets the vault key or the token and never talks to the relay. The iPhone sends it the plain text of pinned items only (at most 50, 2,000 characters each, 48 KB in all) over WatchConnectivity. The watch saves them with `completeFileProtectionUnlessOpen`, so the file can't be opened while the watch is locked. **Copy on iPhone** sends back only an item ID, and the iPhone copies that item from its own database, so the watch can't put text of its own on the phone's clipboard.
-
 **The network.** The relay speaks plain HTTP and relies on the tailnet: Tailscale's WireGuard tunnel encrypts traffic between devices. The relay binds only the address it's given (default `127.0.0.1`) and refuses to start on anything outside loopback (127.0.0.0/8, ::1) and Tailscale's ranges (100.64.0.0/10, fd7a:115c:a1e0::/48), host names included, unless started with `--allow-non-tailnet`, which logs a warning (N10). The deploy script runs it in Docker with host networking on the VM's Tailscale IP, and the VM's cloud firewall allows only SSH in.
 
 ## What leaks
@@ -103,7 +101,6 @@ A tailnet peer sees that the relay exists and can call `/healthz`. Without the t
 - **Direct sync needs clocks within 5 minutes.** A device whose clock is further off is refused (`clockSkew`).
 - **A paired device can point others at another tailnet address.** The listen address is chosen by the device that owns the record. Dialers only connect to Tailscale IPv4 addresses (never the LAN or their own loopback) and only send sealed frames, so the machine at that address learns that someone dialed it and nothing more.
 - **Ops received directly are echoed back.** A device pushes its whole log to a peer, including what it just pulled from that peer. The other side ignores what it has, so this costs bytes, not correctness. A malicious member could change its log ID on every answer to force full re-sends, at most 40 rounds per pass.
-- **Pinned items sit in plaintext on the watch (F17).** A lost watch holds the text of every pinned item it last got, protected only by its passcode and data protection. WatchConnectivity also keeps its own copy of the last list the phone sent, outside the app's file. Each transfer replaces the whole list in both places, so an unpinned item should go on the next one (not yet checked on a watch). Revoking a device doesn't touch the watch, since it was never in the vault.
 - **The envelope's device ID isn't authenticated.** The relay could relabel which device pushed an op. Clients don't read it: the source device shown in the history comes from inside the encrypted op.
 
 ## Crypto review findings

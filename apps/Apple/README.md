@@ -11,8 +11,6 @@ package, which is built and tested on Windows too):
 
 The iPhone app also adds a Shortcuts action, **Send Clipboard to ClipSync**.
 
-There's also an optional Apple Watch app, `ClipSyncWatch`, that shows your pinned items. It's off by default; see
-"Apple Watch (optional)".
 
 None of this has been compiled yet. It was written on Windows, so expect a first round of small fixes.
 See "Check these first" at the bottom.
@@ -142,30 +140,6 @@ To send from the iPhone:
 - Or make a Shortcut: **Get Clipboard**, then **Send Clipboard to ClipSync** with Text set to the clipboard.
   Put it on the Back Tap (Settings > Accessibility > Touch > Back Tap) for a two-tap send.
 
-## Apple Watch (optional)
-
-The watch app shows the iPhone's pinned items. Tap one to read the full text in large type, or tap
-**Copy on iPhone** to put it on the iPhone's clipboard. The watch never gets the vault key and never talks to
-the relay: the iPhone sends it the pinned items over WatchConnectivity (docs/decisions.md, F17).
-
-It's off by default, because an iPhone app with a watch app inside won't build at all on a Mac without the
-watchOS platform. To turn it on:
-
-1. Download the watchOS platform, about 5 GB: `xcodebuild -downloadPlatform watchOS` (or Xcode > Settings >
-   Components).
-2. Generate the project with the watch target:
-   ```sh
-   CLIPSYNC_WATCH=YES xcodegen
-   ```
-   A plain `xcodegen` leaves it out again, so use the variable every time (or export it in your shell profile).
-3. Run the `ClipSynciOS` scheme on the iPhone. The watch app installs with it on a paired watch. Pin
-   something on the iPhone and open the app there so it sends the list.
-
-The target lives in `watch.yml`, and the sources in `Watch/`. In a DEBUG build, the launch argument
-`-ClipSyncWatchSeed` shows sample items without a phone, for screenshots.
-
-Not run yet on a watch or a simulator. It has only been type-checked for watchOS.
-
 ## Where things live
 
 | Folder | Contents |
@@ -173,7 +147,6 @@ Not run yet on a watch or a simulator. It has only been type-checked for watchOS
 | `Shared/` | Keychain key store, file paths, the shared SwiftUI views, the App Intent. In both apps. |
 | `macOS/` | Menu bar app, pasteboard reader and writer, clipboard watcher. |
 | `iOS/` | iPhone app and history screen. |
-| `Watch/` | Apple Watch app (opt-in, see above): pinned list, detail view, local store, WatchConnectivity link. |
 | `ShareExtension/` | Share extension. It only gets `KeychainKeyStore.swift` and `AppPaths.swift` from `Shared/`. |
 
 All copy comes from `Strings` in `Sources/ClipAppCore/Strings.swift`, which mirrors `content/app.md`.

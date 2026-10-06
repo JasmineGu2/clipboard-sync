@@ -70,7 +70,7 @@ From the requirements in [docs/prd.md](docs/prd.md). "Written, not built" means 
 | F14 | Unpinned items expire | Partly | Synced deletes, harness-checked. `clipctl expire` and `watch --expire-days`. Apple setting not built. |
 | F15 | Pause capture | Partly | clipctl (a `paused` file), smoke-tested. Mac menu written, not built. |
 | F16 | Direct device-to-device sync | Not yet | P2 |
-| F17 | Apple Watch | Not yet | P2 |
+| F17 | Apple Watch | Dropped | P2, cut on 2026-10-06 |
 | N1 | Sync latency | Partly | Measured on one PC over localhost only. See below. |
 | N2 | 10k search under 50 ms | Partly | Measured on Windows and Mac. Not on iPhone yet. |
 | N3 | iPhone launch under 500 ms | Not yet | Not measured |

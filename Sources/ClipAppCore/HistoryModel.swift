@@ -41,30 +41,9 @@ public struct ClipItem: Identifiable, Hashable, Sendable {
         contentType = content.blob?.contentType
     }
 
-    /// For tests and previews.
-    init(
-        id: ItemID = ItemID(), text: String, title: String? = nil, tags: [String] = [], isPinned: Bool = false,
-        sourceDeviceName: String = "Mac", createdAt: Date = Date()
-    ) {
-        self.id = id
-        self.text = text
-        self.title = title
-        self.tags = tags
-        self.isPinned = isPinned
-        self.sourceDeviceName = sourceDeviceName
-        self.createdAt = createdAt
-        kind = .text
-        thumbnail = nil
-        blobID = nil
-        fileSize = nil
-        contentType = nil
-    }
 
     /// The title when set, else the first non-empty line of the text, cut to 200 characters (F4).
-    public var headline: String { Self.headline(title: title, text: text) }
-
-    /// The headline rule, shared with the watch (`WatchPinnedItem`).
-    static func headline(title: String?, text: String) -> String {
+    public var headline: String {
         if let title, !title.isEmpty { return title }
         let line = text.split(whereSeparator: \.isNewline)
             .first { !$0.allSatisfy(\.isWhitespace) }
@@ -137,12 +116,6 @@ public final class HistoryModel {
 
     /// When true, the newest copy from another device goes on this device's clipboard as it arrives.
     public var receivesLatest = true
-
-    /// F17: gets the pinned items (capped, plain text) whenever they change. Set it before `start()`.
-    public var pinnedMirror: (any PinnedItemsMirror)?
-    /// The pinned items as last sent to `pinnedMirror`, full text, for `copyPinned(id:)`.
-    private var mirroredPinned: [ClipItem] = []
-    private var lastMirrored: WatchPinnedPayload?
 
     /// Number of fetches that ran a full-text search. Lets tests check the debounce.
     public private(set) var searchQueryCount = 0
@@ -246,9 +219,8 @@ public final class HistoryModel {
     private func load() async {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !query.isEmpty { searchQueryCount += 1 }
-        switch await Self.fetch(db: db, query: query, limit: limit, allPinned: pinnedMirror != nil) {
+        switch await Self.fetch(db: db, query: query, limit: limit) {
         case .success(let result):
-            if let allPinned = result.allPinned { mirror(allPinned.compactMap(ClipItem.init)) }
             let items = result.page.compactMap(ClipItem.init)
             if let pinnedStates = result.pinned {
                 // Browsing: the pinned section comes from its own query, so an old pinned item still shows.
@@ -302,38 +274,18 @@ public final class HistoryModel {
     }
 
     /// Runs the query off the main actor. The database serializes its own calls.
-    /// `pinned` is nil for searches, which keep splitting their own results. `allPinned` is every pinned item
-    /// whatever the search, when the watch mirror wants it.
+    /// `pinned` is nil for searches, which keep splitting their own results.
     nonisolated private static func fetch(
-        db: ClipDatabase, query: String, limit: Int, allPinned wantsAllPinned: Bool
-    ) async -> Result<(page: [ItemState], pinned: [ItemState]?, allPinned: [ItemState]?), any Error> {
+        db: ClipDatabase, query: String, limit: Int
+    ) async -> Result<(page: [ItemState], pinned: [ItemState]?), any Error> {
         Result {
             if query.isEmpty {
-                let pinned = try db.pinnedItems()
-                return (try db.items(limit: limit), pinned, wantsAllPinned ? pinned : nil)
+                return (try db.items(limit: limit), try db.pinnedItems())
             }
-            return (try db.search(query, limit: limit), nil, wantsAllPinned ? try db.pinnedItems() : nil)
+            return (try db.search(query, limit: limit), nil)
         }
     }
 
-    /// Sends the pinned items to the watch when the payload changed since the last send.
-    private func mirror(_ pinned: [ClipItem]) {
-        guard let pinnedMirror else { return }
-        mirroredPinned = pinned
-        let payload = WatchPinnedPayload.build(from: pinned)
-        guard payload != lastMirrored else { return }
-        lastMirrored = payload
-        pinnedMirror.publish(payload)
-    }
-
-    /// F17: the watch asked for a pinned item on this device's clipboard. Copies the full text (the watch
-    /// may hold a shortened copy). Only pinned items can be copied this way. Returns false for an unknown ID.
-    @discardableResult
-    public func copyPinned(id: String) -> Bool {
-        guard let item = mirroredPinned.first(where: { $0.id.description == id }) else { return false }
-        copy(item)
-        return true
-    }
 
     private func updateStatus() async {
         let status = await engine.status

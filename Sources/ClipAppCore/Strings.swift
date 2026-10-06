@@ -136,14 +136,6 @@ public enum Strings {
     public static let intentTextPrompt = "What text do you want to send?"
     public static let intentShortTitle = "Send Clipboard"
 
-    // MARK: Apple Watch (F17)
-    public static let watchEmpty = "Nothing pinned yet. Pin items in ClipSync on your iPhone and they show up here."
-    public static let watchCopyOnPhone = "Copy on iPhone"
-    public static let watchCopiedOnPhone = "On your iPhone's clipboard"
-    public static let watchPhoneUnreachable = "Can't reach your iPhone. Open ClipSync on it and try again."
-    public static let watchTruncated = "Shortened for the watch. The full text is on your iPhone."
-    public static let watchOmitted = "{count} more pinned items are only on your iPhone."
-
     // MARK: Errors (see AppMessage)
     public static let errorEmptyText = "There's no text to send."
     public static let errorTooLarge = "That clip is too large to sync."
@@ -227,12 +219,6 @@ public enum Strings {
         "errorCannotRemoveThisDevice": errorCannotRemoveThisDevice,
         "errorUnknownDevice": errorUnknownDevice,
         "errorNotRegistered": errorNotRegistered,
-        "watchEmpty": watchEmpty,
-        "watchCopyOnPhone": watchCopyOnPhone,
-        "watchCopiedOnPhone": watchCopiedOnPhone,
-        "watchPhoneUnreachable": watchPhoneUnreachable,
-        "watchTruncated": watchTruncated,
-        "watchOmitted": watchOmitted,
         "deviceFingerprint": deviceFingerprint,
         "deviceJoined": deviceJoined,
         "devicesCheckHint": devicesCheckHint,

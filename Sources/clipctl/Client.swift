@@ -108,6 +108,12 @@ func describe(_ error: any Error) -> String {
         case .pairingNotFound: return "no pairing for that code: it's wrong, already used, or expired"
         case .pairingDecryptionFailed: return "the pairing blob didn't open with that code"
         case .expiryStalled: return "expiry stopped: the local database didn't record the deletes"
+        case .deviceRevoked:
+            return "this device was removed from the vault: the relay refused its key and no other device left it a new one"
+        case .cannotRevokeThisDevice: return "a device can't remove itself; run `clipctl revoke` on another device"
+        case .unknownDevice: return "no such device in the vault; see `clipctl devices`"
+        case .notRegistered: return "this device isn't in the device list yet; run `clipctl sync` once, then try again"
+        case .membershipUnavailable: return "this client has no device key"
         }
     }
     return String(describing: error)
@@ -134,11 +140,17 @@ struct Client: Sendable {
         guard let key = try store.loadVaultKey() else {
             throw CLIError("No vault key found for \(home.url.path). Run `clipctl init` or `clipctl pair join` again.")
         }
-        let transport = HTTPTransport(baseURL: try relayURL(config.serverURL), token: key.authToken)
+        let url = try relayURL(config.serverURL)
+        let transport = HTTPTransport(baseURL: url, token: key.authToken)
         let db = try ClipDatabase(url: home.databaseURL)
+        // F13: the device key lets other devices hand this one a new vault key when they revoke a lost device.
+        let membership = SyncEngine.Membership(
+            deviceKey: try store.loadOrCreateDeviceKey(),
+            makeTransport: { HTTPTransport(baseURL: url, token: $0) },
+            saveVaultKey: { try store.saveVaultKey($0) })
         let engine = try SyncEngine(
             db: db, vaultKey: key, transport: transport,
-            device: DeviceID(config.deviceID), deviceName: config.deviceName)
+            device: DeviceID(config.deviceID), deviceName: config.deviceName, membership: membership)
         return Client(home: home, config: config, key: key, db: db, transport: transport, engine: engine)
     }
 

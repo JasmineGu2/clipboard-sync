@@ -174,4 +174,33 @@ final class ConvergenceHarnessTests: XCTestCase {
         XCTAssertTrue(relay.page(after: 5, limit: 2).entries.isEmpty)
         XCTAssertEqual(relay.page(after: 0, limit: 0).entries.count, 1, "limit is clamped to at least 1")
     }
+
+    // MARK: - Revoke (F13)
+
+    /// A revoke mid-run (relay wiped, one device gone, the rest re-push everything) converges under every fault,
+    /// with nothing lost that a remaining device created or held.
+    func testRevokeWithRepushConverges() {
+        var total = HarnessStats()
+        for seed in UInt64(1)...50 {
+            var config = HarnessConfig(seed: seed)
+            config.revoke = .repushAll
+            let result = runSimulation(config)
+            total = total + result.stats
+            XCTAssertTrue(result.converged, result.failure ?? "seed \(seed)")
+        }
+        XCTAssertEqual(total.revokes, 50)
+        XCTAssertGreaterThan(total.revokeRecoveries, 50, "remaining devices other than the revoker should recover too")
+        XCTAssertGreaterThan(total.restarts, 0)
+    }
+
+    /// A revoke that only resets cursors loses ops that lived only on the wiped relay. The harness must notice.
+    func testHarnessCatchesALossyRevoke() {
+        var caught = 0
+        for seed in UInt64(1)...20 {
+            var config = HarnessConfig(seed: seed)
+            config.revoke = .resetCursorOnly
+            if !runSimulation(config).converged { caught += 1 }
+        }
+        XCTAssertGreaterThanOrEqual(caught, 15, "only \(caught)/20 seeds caught the lossy revoke")
+    }
 }

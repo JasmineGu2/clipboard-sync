@@ -1,3 +1,4 @@
+import ClipWire
 import Crypto
 import Foundation
 import Hummingbird
@@ -26,7 +27,9 @@ public actor TokenAuthenticator {
     public var trustsOnFirstUse: Bool { pinnedHash == nil }
 
     /// Throws 401 unless the request carries the token whose hash is in force.
-    public func authorize(_ request: Request) async throws {
+    /// Returns the hash of the token that passed, so a write can re-check it inside its own transaction.
+    @discardableResult
+    public func authorize(_ request: Request) async throws -> String {
         guard let header = request.headers[.authorization],
               let token = Self.bearerToken(from: header)
         else {
@@ -37,6 +40,7 @@ public actor TokenAuthenticator {
         guard let expected, Self.constantTimeEquals(expected, presented) else {
             throw HTTPError(.unauthorized)
         }
+        return presented
     }
 
     /// Replaces the hash in force. The caller must already have passed `authorize` with the current token.
@@ -44,6 +48,27 @@ public actor TokenAuthenticator {
         let normalized = newHash.lowercased()
         try await storage.setAuthTokenHash(normalized)
         cachedHash = normalized
+    }
+
+    /// Revocation (POST /v1/auth/revoke): the storage transaction replaces the hash, and the cache follows.
+    /// Here rather than in the router so this actor stays the only writer of the hash.
+    public func revoke(
+        newHash: String, devices: [DeviceRecord], handoffs: [Handoff], maxHandoffsPerDevice: Int,
+        expectedDeviceIDs: [String]? = nil
+    ) async throws -> String {
+        let normalized = newHash.lowercased()
+        // Switch the cache before the await: while the transaction runs, this actor can serve other requests,
+        // and the old token must not pass any more. Restored if the transaction fails.
+        let previous = cachedHash
+        cachedHash = normalized
+        do {
+            return try await storage.revoke(
+                newTokenHash: normalized, devices: devices, handoffs: handoffs,
+                maxHandoffsPerDevice: maxHandoffsPerDevice, expectedDeviceIDs: expectedDeviceIDs)
+        } catch {
+            cachedHash = previous
+            throw error
+        }
     }
 
     /// The hash in force, loading it on first use. Without a pin and with nothing stored, adopts `presented`.

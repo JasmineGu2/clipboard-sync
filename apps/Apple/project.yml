@@ -41,6 +41,9 @@ targets:
       # Shared/KeychainKeyStore.swift imports ClipCrypto directly, so link it explicitly.
       - package: ClipSync
         product: ClipCrypto
+      # Shared/DevicesView.swift imports ClipSync directly (VaultDevice), so link it explicitly.
+      - package: ClipSync
+        product: ClipSync
     settings:
       base:
         # The app is called ClipSync, but its Swift module can't be: the package has a `ClipSync` module.
@@ -65,6 +68,9 @@ targets:
       # Shared/KeychainKeyStore.swift imports ClipCrypto directly, so link it explicitly.
       - package: ClipSync
         product: ClipCrypto
+      # Shared/DevicesView.swift imports ClipSync directly (VaultDevice), so link it explicitly.
+      - package: ClipSync
+        product: ClipSync
       - target: ClipShare
     settings:
       base:

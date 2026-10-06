@@ -60,11 +60,15 @@ All bodies are JSON and `Data` fields are base64. The types live in `Sources/Cli
 | `GET /v1/ops?after=&limit=&wait=` | yes | returns `PullResponse { envelopes, latestSeq, hasMore, epoch }` with `seq > after`, ascending. `limit` defaults to 500 and is capped at 500. With nothing new and `wait > 0` (max 30), it holds the request until a push lands or the wait runs out. If `after` is past the newest seq, returns 409 with `CursorAheadResponse { latestSeq }` (see below). |
 | `PUT /v1/pairing/{id}` | yes | body `PairingBlob`, returns 204. `id` is 32 lowercase hex chars. Body capped at 100 KiB before decoding, blob at 64 KiB (413). Expires after 10 minutes. Never overwrites: an ID that's already live gets 409. At most 100 live blobs (expired ones are purged first); beyond that, 429. |
 | `GET /v1/pairing/{id}` | no | returns the `PairingBlob` once, then deletes it. 404 if missing or expired. No token, because the new device doesn't have one yet; the unguessable ID is the capability. |
-| `POST /v1/auth/rotate` | yes | body `RotateTokenRequest { newTokenSHA256 }` (64 hex chars), returns 204. Replaces the stored token hash; the old token gets 401 from then on. |
+| `POST /v1/auth/rotate` | yes | body `RotateTokenRequest { newTokenSHA256 }` (64 hex chars), returns 204. Replaces the stored token hash; the old token gets 401 from then on. Nothing else changes. |
+| `PUT /v1/devices/{id}` | yes | body `DeviceRecord { deviceID, publicKey, sealed }`, returns 204. The public key is 32 bytes; `sealed` (the device's name, encrypted) is 1 to 2048 bytes. A device ID keeps its first public key: a different one gets 409. At most 64 devices (429). |
+| `GET /v1/devices` | yes | returns `DeviceListResponse { devices }`, ordered by device ID. |
+| `POST /v1/auth/revoke` | yes | body `RevokeRequest { newTokenSHA256, devices, handoffs }`, returns `RevokeResponse { epoch }`. One transaction: new token hash, empty log, no pairing blobs, a new epoch, the device table replaced by `devices`, handoffs dropped for devices no longer listed, `handoffs` appended (at most 8 kept per device). Long-polls wake and re-check their token, so a revoked device's open pull ends in 401. Body capped at 512 KiB. |
+| `GET /v1/rekey/{id}` | no | returns `HandoffsResponse { handoffs }` for that device, oldest first (empty if none). No token, because the device asking was just told its token no longer works. Each blob is sealed to that device's own key. |
 
 ### Auth
 
-Every route except `GET /healthz` and `GET /v1/pairing/{id}` needs `Authorization: Bearer <token>`. The relay
+Every route except `GET /healthz`, `GET /v1/pairing/{id}` and `GET /v1/rekey/{id}` needs `Authorization: Bearer <token>`. The relay
 stores only SHA-256 of the token, and keeps it in memory after the first lookup, so a request doesn't touch the
 database to authenticate. Where that hash comes from:
 
@@ -76,10 +80,12 @@ database to authenticate. Where that hash comes from:
   undo a revocation. Changing the pin replaces the stored hash.
 - **Trust on first use (fallback).** With no pin, the first token the relay sees gets adopted, and every other
   token gets 401.
-- **Rotation.** `POST /v1/auth/rotate`, authenticated with the current token, replaces the hash. This is the
-  relay half of revoking a device (design §3): make a new vault key, have a remaining device rotate the
-  relay to the new key's token, then pair the other remaining devices with the new key. The revoked device's
-  token stops working at once.
+- **Revocation.** `POST /v1/auth/revoke`, authenticated with the current token, replaces the hash as part of
+  revoking a device (design §3, `clipctl revoke`, or Devices in the apps). The revoked device's token stops
+  working at once. Restarting with the same pin keeps the new hash. After a revoke the "Relay pin" in
+  `clipctl status` changes; update `CLIP_RELAY_TOKEN_SHA256` to it before the next time you change the pin.
+- **Rotation.** `POST /v1/auth/rotate` replaces only the hash. Clients don't use it any more; it stays for
+  manual use.
 
 To reset auth by hand (say, after losing every device), stop the relay and run
 `sqlite3 relay.sqlite3 "DELETE FROM meta WHERE key LIKE 'auth_token_%'"`.
@@ -87,7 +93,8 @@ To reset auth by hand (say, after losing every device), stop the relay and run
 ### Epoch
 
 When the relay creates its database, it makes a random epoch ID (a UUID string) and stores it in the `meta`
-table under `relay_epoch`. It never changes for the life of that database file, and it's logged at startup.
+table under `relay_epoch`. Only a revoke changes it (the revoke empties the log, so to devices it looks like a
+fresh relay). It's logged at startup.
 Every `PushResponse` and `PullResponse` carries it as `epoch`.
 
 A device stores the last epoch it saw. A different one means the relay lost its log: the database was deleted,

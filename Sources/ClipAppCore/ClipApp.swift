@@ -35,6 +35,8 @@ public final class ClipApp {
     public private(set) var receivesLatest = true
     /// F14, persisted in the config. nil keeps items forever.
     public private(set) var expiryDays: Int?
+    /// F13: the vault's devices, as of the last `loadDevices()`. This device comes first.
+    public private(set) var devices: [VaultDevice] = []
 
     /// The name this device shows on synced items. Starts as the platform default (the onboarding field's
     /// prefill) and becomes the saved name once set up.
@@ -50,7 +52,6 @@ public final class ClipApp {
     @ObservationIgnored private let autoSync: Bool
     @ObservationIgnored private let db: ClipDatabase?
     @ObservationIgnored private var config: AppConfig?
-    @ObservationIgnored private var vaultKey: VaultKey?
     @ObservationIgnored private var engine: SyncEngine?
     @ObservationIgnored private var runTask: Task<Void, Never>?
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
@@ -170,16 +171,52 @@ public final class ClipApp {
     /// On a ready device: parks the vault key on the relay under a one-time code. Returns the code to show
     /// (groups of 4), or nil with `message` set.
     public func startPairing() async -> String? {
-        guard state == .ready, let config, let vaultKey else {
+        guard state == .ready, let config, let engine else {
             message = .notSetUp
             return nil
         }
         do {
+            // The engine's key, not the one loaded at launch: a revoke may have replaced it since.
+            let vaultKey = await engine.currentVaultKey
             let transport = makeTransport(config.serverURL, vaultKey.authToken)
             return try await SyncEngine.startPairing(vaultKey: vaultKey, transport: transport).display
         } catch {
             message = AppMessage(error)
             return nil
+        }
+    }
+
+    // MARK: Devices (F13)
+
+    /// Reads the vault's device list from the relay into `devices`. Sets `message` on failure.
+    public func loadDevices() async {
+        guard state == .ready, let engine else {
+            message = .notSetUp
+            return
+        }
+        do {
+            devices = try await engine.devices()
+        } catch {
+            message = AppMessage(error)
+        }
+    }
+
+    /// Removes a lost device from the vault: it stops syncing and can't read anything new. The other devices move to
+    /// a new key on their next sync. Returns true on success; otherwise `message` says why.
+    @discardableResult
+    public func removeDevice(_ device: VaultDevice) async -> Bool {
+        guard state == .ready, let engine else {
+            message = .notSetUp
+            return false
+        }
+        do {
+            try await engine.revoke([device.id])
+            message = nil
+            devices = (try? await engine.devices()) ?? devices.filter { $0.id != device.id }
+            return true
+        } catch {
+            message = AppMessage(error)
+            return false
         }
     }
 
@@ -257,9 +294,28 @@ public final class ClipApp {
     }
 
     private func makeEngine(db: ClipDatabase, config: AppConfig, key: VaultKey) throws -> SyncEngine {
-        try SyncEngine(
+        let deviceKey: DeviceKey
+        do {
+            deviceKey = try keyStore.loadOrCreateDeviceKey()
+        } catch {
+            throw AppError.keyStore(String(describing: error))
+        }
+        let keyStore = self.keyStore
+        let makeTransport = self.makeTransport
+        let url = config.serverURL
+        let membership = SyncEngine.Membership(
+            deviceKey: deviceKey,
+            makeTransport: { token in makeTransport(url, token) },
+            saveVaultKey: { key in
+                do {
+                    try keyStore.saveVaultKey(key)
+                } catch {
+                    throw AppError.keyStore(String(describing: error))
+                }
+            })
+        return try SyncEngine(
             db: db, vaultKey: key, transport: makeTransport(config.serverURL, key.authToken),
-            device: DeviceID(config.deviceID), deviceName: config.deviceName)
+            device: DeviceID(config.deviceID), deviceName: config.deviceName, membership: membership)
     }
 
     private func save(config: AppConfig, key: VaultKey) throws {
@@ -275,7 +331,6 @@ public final class ClipApp {
         guard let db else { return }
         let engine = try existing ?? makeEngine(db: db, config: config, key: key)
         self.config = config
-        self.vaultKey = key
         self.engine = engine
         deviceName = config.deviceName
         capturePaused = config.capturePaused

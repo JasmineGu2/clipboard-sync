@@ -57,6 +57,23 @@ struct DPAPIKeyStore: KeyStore {
         }
     }
 
+    /// `device.dpapi` next to the vault key: this device's own key pair (F13), protected the same way.
+    var deviceKeyURL: URL { url.deletingLastPathComponent().appendingPathComponent("device.dpapi") }
+
+    func loadDeviceKey() throws -> DeviceKey? {
+        guard FileManager.default.fileExists(atPath: deviceKeyURL.path) else { return nil }
+        var raw = try Self.unprotect(Array(try Data(contentsOf: deviceKeyURL)))
+        defer { raw.withUnsafeMutableBytes { _ = memset($0.baseAddress, 0, $0.count) } }
+        return try DeviceKey(rawBytes: Data(raw))
+    }
+
+    func saveDeviceKey(_ key: DeviceKey) throws {
+        let sealed = try Self.protect(Array(key.rawBytes))
+        try FileManager.default.createDirectory(
+            at: deviceKeyURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(sealed).write(to: deviceKeyURL, options: .atomic)
+    }
+
     static func protect(_ plain: [UInt8]) throws -> [UInt8] {
         try transform(plain, operation: "CryptProtectData") { input, entropy, output in
             "ClipSync vault key".withCString(encodedAs: UTF16.self) { description in
@@ -117,6 +134,21 @@ struct InsecureFileKeyStore: KeyStore {
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
+    }
+
+    /// `device.insecure`: this device's own key pair (F13), as plain as the vault key next to it.
+    var deviceKeyURL: URL { url.deletingLastPathComponent().appendingPathComponent("device.insecure") }
+
+    func loadDeviceKey() throws -> DeviceKey? {
+        guard FileManager.default.fileExists(atPath: deviceKeyURL.path) else { return nil }
+        return try DeviceKey(rawBytes: Data(contentsOf: deviceKeyURL))
+    }
+
+    func saveDeviceKey(_ key: DeviceKey) throws {
+        try FileManager.default.createDirectory(
+            at: deviceKeyURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: deviceKeyURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        try key.rawBytes.write(to: deviceKeyURL)
     }
 }
 #endif

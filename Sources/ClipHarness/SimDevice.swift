@@ -24,6 +24,8 @@ struct DeviceDisk {
     var clockHighWater: HLCTimestamp?
     /// Items hidden by a local-only expiry sweep (`ExpiryMode.hideLocally`), persisted when hidden.
     var hidden: Set<ItemID> = []
+    /// How many relay revokes this device has recovered from (F13). Written in the same step as the recovery.
+    var relayGeneration = 0
 }
 
 /// One simulated device: a HybridClock on a skewed fake wall clock, a merge store, an outbox and a cursor.

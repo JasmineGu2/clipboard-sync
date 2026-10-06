@@ -49,6 +49,7 @@ The code reads these from the `Strings` enum in `Sources/ClipAppCore/Strings.swi
 - `statusSynced`: Synced
 - `statusSyncing`: Syncing…
 - `statusOffline`: Offline. Changes sync when the server is back.
+- `statusRemoved`: This device was removed from your vault, so it no longer syncs.
 
 ## Mac menu
 
@@ -94,6 +95,20 @@ The Mac menu and the iPhone's settings screen. `{days}` is a number above 1.
 - `pairExpiry`: The code works once and expires in 10 minutes.
 - `pairNewCode`: New code
 
+## Devices
+
+- `menuDevices`: Devices…
+- `devicesTitle`: Devices
+- `devicesIntro`: Every device that can read your history. If you lose one, remove it here: it stops syncing and can't read anything copied after that.
+- `devicesLoading`: Loading devices…
+- `devicesMissingHint`: A device only shows here once it has synced with this version. Any device not listed has to pair again after you remove one.
+- `deviceThis`: This device
+- `actionRemoveDevice`: Remove
+- `removeDeviceTitle`: Remove {device}?
+- `removeDeviceMessage`: It stops syncing and can't read anything copied from now on. Your other devices switch to a new key the next time they sync. Anything already on it stays there.
+- `removeDeviceConfirm`: Remove device
+- `deviceRemoved`: {device} was removed.
+
 ## Share extension and Shortcuts
 
 - `shareSent`: Sent to ClipSync
@@ -120,3 +135,7 @@ The Mac menu and the iPhone's settings screen. `{days}` is a number above 1.
 - `errorKeychain`: Couldn't access the Keychain.
 - `errorNotSetUp`: Open ClipSync and finish setup first.
 - `errorUnknown`: Something went wrong. Try again.
+- `errorRemovedFromVault`: This device was removed from your vault, so it no longer syncs.
+- `errorCannotRemoveThisDevice`: A device can't remove itself. Remove it from another device.
+- `errorUnknownDevice`: That device isn't in your vault any more.
+- `errorNotRegistered`: This device isn't in the device list yet. Let it sync once, then try again.

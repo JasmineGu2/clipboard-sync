@@ -5,15 +5,25 @@ import UniformTypeIdentifiers
 
 @main
 struct ClipSynciOSApp: App {
-    @State private var app = ClipApp.bootstrap(
-        home: AppPaths.home,
-        keyStore: KeychainKeyStore.appDefault,
-        // Only the onboarding prefill: since iOS 16, UIDevice.name is the generic model name without a
-        // special entitlement, so onboarding asks for a name and saves it in the config.
-        deviceName: UIDevice.current.model,
-        pasteboard: IOSPasteboard()
-    )
+    @State private var app: ClipApp
     @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        // F17: the Apple Watch gets the pinned items as they change, and can ask for one on this clipboard.
+        let watch = WatchLink.shared
+        watch.activate()
+        let app = ClipApp.bootstrap(
+            home: AppPaths.home,
+            keyStore: KeychainKeyStore.appDefault,
+            // Only the onboarding prefill: since iOS 16, UIDevice.name is the generic model name without a
+            // special entitlement, so onboarding asks for a name and saves it in the config.
+            deviceName: UIDevice.current.model,
+            pasteboard: IOSPasteboard(),
+            pinnedMirror: watch
+        )
+        watch.onCopyRequest = { id in app.history?.copyPinned(id: id) ?? false }
+        _app = State(initialValue: app)
+    }
 
     var body: some Scene {
         WindowGroup {

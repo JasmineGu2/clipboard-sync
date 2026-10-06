@@ -124,6 +124,17 @@ The Mac menu and the iPhone's settings screen. `{days}` is a number above 1.
 - `intentTextPrompt`: What text do you want to send?
 - `intentShortTitle`: Send Clipboard
 
+## Apple Watch (F17)
+
+The watch shows the iPhone's pinned items. It reuses `sectionPinned` as its title.
+
+- `watchEmpty`: Nothing pinned yet. Pin items in ClipSync on your iPhone and they show up here.
+- `watchCopyOnPhone`: Copy on iPhone
+- `watchCopiedOnPhone`: On your iPhone's clipboard
+- `watchPhoneUnreachable`: Can't reach your iPhone. Open ClipSync on it and try again.
+- `watchTruncated`: Shortened for the watch. The full text is on your iPhone.
+- `watchOmitted`: {count} more pinned items are only on your iPhone.
+
 ## Errors (see AppMessage)
 
 - `errorEmptyText`: There's no text to send.

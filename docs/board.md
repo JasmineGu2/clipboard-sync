@@ -44,5 +44,6 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 - [x] T26 Expiry (F14) as synced deletes; harness `--expiry deleteOps` 2000/2000, `hideLocally` caught; clipctl `expire`
 - [x] T29 M4 images and files (F11, F12, N5, N6): encrypted 1 MiB chunks on relay blob routes, resumable upload and download, thumbnails in the op, blob GC; `clipctl send-file`/`get`, Mac capture, iPhone paste and share sheet; harness `--blob-gc deadItemsOnly` 500/500, `unreferencedOnRelay` caught; `scripts/e2e-blobs.sh`
 - [x] Revoke x blobs: the revoke wipes relay blobs, remaining devices re-upload what they hold under the new key, blob routes re-check the token in storage; harness `--revoke-blobs reuploadHeld` 500/500, `keepRelayBlobs` and `opsOnly` caught; `scripts/e2e-revoke-blobs.sh` (three clipctl clients)
+- [x] T31 Apple Watch view of pinned items (F17): iPhone mirrors pinned items, Copy on iPhone by ID; opt-in target (`CLIPSYNC_WATCH=YES`), type-checked for watchOS only, not run (needs the watchOS platform and a simulator or watch)
 
 ## Blocked

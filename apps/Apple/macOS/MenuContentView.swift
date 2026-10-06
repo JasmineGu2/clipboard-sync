@@ -135,6 +135,16 @@ struct MacHistoryView: View {
                     get: { controller.app.receivesLatest },
                     set: { controller.app.setReceivesLatest($0) }
                 ))
+                // F14: a submenu with a checkmark on the current choice.
+                Picker(Strings.expiryTitle, selection: Binding(
+                    get: { controller.app.expiryDays },
+                    set: { days in Task { await controller.app.setExpiryDays(days) } }
+                )) {
+                    ForEach(ExpiryChoices.options(current: controller.app.expiryDays), id: \.self) { days in
+                        Text(ExpiryChoices.label(days)).tag(days)
+                    }
+                }
+                .pickerStyle(.menu)
                 Button(Strings.menuPairDevice) { showingPair = true }
                 Divider()
                 QuitButton()

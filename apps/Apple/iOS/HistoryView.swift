@@ -6,6 +6,7 @@ struct HistoryView: View {
     let app: ClipApp
 
     @State private var showingPair = false
+    @State private var showingSettings = false
     @State private var renaming: ClipItem?
     @State private var renameText = ""
     @State private var tagging: ClipItem?
@@ -52,6 +53,13 @@ struct HistoryView: View {
                         Label(Strings.menuPairDevice, systemImage: "iphone.and.arrow.forward")
                     }
                 }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Label(Strings.settingsTitle, systemImage: "gearshape")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     // F2: the system paste button reads the clipboard without the "Allow Paste" prompt.
                     PasteButton(payloadType: String.self) { strings in
@@ -69,6 +77,10 @@ struct HistoryView: View {
             .toolbar(.visible, for: .bottomBar)
             .sheet(isPresented: $showingPair) {
                 PairView(app: app) { showingPair = false }
+                    .presentationDetents([.medium])
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView(app: app) { showingSettings = false }
                     .presentationDetents([.medium])
             }
             // `presenting:` hands the item to the buttons. Reading `renaming` there instead would see nil:

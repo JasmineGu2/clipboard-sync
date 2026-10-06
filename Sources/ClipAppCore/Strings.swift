@@ -53,6 +53,14 @@ public enum Strings {
     public static let menuPairDevice = "Pair new device…"
     public static let menuQuit = "Quit ClipSync"
 
+    // MARK: Expiry (F14)
+    public static let settingsTitle = "Settings"
+    public static let expiryTitle = "Delete unpinned items after"
+    public static let expiryHint = "Older unpinned items are deleted on all your devices. Pinned items stay."
+    public static let expiryOff = "Never"
+    public static let expiryOneDay = "1 day"
+    public static let expiryDays = "{days} days"
+
     // MARK: Onboarding
     public static let onboardingTitle = "Set up ClipSync"
     public static let onboardingIntro = "Your history is encrypted on this device. The server only stores ciphertext."
@@ -117,6 +125,8 @@ public enum Strings {
         "menuPauseCapture": menuPauseCapture, "menuResumeCapture": menuResumeCapture,
         "capturePaused": capturePaused, "menuReceiveLatest": menuReceiveLatest,
         "menuPairDevice": menuPairDevice, "menuQuit": menuQuit,
+        "settingsTitle": settingsTitle, "expiryTitle": expiryTitle, "expiryHint": expiryHint,
+        "expiryOff": expiryOff, "expiryOneDay": expiryOneDay, "expiryDays": expiryDays,
         "onboardingTitle": onboardingTitle, "onboardingIntro": onboardingIntro, "serverLabel": serverLabel,
         "serverPlaceholder": serverPlaceholder, "serverHint": serverHint,
         "deviceNameLabel": deviceNameLabel, "deviceNameHint": deviceNameHint,

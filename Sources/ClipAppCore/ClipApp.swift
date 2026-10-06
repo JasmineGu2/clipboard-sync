@@ -228,7 +228,9 @@ public final class ClipApp {
     }
 
     /// Deletes unpinned items older than `expiryDays`. The deletes sync like any other edit.
-    func expireNow() async {
+    /// A running app does this hourly; iOS also calls it when the app comes back to the front, because the
+    /// hourly loop doesn't run while the app is suspended.
+    public func expireNow() async {
         guard let engine, let days = expiryDays, days >= 1 else { return }
         do {
             // Clamped here too: a hand-edited config.json never went through setExpiryDays.

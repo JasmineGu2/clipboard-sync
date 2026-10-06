@@ -59,6 +59,17 @@ The code reads these from the `Strings` enum in `Sources/ClipAppCore/Strings.swi
 - `menuPairDevice`: Pair new device…
 - `menuQuit`: Quit ClipSync
 
+## Expiry (F14)
+
+The Mac menu and the iPhone's settings screen. `{days}` is a number above 1.
+
+- `settingsTitle`: Settings
+- `expiryTitle`: Delete unpinned items after
+- `expiryHint`: Older unpinned items are deleted on all your devices. Pinned items stay.
+- `expiryOff`: Never
+- `expiryOneDay`: 1 day
+- `expiryDays`: {days} days
+
 ## Onboarding
 
 - `onboardingTitle`: Set up ClipSync

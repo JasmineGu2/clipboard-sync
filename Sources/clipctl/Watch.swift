@@ -4,6 +4,7 @@ import ClipPeerSocket
 import ClipSync
 import Foundation
 #if os(Windows)
+import ClipWindows
 import WinSDK
 #endif
 

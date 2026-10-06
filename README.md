@@ -80,9 +80,9 @@ From the requirements in [docs/prd.md](docs/prd.md). "Written, not built" means 
 | N7 | Server stores only ciphertext | Done | |
 | N8 | AES-256-GCM bound to item and op IDs | Done | Tamper tests cover swapped IDs and moved payloads |
 | N9 | Keys in Keychain or DPAPI | Partly | DPAPI done. Keychain written, not built. clipctl on macOS and Linux has an opt-in plain-file key for testing. |
-| N10 | Relay only inside the tailnet | Partly | The relay binds the address you give it (default `127.0.0.1`) and warns on `0.0.0.0`. Not deployed to the VM yet. |
+| N10 | Relay only inside the tailnet | Partly | The relay refuses to start on an address outside loopback and Tailscale's ranges (100.64.0.0/10, fd7a:115c:a1e0::/48) unless given `--allow-non-tailnet`; tested against the real binary. `scripts/deploy-relay.sh` deploys it in Docker on the VM's Tailscale IP. Not deployed to the VM yet. |
 | N11 | Convergence under any order, duplicates, drops | Done | Harness, 500 of 500 seeds |
-| N12 | A crash never corrupts data | Partly | WAL, one transaction per mutation, `synchronous=FULL`. A crash test kills a writer process mid-write and checks the file each time (500 kills, no failures). Power loss isn't tested, and payload files aren't built yet. |
+| N12 | A crash never corrupts data | Partly | WAL, one transaction per mutation, `synchronous=FULL`. A crash test kills a writer process mid-write and checks the file each time (500 kills, no failures). Payload files: a second crash test kills a blob cache writer mid-download and mid-import (80 kills, 50 mid-blob, no corrupt file ever marked complete, every good partial resumed). The relay's blob byte total is updated in the same transaction as the chunks. Power loss isn't tested. |
 | N13 | Applying an op twice does nothing | Done | A replica ignores an op it has seen, and the relay dedupes by op ID. Tested, and exercised by the harness. |
 
 ## Measured numbers

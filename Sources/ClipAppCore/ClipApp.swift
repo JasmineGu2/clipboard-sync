@@ -65,10 +65,12 @@ public final class ClipApp {
     @ObservationIgnored private let home: URL
     @ObservationIgnored private let keyStore: any KeyStore
     @ObservationIgnored private let pasteboard: any PasteboardWriter
+    /// F17: where the history sends pinned items (the Apple Watch link on iOS). nil elsewhere.
+    @ObservationIgnored private let pinnedMirror: (any PinnedItemsMirror)?
     @ObservationIgnored private let makeTransport: TransportFactory
     @ObservationIgnored private let autoSync: Bool
-    @ObservationIgnored private let db: ClipDatabase?
-    @ObservationIgnored private let blobCache: BlobCache?
+    @ObservationIgnored private var db: ClipDatabase?
+    @ObservationIgnored private var blobCache: BlobCache?
     @ObservationIgnored private let thumbnails: any ThumbnailMaker
     @ObservationIgnored private var config: AppConfig?
     @ObservationIgnored private var engine: SyncEngine?
@@ -84,6 +86,7 @@ public final class ClipApp {
 
     private init(
         home: URL, keyStore: any KeyStore, deviceName: String, pasteboard: any PasteboardWriter,
+        pinnedMirror: (any PinnedItemsMirror)?,
         makeTransport: @escaping TransportFactory, autoSync: Bool, db: ClipDatabase?, state: OnboardingState,
         thumbnails: any ThumbnailMaker = NoThumbnails(), peerSupport: PeerSupport? = nil
     ) {
@@ -91,6 +94,7 @@ public final class ClipApp {
         self.blobCache = db == nil ? nil : try? BlobCache(directory: home.appendingPathComponent(Self.blobsFolderName))
         self.thumbnails = thumbnails
         self.home = home
+        self.pinnedMirror = pinnedMirror
         self.keyStore = keyStore
         self.deviceName = deviceName
         self.pasteboard = pasteboard
@@ -104,11 +108,13 @@ public final class ClipApp {
     /// With both present the app is `.ready` and syncing; otherwise `.needsSetup`.
     /// - Parameters:
     ///   - autoSync: start `SyncEngine.run()` (long-poll loop) when ready. Tests pass false and sync by hand.
+    ///   - pinnedMirror: F17, gets the pinned items whenever they change (the Apple Watch link on iOS).
     public static func bootstrap(
         home: URL,
         keyStore: any KeyStore,
         deviceName: String,
         pasteboard: any PasteboardWriter,
+        pinnedMirror: (any PinnedItemsMirror)? = nil,
         makeTransport: @escaping TransportFactory = ClipApp.httpTransport,
         autoSync: Bool = true,
         thumbnails: any ThumbnailMaker = platformThumbnailMaker(),
@@ -120,16 +126,21 @@ public final class ClipApp {
             db = try ClipDatabase(url: home.appendingPathComponent(databaseFileName))
         } catch {
             return ClipApp(
-                home: home, keyStore: keyStore, deviceName: deviceName, pasteboard: pasteboard,
+                home: home, keyStore: keyStore, deviceName: deviceName, pasteboard: pasteboard, pinnedMirror: pinnedMirror,
                 makeTransport: makeTransport, autoSync: autoSync, db: nil, state: .failed(.storage))
         }
         let app = ClipApp(
-            home: home, keyStore: keyStore, deviceName: deviceName, pasteboard: pasteboard,
+            home: home, keyStore: keyStore, deviceName: deviceName, pasteboard: pasteboard, pinnedMirror: pinnedMirror,
             makeTransport: makeTransport, autoSync: autoSync, db: db, state: .needsSetup, thumbnails: thumbnails,
             peerSupport: peerSupport)
         HistoryModel.cleanExports(in: home.appendingPathComponent(exportsFolderName), olderThan: 24 * 60 * 60)
         do {
-            if let config = try AppConfig.load(from: app.configURL), let key = try keyStore.loadVaultKey() {
+            if var config = try AppConfig.load(from: app.configURL), let key = try keyStore.loadVaultKey() {
+                if config.joinedAt == nil {
+                    // Set up before the device list showed join dates: the config was written at setup.
+                    config.joinedAt = Self.creationDate(of: app.configURL) ?? Date()
+                    try? config.save(to: app.configURL)
+                }
                 try app.becomeReady(config: config, key: key)
             }
         } catch {
@@ -155,7 +166,7 @@ public final class ClipApp {
         state = .working
         message = nil
         let key = VaultKey.generate()
-        let config = AppConfig(serverURL: url, deviceName: resolvedDeviceName(name))
+        let config = AppConfig(serverURL: url, deviceName: resolvedDeviceName(name), joinedAt: Date())
         do {
             let engine = try makeEngine(db: db, config: config, key: key)
             try await engine.syncOnce()
@@ -177,7 +188,7 @@ public final class ClipApp {
         state = .working
         message = nil
         let key: VaultKey
-        let config = AppConfig(serverURL: url, deviceName: resolvedDeviceName(name))
+        let config = AppConfig(serverURL: url, deviceName: resolvedDeviceName(name), joinedAt: Date())
         do {
             key = try await SyncEngine.completePairing(code: code, transport: makeTransport(url, nil))
             // The code is spent now, so save the key before anything else can fail.
@@ -247,6 +258,92 @@ public final class ClipApp {
             message = AppMessage(error)
             return false
         }
+    }
+
+    // MARK: Removed from the vault (F13)
+
+    /// True once another device removed this one: syncing has stopped for good, and the app should offer
+    /// `setUpAgain()`. Follows the history's status, which the engine sets on its first refused request.
+    public var isRemoved: Bool { history?.syncStatus == .removed }
+
+    /// Prefix of the folder in `home` that `setUpAgain()` moves the old vault's files into.
+    nonisolated public static let removedFolderPrefix = "removed-"
+
+    /// After this device was removed: goes back to onboarding so it can join with a new pairing code or start a
+    /// new vault. Nothing is deleted. The database, file cache, exports and config move into
+    /// `home/removed-<date>/`, where the old history stays readable (the database is plaintext on the device,
+    /// see docs/threat-model.md). The vault key is dropped from the key store: the relay refuses it and it
+    /// can't open anything written since the removal. The device key is replaced too, so the new membership
+    /// doesn't reuse a key pair whose device was declared lost. Returns false, with `message` set, if the files
+    /// couldn't be moved; the app is then `.failed` until it's restarted.
+    @discardableResult
+    public func setUpAgain() -> Bool {
+        guard state == .ready else { return false }
+        stop()
+        history = nil
+        engine = nil
+        config = nil
+        devices = []
+        db?.close()
+        db = nil
+        blobCache = nil
+        message = nil
+        do {
+            try moveVaultFilesAside()
+        } catch {
+            state = .failed(.storage)
+            return false
+        }
+        do {
+            try keyStore.deleteVaultKey()
+            try keyStore.saveDeviceKey(DeviceKey.generate())
+        } catch {
+            // The files are already aside, so onboarding can go ahead: create and join overwrite both keys.
+            message = .keychain
+        }
+        do {
+            let fresh = try ClipDatabase(url: home.appendingPathComponent(Self.databaseFileName))
+            db = fresh
+            blobCache = try? BlobCache(directory: home.appendingPathComponent(Self.blobsFolderName))
+        } catch {
+            state = .failed(.storage)
+            return false
+        }
+        state = .needsSetup
+        return true
+    }
+
+    /// Moves everything that belongs to the old vault into a new `removed-<date>` folder in `home`.
+    private func moveVaultFilesAside() throws {
+        let files = FileManager.default
+        let stamp = Self.folderStamp(Date())
+        var archive = home.appendingPathComponent(Self.removedFolderPrefix + stamp, isDirectory: true)
+        var suffix = 1
+        while files.fileExists(atPath: archive.path) {
+            suffix += 1
+            archive = home.appendingPathComponent("\(Self.removedFolderPrefix)\(stamp)-\(suffix)", isDirectory: true)
+        }
+        try files.createDirectory(at: archive, withIntermediateDirectories: true)
+        let names = [
+            Self.databaseFileName, Self.databaseFileName + "-wal", Self.databaseFileName + "-shm",
+            Self.blobsFolderName, Self.exportsFolderName, Self.configFileName,
+        ]
+        for name in names where files.fileExists(atPath: home.appendingPathComponent(name).path) {
+            try files.moveItem(at: home.appendingPathComponent(name), to: archive.appendingPathComponent(name))
+        }
+    }
+
+    /// `2026-10-05-143012`: sorts by time and is safe in a file name everywhere.
+    nonisolated static func folderStamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+        return formatter.string(from: date)
+    }
+
+    nonisolated private static func creationDate(of url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.creationDate] as? Date
     }
 
     /// F15.
@@ -343,7 +440,8 @@ public final class ClipApp {
                 } catch {
                     throw AppError.keyStore(String(describing: error))
                 }
-            })
+            },
+            joinedAt: config.joinedAt)
         return try SyncEngine(
             db: db, vaultKey: key, transport: makeTransport(config.serverURL, key.authToken),
             device: DeviceID(config.deviceID), deviceName: config.deviceName, blobCache: blobCache,
@@ -372,6 +470,7 @@ public final class ClipApp {
             engine: engine, db: db, pasteboard: pasteboard, thumbnails: thumbnails,
             exportsDirectory: home.appendingPathComponent(Self.exportsFolderName))
         history.receivesLatest = config.receivesLatest
+        history.pinnedMirror = pinnedMirror
         self.history = history
         history.start()
         if autoSync {
@@ -399,6 +498,48 @@ public final class ClipApp {
             }
         }
         state = .ready
+    }
+}
+
+// MARK: - Measurement (N3, N4)
+
+extension ClipApp {
+    /// Fills `home` with a set-up vault holding `count` text items, for launch and idle measurements (DEBUG builds
+    /// of the apps, never a real vault: callers pass a home of their own and a throwaway key). Does nothing when
+    /// the database already has that many items, so only the first launch pays for it. Returns the item count.
+    @discardableResult
+    public nonisolated static func seedForMeasurement(
+        home: URL, key: VaultKey, keyStore: any KeyStore, count: Int, serverURL: URL, deviceName: String
+    ) throws -> Int {
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let configURL = home.appendingPathComponent(configFileName)
+        let config = try AppConfig.load(from: configURL)
+            ?? AppConfig(serverURL: serverURL, deviceName: deviceName, joinedAt: Date())
+        try config.save(to: configURL)
+        try keyStore.saveVaultKey(key)
+        let db = try ClipDatabase(url: home.appendingPathComponent(databaseFileName))
+        defer { db.close() }
+        let existing = try db.count()
+        guard existing < count else { return existing }
+        // Straight into the database in batches (one transaction each), as already-synced ops: a measurement
+        // home has no relay to push them to.
+        let device = DeviceID(config.deviceID)
+        let words = ["invoice", "meeting", "deploy", "tracking", "password reset", "address", "recipe", "flight"]
+        let nowMillis = UInt64(Date().timeIntervalSince1970 * 1000)
+        var batch: [Op] = []
+        for index in existing..<count {
+            let wall = nowMillis - UInt64(count - index) * 1000
+            let text = "\(words[index % words.count]) note \(index): " + String(repeating: "lorem ipsum ", count: 1 + index % 12)
+            let content = ItemContent(
+                text: text, sourceDevice: device, sourceDeviceName: config.deviceName,
+                createdAt: Date(timeIntervalSince1970: Double(wall) / 1000))
+            batch.append(Op(itemID: ItemID(), timestamp: HLCTimestamp(wallMillis: wall, counter: 0, device: device), kind: .create(content)))
+            if batch.count == 500 || index == count - 1 {
+                _ = try db.insert(batch, outbound: false)
+                batch = []
+            }
+        }
+        return count
     }
 }
 

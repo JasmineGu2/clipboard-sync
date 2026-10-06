@@ -6,6 +6,7 @@ import Foundation
 // Opens a ClipDatabase and writes to it in a loop until the test kills the process.
 //
 // Usage: ClipStoreCrashWriter <db path> <seed> <first remote cursor>
+//        ClipStoreCrashWriter blob <cache dir> <seed>     (blob cache mode, see BlobWriter.swift)
 //
 // Protocol on stdout, one line per event, written unbuffered:
 //   READY                        the database is open
@@ -31,6 +32,10 @@ func emit(_ line: String) {
 }
 
 let args = CommandLine.arguments
+// Blob mode: ClipStoreCrashWriter blob <cache dir> <seed> (BlobWriter.swift).
+if args.count == 4, args[1] == "blob", let seed = UInt64(args[3]) {
+    runBlobWriter(directory: URL(fileURLWithPath: args[2]), seed: seed)
+}
 guard args.count == 4, let seed = UInt64(args[2]), var cursor = Int64(args[3]) else {
     FileHandle.standardError.write(Data("usage: ClipStoreCrashWriter <db path> <seed> <first remote cursor>\n".utf8))
     exit(2)

@@ -11,6 +11,9 @@ public actor SQLiteRelayStorage: RelayStorage {
     /// The last operator pin applied (see `seedAuthTokenHash`).
     static let authSeedKey = "auth_token_seed_sha256"
     static let epochKey = "relay_epoch"
+    /// Running total of `length(data)` over every row of `blob_chunks`, kept in the same transaction as each change
+    /// to that table, so the storage cap check doesn't sum every chunk on each upload.
+    static let blobBytesKey = "blob_bytes_stored"
     /// Read (or made) once at open. Only a revoke changes it (the log is wiped then, like a fresh database).
     private var relayEpoch: String
 
@@ -45,11 +48,13 @@ public actor SQLiteRelayStorage: RelayStorage {
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
-                -- Blobs (F11, F12): sealed chunks, opaque to the relay. created_at is for a future age-based GC.
+                -- Blobs (F11, F12): sealed chunks, opaque to the relay. touched_at is the last chunk upload, for the
+                -- age-based purge of uploads that never finished (purgeStaleBlobs).
                 CREATE TABLE IF NOT EXISTS blobs(
                     blob_id TEXT PRIMARY KEY,
                     chunk_count INTEGER NOT NULL,
-                    created_at INTEGER NOT NULL
+                    created_at INTEGER NOT NULL,
+                    touched_at INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS blob_chunks(
                     blob_id TEXT NOT NULL,
@@ -69,12 +74,43 @@ public actor SQLiteRelayStorage: RelayStorage {
                 );
                 CREATE INDEX IF NOT EXISTS handoffs_device ON handoffs(device_id, id);
                 """)
+            try Self.migrate(handle)
             self.relayEpoch = try Self.loadOrCreateEpoch(handle)
         } catch {
             sqlite3_close_v2(handle)
             throw error
         }
         self.db = handle
+    }
+
+    /// Brings a database made by an older relay up to date. Each step is idempotent and runs in one transaction.
+    /// - `blobs.touched_at` (added with the stale-blob purge): set to `created_at` for existing rows.
+    /// - The blob byte counter: summed once from `blob_chunks` if the database doesn't have one yet.
+    private static func migrate(_ handle: OpaquePointer) throws {
+        try exec(handle, "BEGIN IMMEDIATE")
+        do {
+            let columns = try Statement(handle, "PRAGMA table_info(blobs)")
+            var hasTouchedAt = false
+            while try columns.step() {
+                if columns.text(1) == "touched_at" { hasTouchedAt = true }
+            }
+            if !hasTouchedAt {
+                try exec(handle, """
+                    ALTER TABLE blobs ADD COLUMN touched_at INTEGER NOT NULL DEFAULT 0;
+                    UPDATE blobs SET touched_at = created_at;
+                    """)
+            }
+            let counter = try Statement(handle, """
+                INSERT OR IGNORE INTO meta(key, value)
+                SELECT ?, CAST(COALESCE(SUM(length(data)), 0) AS TEXT) FROM blob_chunks
+                """)
+            try counter.bind(1, blobBytesKey)
+            _ = try counter.step()
+            try exec(handle, "COMMIT")
+        } catch {
+            try? exec(handle, "ROLLBACK")
+            throw error
+        }
     }
 
     /// Stores a fresh random epoch the first time the database is opened (INSERT OR IGNORE keeps an existing
@@ -255,16 +291,22 @@ public actor SQLiteRelayStorage: RelayStorage {
                 result = .full
                 return
             }
-            let blob = try Statement(db, "INSERT OR IGNORE INTO blobs(blob_id, chunk_count, created_at) VALUES(?, ?, ?)")
+            let blob = try Statement(db, """
+                INSERT INTO blobs(blob_id, chunk_count, created_at, touched_at) VALUES(?, ?, ?, ?)
+                ON CONFLICT(blob_id) DO UPDATE SET touched_at = excluded.touched_at
+                """)
             try blob.bind(1, blobID)
             try blob.bind(2, Int64(count))
             try blob.bind(3, now)
+            try blob.bind(4, now)
             _ = try blob.step()
             let chunk = try Statement(db, "INSERT INTO blob_chunks(blob_id, idx, data) VALUES(?, ?, ?)")
             try chunk.bind(1, blobID)
             try chunk.bind(2, Int64(index))
             try chunk.bind(3, data)
             _ = try chunk.step()
+            try addBlobBytes(Int64(data.count))
+            try faultHook?("putBlobChunk")
         }
         return result
     }
@@ -297,12 +339,58 @@ public actor SQLiteRelayStorage: RelayStorage {
     public func deleteBlob(blobID: String, requiringTokenHash tokenHash: String?) throws {
         try transaction {
             try checkToken(tokenHash)
+            let size = try Statement(db, "SELECT COALESCE(SUM(length(data)), 0) FROM blob_chunks WHERE blob_id = ?")
+            try size.bind(1, blobID)
+            _ = try size.step()
+            let removed = size.int64(0)
             for sql in ["DELETE FROM blob_chunks WHERE blob_id = ?", "DELETE FROM blobs WHERE blob_id = ?"] {
                 let delete = try Statement(db, sql)
                 try delete.bind(1, blobID)
                 _ = try delete.step()
             }
+            try addBlobBytes(-removed)
+            try faultHook?("deleteBlob")
         }
+    }
+
+    public func purgeStaleBlobs(untouchedSince cutoff: Int64) throws -> BlobPurgeResult {
+        var result = BlobPurgeResult()
+        try transaction {
+            // Incomplete: fewer chunks stored than the count the first chunk fixed. Orphan rows: chunks with no
+            // `blobs` row (no code path makes them; cleared in case an older relay or a hand edit did).
+            try Self.exec(db, """
+                CREATE TEMP TABLE IF NOT EXISTS purge_ids(blob_id TEXT PRIMARY KEY);
+                DELETE FROM purge_ids;
+                """)
+            let pick = try Statement(db, """
+                INSERT OR IGNORE INTO purge_ids(blob_id)
+                SELECT b.blob_id FROM blobs b
+                WHERE b.touched_at < ?
+                  AND (SELECT COUNT(*) FROM blob_chunks c WHERE c.blob_id = b.blob_id) < b.chunk_count
+                UNION
+                SELECT DISTINCT c.blob_id FROM blob_chunks c
+                WHERE NOT EXISTS (SELECT 1 FROM blobs b WHERE b.blob_id = c.blob_id)
+                """)
+            try pick.bind(1, cutoff)
+            _ = try pick.step()
+            let measure = try Statement(db, """
+                SELECT (SELECT COUNT(*) FROM purge_ids),
+                       (SELECT COALESCE(SUM(length(data)), 0) FROM blob_chunks
+                        WHERE blob_id IN (SELECT blob_id FROM purge_ids))
+                """)
+            _ = try measure.step()
+            result.blobs = Int(measure.int64(0))
+            result.bytes = measure.int64(1)
+            guard result.blobs > 0 else { return }
+            try Self.exec(db, """
+                DELETE FROM blob_chunks WHERE blob_id IN (SELECT blob_id FROM purge_ids);
+                DELETE FROM blobs WHERE blob_id IN (SELECT blob_id FROM purge_ids);
+                DELETE FROM purge_ids;
+                """)
+            try addBlobBytes(-result.bytes)
+            try faultHook?("purgeStaleBlobs")
+        }
+        return result
     }
 
     /// Throws `AuthChanged` when `tokenHash` is set and isn't the stored auth hash any more (a revoke landed).
@@ -312,11 +400,22 @@ public actor SQLiteRelayStorage: RelayStorage {
         }
     }
 
+    /// Reads the running total: O(1), however many chunks are stored.
     public func blobBytesStored() throws -> Int64 {
-        // length() reads the size from the record header, not the blob itself.
-        let query = try Statement(db, "SELECT COALESCE(SUM(length(data)), 0) FROM blob_chunks")
-        _ = try query.step()
-        return query.int64(0)
+        guard let raw = try readMeta(Self.blobBytesKey), let value = Int64(raw) else {
+            throw StorageError(code: SQLITE_CORRUPT, message: "blob byte counter missing or malformed")
+        }
+        return value
+    }
+
+    /// Adds `delta` to the running total. Only call inside the transaction that changed `blob_chunks` by `delta`
+    /// bytes, so a crash or an error can never leave the total out of step with the table.
+    private func addBlobBytes(_ delta: Int64) throws {
+        guard delta != 0 else { return }
+        let update = try Statement(db, "UPDATE meta SET value = CAST(CAST(value AS INTEGER) + ? AS TEXT) WHERE key = ?")
+        try update.bind(1, delta)
+        try update.bind(2, Self.blobBytesKey)
+        _ = try update.step()
     }
 
     // MARK: Auth
@@ -430,6 +529,8 @@ public actor SQLiteRelayStorage: RelayStorage {
                 DELETE FROM envelopes; DELETE FROM pairing; DELETE FROM devices;
                 DELETE FROM blob_chunks; DELETE FROM blobs;
                 """)
+            try writeMeta(Self.blobBytesKey, "0")
+            try faultHook?("revoke")
             let put = try Statement(db, "INSERT OR REPLACE INTO devices(device_id, public_key, sealed) VALUES(?, ?, ?)")
             for record in devices {
                 try put.reset()
@@ -461,6 +562,26 @@ public actor SQLiteRelayStorage: RelayStorage {
     }
 
     // MARK: Diagnostics
+
+    /// Tests only: called inside a transaction just before it commits, with the operation's name. Throwing rolls the
+    /// transaction back, which is what a crash at that point leaves on disk too.
+    private var faultHook: (@Sendable (String) throws -> Void)?
+
+    func setFaultHook(_ hook: (@Sendable (String) throws -> Void)?) {
+        faultHook = hook
+    }
+
+    /// Tests only: the slow, exact sum the running total must always equal.
+    func recountBlobBytes() throws -> Int64 {
+        let query = try Statement(db, "SELECT COALESCE(SUM(length(data)), 0) FROM blob_chunks")
+        _ = try query.step()
+        return query.int64(0)
+    }
+
+    /// Tests only: runs raw SQL on the connection (to set pragmas, or to plant rows an older relay could have left).
+    func execForTesting(_ sql: String) throws {
+        try Self.exec(db, sql)
+    }
 
     /// The connection's journal mode ("wal" for file databases, "memory" for in-memory ones).
     func journalMode() throws -> String {

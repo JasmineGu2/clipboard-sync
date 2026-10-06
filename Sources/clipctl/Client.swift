@@ -5,6 +5,9 @@ import ClipStore
 import ClipSync
 import ClipWire
 import Foundation
+#if os(Windows)
+import ClipWindows
+#endif
 
 /// Options every command accepts, before or after the subcommand name.
 struct GlobalOptions: ParsableArguments {
@@ -33,6 +36,8 @@ struct Config: Codable, Sendable {
     var serverURL: String
     var deviceID: UUID
     var deviceName: String
+    /// When this client was set up; other devices show it in their device list. Older configs lack it.
+    var joinedAt: Date?
 }
 
 /// The files of one client. `--home` lets two independent clients share a PC.
@@ -41,9 +46,7 @@ struct HomeFolder: Sendable {
 
     static var defaultURL: URL {
         #if os(Windows)
-        if let appData = ProcessInfo.processInfo.environment["APPDATA"] {
-            return URL(fileURLWithPath: appData, isDirectory: true).appendingPathComponent("ClipSync", isDirectory: true)
-        }
+        if let appData = WindowsPaths.appDataHome { return appData }
         #endif
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config", isDirectory: true)
@@ -174,7 +177,10 @@ struct Client: Sendable {
         let membership = SyncEngine.Membership(
             deviceKey: try store.loadOrCreateDeviceKey(),
             makeTransport: { HTTPTransport(baseURL: url, token: $0) },
-            saveVaultKey: { try store.saveVaultKey($0) })
+            saveVaultKey: { try store.saveVaultKey($0) },
+            // Older configs: the file was written at setup, so its creation date stands in.
+            joinedAt: config.joinedAt
+                ?? (try? FileManager.default.attributesOfItem(atPath: home.configURL.path))?[.creationDate] as? Date)
         let engine = try SyncEngine(
             db: db, vaultKey: key, transport: transport,
             device: DeviceID(config.deviceID), deviceName: config.deviceName,

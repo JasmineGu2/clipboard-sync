@@ -2,16 +2,11 @@
 
 **Now:** Test receiving between the Mac and the PC. The Mac app is set up against the local relay (127.0.0.1:8788, shared on the tailnet as `http://macbook-air.tailc07d02.ts.net:8788`; restart it with `cd Server && nohup ./.build/debug/ClipRelay --port 8788 --db ../.relay/relay.sqlite3 > ../.relay/relay.log 2>&1 &`). On the PC: `git pull`, pair clipctl with a code from the Mac menu's Pair new device, run `clipctl watch`, then copy on one and paste on the other. Then the iPhone (apps/Apple/README.md).
 
-## F16 direct sync (2026-10-06, branch t33-direct, not merged)
-- While the relay is unreachable, devices sync over the tailnet: the Mac app listens on its Tailscale address (port 8790), `clipctl watch --peer-port N` listens too, the iPhone only dials. Design §7, decision 2026-10-06.
-- Check: 322 package tests, 62 relay tests, harness `--peer logCursors` 500/500 (also with revoke and blobs), `outboxOnly` and `ignoresVaultKey` caught; `scripts/e2e-direct.sh` passes (two clipctl clients, relay stopped and restarted); ClipSyncMac and ClipSynciOS build.
-- Not tried: the Mac app or iPhone talking directly on real devices, clipctl on Windows (the Winsock code has never compiled), the Mac's sandbox listening with the new entitlement.
-
-## Where things stand (2026-10-05, branch t29-blobs)
-- M4 images and files (F11, F12) are on t29-blobs, with master merged in (revoke F13, expiry UI, crash test). Not merged into master yet.
-- Revoke and blobs work together: a revoke wipes relay blobs with the log, and the remaining devices upload the files they hold again under the new key. A file only the lost device had keeps its thumbnail and can't be downloaded. Decision in docs/decisions.md.
-- Check on the Mac: 288 package tests and 62 relay tests pass; harness 500/500 plain, `--revoke repushAll`, `--blob-gc deadItemsOnly`, and both together (`--revoke-blobs reuploadHeld`); the broken variants are caught. `scripts/e2e-blobs.sh` and `scripts/e2e-revoke-blobs.sh` (three clipctl clients) pass. ClipSyncMac, ClipSynciOS and ClipShare build.
-- Not tried yet: images, files or revoke on real devices or in the Apple apps.
+## Where things stand (2026-10-06, master once t33-direct is merged)
+- All of F1–F17 are built: the core (F1–F10), images and files (F11, F12), revoke (F13), expiry (F14), pause (F15), direct sync while the relay is down (F16), Apple Watch pinned items (F17). Also the Windows tray app (M3), relay hardening (stale-upload purge, O(1) storage total, chunk download cap, N10 bind check, N12 blob crash test), Apple polish (Set up again after removal, key fingerprints and join dates, Mac ⌃⌘V picker, measurement mode).
+- Direct sync: the Mac app and the Windows tray app listen on their Tailscale address (port 8790), `clipctl watch --peer-port N` too; the iPhone only dials. Device records seal name, join date and listen address. Design §7.
+- Check on the Mac (t33-direct after merging master): 357 package tests, 76 relay tests; harness 500/500 plain, `--revoke repushAll`, `--peer logCursors`, and peer + revoke + blob GC + revoke-blobs together; `scripts/e2e-direct.sh` and `scripts/e2e-revoke-blobs.sh` pass; ClipSyncMac, ClipSynciOS and ClipShare build.
+- Never compiled: anything Windows (tray app, Winsock peer code, `ClipWindows`); CI's Windows job is the first compile. Never run: the watch app, direct sync between real devices, images/files/revoke in the Apple apps.
 
 ## Where things stood (2026-10-01)
 - M1 works end to end: `scripts/e2e.ps1` (relay in WSL + two clipctl devices) passes; A→B p50 ≈ 100 ms on localhost.
@@ -49,15 +44,10 @@
 4. Apple Developer account before any demo (free provisioning expires every 7 days).
 5. Cleanup: 17 merged worktree folders (swift-t02 to swift-t25) plus branch t26-expiry on the Windows machine. OK to `git worktree remove` them?
 
-## Next build tasks (no hardware needed)
-- M3 Windows tray app around ClipAppCore (clipctl watch covers capture today).
-- M4 images/files (F11/F12, N5/N6), revoke (F13).
-- Mac: a Ctrl-Cmd-V picker for older items; an expiry setting in the menu (ClipApp.setExpiryDays exists).
-
 ## Next build tasks
-- Mac session: expiry control (ClipApp.setExpiryDays) in the Mac menu and iPhone settings, copy in content/app.md; show the relay pin in the apps.
+- Push and watch CI's Windows job; fix what the first Windows compile finds (tray app, Winsock, `ClipWindows`).
 - Check the README makes the seed-488 harness bug findable within a minute (PRD outreach goal). Run the nightly workflow once by hand: `gh workflow run nightly.yml`.
-- Optional for v1: M3 Windows tray app, F13 revoke client flow, F11/F12 images and files.
+- Show the relay pin in the apps.
 
 ## Open questions
 - When is the MacBook available?

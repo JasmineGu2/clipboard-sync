@@ -39,6 +39,16 @@ public enum BlobChunkPutResult: Sendable, Equatable {
     case full
 }
 
+/// What a stale-blob purge removed.
+public struct BlobPurgeResult: Sendable, Equatable {
+    public var blobs = 0
+    public var bytes: Int64 = 0
+    public init(blobs: Int = 0, bytes: Int64 = 0) {
+        self.blobs = blobs
+        self.bytes = bytes
+    }
+}
+
 /// Outcome of storing a device record.
 public enum DevicePutResult: Sendable, Equatable {
     case stored
@@ -87,8 +97,14 @@ public protocol RelayStorage: Actor {
     func blobChunk(blobID: String, index: Int, requiringTokenHash tokenHash: String?) throws -> Data?
     /// Removes a blob and all its chunks. Removing a missing blob is not an error.
     func deleteBlob(blobID: String, requiringTokenHash tokenHash: String?) throws
-    /// Total bytes of every stored chunk.
+    /// Total bytes of every stored chunk. A running total kept in the same transaction as every change to the
+    /// chunks (upload, delete, purge, revoke), so reading it is O(1).
     func blobBytesStored() throws -> Int64
+    /// Removes, in one transaction, every blob that is still incomplete (fewer chunks than its count) and had no
+    /// chunk uploaded since `cutoff` (unix seconds): an upload abandoned by a device that went away, or whose item
+    /// was deleted mid-upload. Complete blobs are never purged by age: the relay can't tell whether an item still
+    /// uses one (design §6).
+    func purgeStaleBlobs(untouchedSince cutoff: Int64) throws -> BlobPurgeResult
 
     /// The stored auth token hash, or nil if none has been set or adopted yet.
     func authTokenHash() throws -> String?

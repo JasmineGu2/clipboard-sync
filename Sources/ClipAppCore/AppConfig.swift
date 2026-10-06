@@ -12,10 +12,13 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var receivesLatest: Bool
     /// F14: unpinned items older than this many days are deleted on every device. nil keeps them forever.
     public var expiryDays: Int?
+    /// When this device was set up (created or joined the vault). Other devices show it in their device list (F13).
+    /// nil in configs from before it existed; `ClipApp.bootstrap` fills it in from the file's creation date.
+    public var joinedAt: Date?
 
     public init(
         serverURL: URL, deviceID: UUID = UUID(), deviceName: String, capturePaused: Bool = false,
-        receivesLatest: Bool = true, expiryDays: Int? = nil
+        receivesLatest: Bool = true, expiryDays: Int? = nil, joinedAt: Date? = nil
     ) {
         self.serverURL = serverURL
         self.deviceID = deviceID
@@ -23,6 +26,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.capturePaused = capturePaused
         self.receivesLatest = receivesLatest
         self.expiryDays = expiryDays
+        self.joinedAt = joinedAt
     }
 
     public init(from decoder: any Decoder) throws {
@@ -33,6 +37,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         capturePaused = try container.decodeIfPresent(Bool.self, forKey: .capturePaused) ?? false
         receivesLatest = try container.decodeIfPresent(Bool.self, forKey: .receivesLatest) ?? true
         expiryDays = try container.decodeIfPresent(Int.self, forKey: .expiryDays)
+        joinedAt = try container.decodeIfPresent(Date.self, forKey: .joinedAt)
     }
 
     /// nil when the file doesn't exist yet.

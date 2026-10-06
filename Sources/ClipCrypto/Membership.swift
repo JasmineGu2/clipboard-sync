@@ -5,13 +5,41 @@ import Foundation
 /// What a device record says, once opened.
 public struct DeviceInfo: Codable, Equatable, Sendable {
     public var name: String
+    /// When the device joined the vault, as the device itself reports it (whole milliseconds). nil from devices
+    /// that predate it. Sealed like the name, so the relay can't change it, but any vault member could write any
+    /// date: it's a hint for spotting a decoy, the key fingerprint is the check (docs/threat-model.md).
+    public var joinedAt: Date?
     /// F16: where this device listens for direct sync, as "<IPv4>:<port>" on its tailnet address. nil when it
     /// doesn't listen (the iPhone, or a client started without a peer port). Sealed with the name, so the relay
     /// doesn't learn it. Older clients ignore the field.
     public var peer: String?
-    public init(name: String, peer: String? = nil) {
+
+    public init(name: String, joinedAt: Date? = nil, peer: String? = nil) {
         self.name = name
+        self.joinedAt = joinedAt.map { Date(timeIntervalSince1970: ($0.timeIntervalSince1970 * 1000).rounded(.down) / 1000) }
         self.peer = peer
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        /// Unix milliseconds, so every platform's default JSON coder reads it the same way.
+        case joinedMillis
+        case peer
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        joinedAt = try container.decodeIfPresent(Int64.self, forKey: .joinedMillis)
+            .map { Date(timeIntervalSince1970: Double($0) / 1000) }
+        peer = try container.decodeIfPresent(String.self, forKey: .peer)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(joinedAt.map { Int64(($0.timeIntervalSince1970 * 1000).rounded(.down)) }, forKey: .joinedMillis)
+        try container.encodeIfPresent(peer, forKey: .peer)
     }
 }
 

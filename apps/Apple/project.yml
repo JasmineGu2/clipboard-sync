@@ -2,6 +2,12 @@
 # The .xcodeproj is generated, not committed.
 name: ClipSync
 
+# F17: the Apple Watch app is opt-in, because an iPhone app that embeds a watch app can't build at all on a
+# Mac without the watchOS platform (several GB). `CLIPSYNC_WATCH=YES xcodegen` adds it; see README.md.
+include:
+  - path: watch.yml
+    enable: ${CLIPSYNC_WATCH}
+
 options:
   bundleIdPrefix: dev.jazz.clipsync
   deploymentTarget:
@@ -112,3 +118,4 @@ targets:
         CODE_SIGN_ENTITLEMENTS: ShareExtension/ClipShare.entitlements
         TARGETED_DEVICE_FAMILY: "1"
         APPLICATION_EXTENSION_API_ONLY: YES
+

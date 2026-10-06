@@ -12,13 +12,13 @@ final class StringsTests: XCTestCase {
     }
 
     /// Lines shaped like "- `key`: value".
-    func contentEntries() throws -> [String: String] {
-        let text = try String(contentsOf: repoRoot.appendingPathComponent("content/app.md"), encoding: .utf8)
+    func contentEntries(_ file: String = "content/app.md") throws -> [String: String] {
+        let text = try String(contentsOf: repoRoot.appendingPathComponent(file), encoding: .utf8)
         var entries: [String: String] = [:]
         for line in text.split(whereSeparator: \.isNewline) {
             guard line.hasPrefix("- `"), let close = line.range(of: "`: ") else { continue }
             let key = String(line[line.index(line.startIndex, offsetBy: 3)..<close.lowerBound])
-            XCTAssertNil(entries[key], "duplicate key \(key) in content/app.md")
+            XCTAssertNil(entries[key], "duplicate key \(key) in \(file)")
             entries[key] = String(line[close.upperBound...])
         }
         return entries
@@ -32,6 +32,21 @@ final class StringsTests: XCTestCase {
         }
         for key in content.keys where Strings.all[key] == nil {
             XCTFail("content/app.md has `\(key)`, which Strings doesn't")
+        }
+    }
+
+    func testWindowsStringsMatchContentFile() throws {
+        let content = try contentEntries("content/windows.md")
+        XCTAssertFalse(content.isEmpty)
+        for (key, value) in WinStrings.all {
+            XCTAssertEqual(content[key], value, "content/windows.md `\(key)`")
+        }
+        for key in content.keys where WinStrings.all[key] == nil {
+            XCTFail("content/windows.md has `\(key)`, which WinStrings doesn't")
+        }
+        // One file per key: a Windows string that repeats a shared one belongs in content/app.md.
+        for key in WinStrings.all.keys {
+            XCTAssertNil(Strings.all[key], "`\(key)` is in both content files")
         }
     }
 

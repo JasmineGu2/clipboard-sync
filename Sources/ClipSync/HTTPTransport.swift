@@ -187,10 +187,12 @@ public struct RelayRequestBuilder: Sendable {
 public struct HTTPTransport: SyncTransport {
     public let builder: RelayRequestBuilder
     private let session: URLSession
+    /// For responses read with a size cap (blob chunks): a session whose delegate sees the body as it arrives.
+    private let capped: CappedSession
 
     public init(baseURL: URL, token: String?, session: URLSession? = nil) {
         self.builder = RelayRequestBuilder(baseURL: baseURL, token: token)
-        self.session = session ?? {
+        let session = session ?? {
             let configuration = URLSessionConfiguration.ephemeral
             // Every request sets its own timeout (short, or a long-poll's wait plus grace). The session value is
             // only a ceiling at the longest long-poll: on Windows the per-request value wins either way (measured),
@@ -199,6 +201,8 @@ public struct HTTPTransport: SyncTransport {
                 TimeInterval(WireLimits.maxWaitSeconds) + RelayRequestBuilder.longPollGrace
             return URLSession(configuration: configuration)
         }()
+        self.session = session
+        self.capped = CappedSession(configuration: session.configuration)
     }
 
     public func push(_ request: PushRequest) async throws -> PushResponse {
@@ -302,8 +306,13 @@ extension HTTPTransport: BlobTransport {
         }
     }
 
+    /// Without a cap from the caller, still never more than the largest chunk the relay accepts.
     public func blobChunk(blobID: String, index: Int) async throws -> Data? {
-        let (data, status) = try await send(builder.blobChunk(blobID: blobID, index: index))
+        try await blobChunk(blobID: blobID, index: index, maxBytes: WireLimits.maxBlobChunkBodyBytes)
+    }
+
+    public func blobChunk(blobID: String, index: Int, maxBytes: Int) async throws -> Data? {
+        let (data, status) = try await capped.send(builder.blobChunk(blobID: blobID, index: index), maxBytes: maxBytes)
         if status == 404 { return nil }
         try RelayRequestBuilder.check(status: status, body: data)
         return data
@@ -336,5 +345,126 @@ private final class DataTaskBox: @unchecked Sendable {
         let task = self.task
         lock.unlock()
         task?.cancel()
+    }
+}
+
+/// A URLSession whose delegate reads each response as it arrives, so a body can be refused at its declared length
+/// (Content-Length over the cap) or the moment it passes the cap, instead of after it's all in memory.
+/// Shared by copies of one `HTTPTransport`; the session is invalidated (which releases its delegate) when the last
+/// copy goes.
+private final class CappedSession: Sendable {
+    let session: URLSession
+    let delegate: CappedResponseDelegate
+
+    init(configuration: URLSessionConfiguration) {
+        delegate = CappedResponseDelegate()
+        session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+    }
+
+    deinit {
+        session.finishTasksAndInvalidate()
+    }
+
+    func send(_ request: URLRequest, maxBytes: Int) async throws -> (Data, Int) {
+        let box = DataTaskBox()
+        let result: (Data, Int) = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(Data, Int), Error>) in
+                withAutoreleasePool {
+                    let task = session.dataTask(with: request)
+                    delegate.register(task, CappedResponse(maxBytes: maxBytes, continuation: continuation))
+                    box.start(task)
+                }
+            }
+        } onCancel: {
+            box.cancel()
+        }
+        try Task.checkCancellation()
+        return result
+    }
+}
+
+/// One response being read under a cap.
+final class CappedResponse: @unchecked Sendable {
+    /// Error bodies (a 4xx message) get at least this much room, even under a small cap.
+    static let minimumErrorRoom = 4096
+    let maxBytes: Int
+    var status = 0
+    var data = Data()
+    var tooLarge = false
+    private var continuation: CheckedContinuation<(Data, Int), Error>?
+
+    init(maxBytes: Int, continuation: CheckedContinuation<(Data, Int), Error>) {
+        self.maxBytes = maxBytes
+        self.continuation = continuation
+    }
+
+    var limit: Int { (200..<300).contains(status) ? maxBytes : max(maxBytes, Self.minimumErrorRoom) }
+
+    /// False when the declared length is already over the cap.
+    func receive(_ response: URLResponse) -> Bool {
+        status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if response.expectedContentLength > Int64(limit) {
+            tooLarge = true
+            return false
+        }
+        return true
+    }
+
+    /// False (and nothing kept) when this piece would take the body past the cap.
+    func append(_ piece: Data) -> Bool {
+        guard piece.count <= limit - data.count else {
+            tooLarge = true
+            data = Data()
+            return false
+        }
+        data.append(piece)
+        return true
+    }
+
+    func finish(_ error: Error?) {
+        guard let continuation else { return }
+        self.continuation = nil
+        if tooLarge {
+            continuation.resume(throwing: TransportError.responseTooLarge(limit: maxBytes))
+        } else if let error {
+            continuation.resume(throwing: TransportError.network(error.localizedDescription))
+        } else if status == 0 {
+            continuation.resume(throwing: TransportError.decoding)
+        } else {
+            continuation.resume(returning: (data, status))
+        }
+    }
+}
+
+/// Routes each task's callbacks to its `CappedResponse`. Callbacks for one task arrive in order on the session's
+/// delegate queue; the lock covers the table, which `register` touches from other threads.
+final class CappedResponseDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var responses: [Int: CappedResponse] = [:]
+
+    func register(_ task: URLSessionTask, _ response: CappedResponse) {
+        lock.withLock { responses[task.taskIdentifier] = response }
+    }
+
+    private func response(for task: URLSessionTask) -> CappedResponse? {
+        lock.withLock { responses[task.taskIdentifier] }
+    }
+
+    func urlSession(
+        _ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        guard let capped = self.response(for: dataTask) else { return completionHandler(.cancel) }
+        completionHandler(capped.receive(response) ? .allow : .cancel)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard let capped = response(for: dataTask) else { return }
+        if !capped.append(data) { dataTask.cancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let capped = lock.withLock { responses.removeValue(forKey: task.taskIdentifier) }
+        capped?.finish(error)
     }
 }

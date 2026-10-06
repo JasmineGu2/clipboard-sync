@@ -121,6 +121,29 @@ The Mac menu and the iPhone's settings screen. `{days}` is a number above 1.
 - `removeDeviceMessage`: It stops syncing and can't read anything copied from now on. Your other devices switch to a new key the next time they sync. Anything already on it stays there. Images and files that only it had keep their preview but can't be downloaded any more.
 - `removeDeviceConfirm`: Remove device
 - `deviceRemoved`: {device} was removed.
+- `deviceFingerprint`: Key {fingerprint}
+- `deviceJoined`: Joined {date}
+- `devicesCheckHint`: To check a device, open Devices on it: the key next to This device should match the key shown for it here. Remove any device you don't recognize.
+
+## Removed from the vault
+
+Shown instead of the history once another device removed this one (F13).
+
+- `removedTitle`: This device was removed
+- `removedBody`: Another device removed this one from your vault, so it no longer syncs. Set it up again to join with a pairing code or start a new vault.
+- `removedKeepsHistory`: The old history isn't deleted. It moves to a folder named removed- and the date, inside ClipSync's data folder on this device.
+- `setUpAgain`: Set up again
+
+## Quick picker (Mac)
+
+The floating list ⌃⌘V opens.
+
+- `menuQuickPick`: Quick picker (⌃⌘V)
+- `pickerPrompt`: Search recent clips
+- `pickerHintCopy`: ↑↓ to choose · Return to copy · Esc to close
+- `pickerHintPaste`: ↑↓ to choose · Return to paste · Esc to close
+- `pickerCopiedNoPaste`: Copied. Press ⌘V to paste. To paste with Return, allow ClipSync in System Settings > Privacy & Security > Accessibility.
+- `pickerHotkeyUnavailable`: ⌃⌘V is taken by another app, so the quick picker has no shortcut. Open it from this menu.
 
 ## Share extension and Shortcuts
 
@@ -132,6 +155,17 @@ The Mac menu and the iPhone's settings screen. `{days}` is a number above 1.
 - `intentTextParameter`: Text
 - `intentTextPrompt`: What text do you want to send?
 - `intentShortTitle`: Send Clipboard
+
+## Apple Watch (F17)
+
+The watch shows the iPhone's pinned items. It reuses `sectionPinned` as its title.
+
+- `watchEmpty`: Nothing pinned yet. Pin items in ClipSync on your iPhone and they show up here.
+- `watchCopyOnPhone`: Copy on iPhone
+- `watchCopiedOnPhone`: On your iPhone's clipboard
+- `watchPhoneUnreachable`: Can't reach your iPhone. Open ClipSync on it and try again.
+- `watchTruncated`: Shortened for the watch. The full text is on your iPhone.
+- `watchOmitted`: {count} more pinned items are only on your iPhone.
 
 ## Errors (see AppMessage)
 

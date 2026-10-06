@@ -11,6 +11,7 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 ## In progress
 
 ## Review
+- [ ] T32 M3 Windows tray app (`ClipSyncWin`, apps/Windows): tray menu, history window with search/copy/pin/rename/delete, Ctrl+Shift+V, clipboard listener with concealed skip, pause, expiry, pairing, devices/revoke, start at sign-in; clipctl's Win32 code moved to `ClipWindows`; copy in content/windows.md. Builds as a stub on macOS (218 tests pass) · needs: CI Windows job for the first compile, then a run on the PC
 
 ## Done
 - [x] T01 Contracts, design doc
@@ -44,7 +45,11 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 - [x] T26 Expiry (F14) as synced deletes; harness `--expiry deleteOps` 2000/2000, `hideLocally` caught; clipctl `expire`
 - [x] T29 M4 images and files (F11, F12, N5, N6): encrypted 1 MiB chunks on relay blob routes, resumable upload and download, thumbnails in the op, blob GC; `clipctl send-file`/`get`, Mac capture, iPhone paste and share sheet; harness `--blob-gc deadItemsOnly` 500/500, `unreferencedOnRelay` caught; `scripts/e2e-blobs.sh`
 - [x] Revoke x blobs: the revoke wipes relay blobs, remaining devices re-upload what they hold under the new key, blob routes re-check the token in storage; harness `--revoke-blobs reuploadHeld` 500/500, `keepRelayBlobs` and `opsOnly` caught; `scripts/e2e-revoke-blobs.sh` (three clipctl clients)
+- [x] T31 Apple Watch view of pinned items (F17): iPhone mirrors pinned items, Copy on iPhone by ID; opt-in target (`CLIPSYNC_WATCH=YES`), type-checked for watchOS only, not run (needs the watchOS platform and a simulator or watch)
 
-- [x] T33 Direct sync while the relay is down (F16): each listening device serves its own op log like a small relay, per-peer log cursors, HPKE AuthPSK between device keys under the vault key, sealed peer addresses in device records, ops received directly re-pushed to the relay; `ClipPeerSocket` (BSD sockets), `clipctl watch --peer-port`, sync path in `clipctl status` and the Mac menu; harness `--peer logCursors` 500/500 (also with revoke, blobs, expiry), `outboxOnly` and `ignoresVaultKey` caught
+- [x] T35 Relay and transport hardening: stale-upload purge (7 days, startup + hourly), O(1) blob byte total kept in the same transaction (migration, crash-snapshot test), chunk responses capped while read, N10 bind check (loopback/tailnet only unless `--allow-non-tailnet`) and `scripts/deploy-relay.sh`, N12 crash test for the blob cache
+- [x] T34 Apple polish (branch t34-apple-polish): removed-device screen with Set up again (old files moved to `removed-<date>/`), key fingerprints and join dates in Devices (Mac, iOS, `clipctl devices`), Mac ⌃⌘V quick picker (Carbon hot key, paste only with Accessibility), watcher Sendable warning fixed, image cap at read time, DEBUG measurement mode; N3 on the simulator 2.99 s median (Debug, loaded machine) and N4 CPU proxy 0.1% recorded in apps/Apple/README.md
+
+- [x] T33 Direct sync while the relay is down (F16): each listening device serves its own op log like a small relay, per-peer log cursors, HPKE AuthPSK between device keys under the vault key, sealed peer addresses in device records, ops received directly re-pushed to the relay; `ClipPeerSocket` (BSD sockets), `clipctl watch --peer-port`, sync path in `clipctl status` and the Mac menu; harness `--peer logCursors` 500/500 (also with revoke, blobs, expiry), `outboxOnly` and `ignoresVaultKey` caught. Master merged in (T31, T32, T34, T35): device records carry name, join date and peer address; the Mac, iPhone and Windows tray apps all pass peer sockets (none in measurement mode); the tray app's wiring is uncompiled until CI's Windows job
 
 ## Blocked

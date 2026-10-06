@@ -17,7 +17,7 @@ What the system protects, from whom, and what it doesn't. Read with [design.md](
 3. **Someone holding a lost device.**
 4. **A malicious paired device**: a device that has the vault key and is acting against the others.
 
-Anyone outside the tailnet is out of scope as long as the relay never binds a public address (N10).
+Anyone outside the tailnet is out of scope as long as the relay never binds a public address (N10). The relay enforces that: it won't start on an address outside loopback and the tailnet without an explicit flag.
 
 ## What's protected, and how
 
@@ -54,9 +54,13 @@ It keeps whatever it already had. See Known gaps.
 - `POST /v1/auth/revoke`, sent with the current token, is the revoke transaction above. `GET /v1/rekey/{id}` hands out a device's handoffs without a token (its old one just stopped working); each blob is useless to anyone but that device.
 - A device ID's public key can't be changed once registered (409), so a device that is still in the vault can't take over another device's entry before a revoke.
 - Push bodies are capped at 4 MiB before decoding, and pairing bodies at 100 KiB. At most 100 pairing blobs can be live.
-- Blob chunk bodies are capped at 1 MiB + 28 bytes before reading, a blob at 512 chunks, and all blobs together at 20 GiB (507 past it). Blob IDs must be UUID strings, since they go into URL paths. Every blob route needs the token.
+- Blob chunk bodies are capped at 1 MiB + 28 bytes before reading, a blob at 512 chunks, and all blobs together at 20 GiB (507 past it, checked against a running total kept in the same transaction as every change). Blob IDs must be UUID strings, since they go into URL paths. Every blob route needs the token.
+- Uploads that never finish are purged: a blob with missing chunks and no new chunk for 7 days (`--blob-max-age-days`) is deleted, at startup and hourly.
+- Clients read a chunk response with a cap at the chunk's exact sealed size: a declared length over it is refused before the body is read, and an undeclared body is cut off as soon as it passes the cap.
 
-**The network.** The relay speaks plain HTTP and relies on the tailnet: Tailscale's WireGuard tunnel encrypts traffic between devices, and the relay binds only the address it's given (default `127.0.0.1`, with a warning on `0.0.0.0`).
+**The Apple Watch (F17).** The watch isn't a vault member. It never gets the vault key or the token and never talks to the relay. The iPhone sends it the plain text of pinned items only (at most 50, 2,000 characters each, 48 KB in all) over WatchConnectivity. The watch saves them with `completeFileProtectionUnlessOpen`, so the file can't be opened while the watch is locked. **Copy on iPhone** sends back only an item ID, and the iPhone copies that item from its own database, so the watch can't put text of its own on the phone's clipboard.
+
+**The network.** The relay speaks plain HTTP and relies on the tailnet: Tailscale's WireGuard tunnel encrypts traffic between devices. The relay binds only the address it's given (default `127.0.0.1`) and refuses to start on anything outside loopback (127.0.0.0/8, ::1) and Tailscale's ranges (100.64.0.0/10, fd7a:115c:a1e0::/48), host names included, unless started with `--allow-non-tailnet`, which logs a warning (N10). The deploy script runs it in Docker with host networking on the VM's Tailscale IP, and the VM's cloud firewall allows only SSH in.
 
 ## What leaks
 
@@ -77,7 +81,7 @@ A tailnet peer sees that the relay exists and can call `/healthz`. Without the t
 ## Known gaps
 
 - **Revocation only protects what comes next (F13).** The lost device still holds its local history and the old vault key, so everything synced before the revoke stays readable to whoever has it, along with any old relay backup. Ops it pushed that no remaining device had pulled are lost in the wipe.
-- **Whoever revokes first wins.** Until the revoke, the lost device's holder has the token. They could revoke the real devices. Or they could register decoy devices (any number up to the 64-device cap, under names like "MacBook Pro") with keys they hold, and the next revoke would hand the new key to every decoy that's kept. The device list shows every registered device, so remove anything you don't recognize, and a list longer than your real devices is the giveaway. The list doesn't show key fingerprints or when each device registered yet, which would make decoys easier to spot. If you're locked out, re-pin the relay by hand (Server/README.md) and pair again.
+- **Whoever revokes first wins.** Until the revoke, the lost device's holder has the token. They could revoke the real devices. Or they could register decoy devices (any number up to the 64-device cap, under names like "MacBook Pro") with keys they hold, and the next revoke would hand the new key to every decoy that's kept. The device list shows every registered device, so remove anything you don't recognize, and a list longer than your real devices is the giveaway. The list shows each device's key fingerprint (64 bits of SHA-256 over its public key) and join date, and each device marks itself: compare the key next to "This device" on each real device with the list, and anything left over is a decoy. A decoy can't copy a real device's fingerprint without about 2^64 work. The join date is only a hint: it's sealed under the vault key, so the relay can't change it, but whoever holds the vault key can write any date. If you're locked out, re-pin the relay by hand (Server/README.md) and pair again.
 - **Revoke and in-flight requests.** The relay re-checks the token inside the push transaction, again before a pull returns, and in the same storage call as every blob read or write. So a request that passed auth just before a revoke can't write into, or read, the new log or the new blobs. For blob uploads this is also about availability: the relay keeps the first copy of a chunk, so a stale old-key chunk would block the re-upload under the new key.
 - **Files only the lost device had are gone after a revoke.** Their items and thumbnails stay, but the chunks went with the old key and nobody can upload them again.
 - **Some devices have to pair again after a revoke:** a device that never synced since device records existed (it has no record), and a device that was offline through more than 8 revokes.
@@ -88,8 +92,8 @@ A tailnet peer sees that the relay exists and can call `/healthz`. Without the t
 - **The relay can withhold or split.** It can drop ops, stop serving a device, or show different devices different logs. Nothing detects that yet. It can't forge or alter an op.
 - **The relay can withhold or delete blobs.** It can refuse chunks or drop them, so a download stops with "not uploaded yet" or fails. It can't make a device accept wrong bytes.
 - **Any device with the token can delete any blob on the relay.** Garbage collection needs that. A malicious paired device could delete every blob; the items stay, but their payloads are gone unless a device still has them cached.
-- **Orphaned chunks can stay on the relay.** If an item is deleted while its upload is still running on a device that's then switched off, the chunks that landed stay until a relay-side age limit exists (follow-up; `blobs.created_at` is stored for it).
-- **A relay can send an oversized chunk.** The client reads a chunk response in full before rejecting it, so a hostile relay can make a device use memory (follow-up: check the length while reading).
+- **Some orphaned blobs can stay on the relay.** Unfinished uploads are purged after 7 days idle. But if an upload finishes and its item is then deleted while that device is offline for good, the complete blob stays until a revoke wipes the relay. The relay can't tell it from a blob a visible item still uses.
+- **`--allow-non-tailnet` turns N10 off.** It exists for bridge-networked containers. With it, only the address in front of Docker's `-p` keeps the relay off the internet, and Docker's published ports skip the host firewall.
 - **Old clients drop blob references.** A device from before M4 decodes an image item without its blob and stores that. Every device needs M4 before images are sent.
 - **Local blob copies are plaintext,** like the history: the blob cache and the `exports` folder (copies named for the clipboard, removed after a day) are protected only by the OS.
 - **Local history is plaintext.** `clips.sqlite` isn't encrypted by the app. On a lost device it's protected only by the OS: the login, and disk encryption if it's on. On Windows, anyone who signs in as that user can also unlock the DPAPI key.
@@ -99,6 +103,7 @@ A tailnet peer sees that the relay exists and can call `/healthz`. Without the t
 - **Direct sync needs clocks within 5 minutes.** A device whose clock is further off is refused (`clockSkew`).
 - **A paired device can point others at another tailnet address.** The listen address is chosen by the device that owns the record. Dialers only connect to Tailscale IPv4 addresses (never the LAN or their own loopback) and only send sealed frames, so the machine at that address learns that someone dialed it and nothing more.
 - **Ops received directly are echoed back.** A device pushes its whole log to a peer, including what it just pulled from that peer. The other side ignores what it has, so this costs bytes, not correctness. A malicious member could change its log ID on every answer to force full re-sends, at most 40 rounds per pass.
+- **Pinned items sit in plaintext on the watch (F17).** A lost watch holds the text of every pinned item it last got, protected only by its passcode and data protection. WatchConnectivity also keeps its own copy of the last list the phone sent, outside the app's file. Each transfer replaces the whole list in both places, so an unpinned item should go on the next one (not yet checked on a watch). Revoking a device doesn't touch the watch, since it was never in the vault.
 - **The envelope's device ID isn't authenticated.** The relay could relabel which device pushed an op. Clients don't read it: the source device shown in the history comes from inside the encrypted op.
 
 ## Crypto review findings

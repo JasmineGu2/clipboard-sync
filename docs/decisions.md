@@ -255,3 +255,15 @@
 - **Why:** Measurement mode runs on a fixed throwaway vault key, so a listener there would accept anyone holding that key on the tailnet, and N3/N4 measure launch and idle, which a dead relay plus no cached peers doesn't change. The tray app wiring is the same three lines as the Mac, and `ClipPeerSocket` already has the Winsock branches, so leaving it out would only defer the same uncompiled code.
 - **Trade-offs:** Neither the tray app nor the Winsock code has been compiled; CI's Windows job is the first check. Windows Firewall will likely ask on the first listen.
 - **Alternatives:** Keep the synthesized Codable from t33 for `peer` (can't: master's custom Codable for `joinedMillis` replaces it). Peers in measurement mode too (closer to a real launch, but opens a port behind a public key).
+
+## 2026-10-06: Build the P2 features (F16, F17) before v1 runs on all three devices
+- **Decision:** F16 direct sync and F17 the Apple Watch view were built now, alongside the P1 work, instead of waiting for v1 to run on the iPhone, Mac and PC.
+- **Why:** Jazz asked for every unfinished requirement to be built. Every requirement buildable without hardware is now built, so the remaining work is all on real devices.
+- **Trade-offs:** This overrides the PRD's scope-creep rule ("P0 list only until v1 runs on all three devices"). Neither F16 nor F17 has run on real hardware, and the watch target is opt-in until the watchOS platform is installed.
+- **Alternatives:** Hold F16 and F17 until after the two-week daily-use trial (the PRD's plan).
+
+## 2026-10-06: Commit history rewritten to drop Claude co-author lines
+- **Decision:** Every commit message on master had its `Co-Authored-By: Claude` line removed with `git filter-branch --msg-filter`, and master was force-pushed. Claude Code's `attribution` setting is now empty, so new commits don't add the line.
+- **Why:** Jazz doesn't want Claude listed as a contributor on GitHub.
+- **Trade-offs:** Every commit ID on master changed. The file contents didn't: the final tree is identical. Any other checkout (the Windows PC and its worktrees) must reset to the new master. The old history is in `../swift-history-backup-2026-10-06.bundle`.
+- **Alternatives:** Only stop adding the line from now on (old commits would still list Claude).

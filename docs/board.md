@@ -45,4 +45,6 @@ Milestone 1: Walking skeleton. Milestone 2: Apple apps. M3–M5 in docs/vision.m
 - [x] T29 M4 images and files (F11, F12, N5, N6): encrypted 1 MiB chunks on relay blob routes, resumable upload and download, thumbnails in the op, blob GC; `clipctl send-file`/`get`, Mac capture, iPhone paste and share sheet; harness `--blob-gc deadItemsOnly` 500/500, `unreferencedOnRelay` caught; `scripts/e2e-blobs.sh`
 - [x] Revoke x blobs: the revoke wipes relay blobs, remaining devices re-upload what they hold under the new key, blob routes re-check the token in storage; harness `--revoke-blobs reuploadHeld` 500/500, `keepRelayBlobs` and `opsOnly` caught; `scripts/e2e-revoke-blobs.sh` (three clipctl clients)
 
+- [x] T35 Relay and transport hardening: stale-upload purge (7 days, startup + hourly), O(1) blob byte total kept in the same transaction (migration, crash-snapshot test), chunk responses capped while read, N10 bind check (loopback/tailnet only unless `--allow-non-tailnet`) and `scripts/deploy-relay.sh`, N12 crash test for the blob cache
+
 ## Blocked

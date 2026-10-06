@@ -108,7 +108,7 @@ public enum AppMessage: String, Equatable, Sendable, CaseIterable {
             case .unauthorized: self = .unauthorized
             case .rateLimited: self = .rateLimited
             case .payloadTooLarge: self = .tooLarge
-            case .notFound, .conflict, .cursorAhead, .badRequest, .server, .decoding: self = .server
+            case .notFound, .conflict, .cursorAhead, .badRequest, .server, .decoding, .responseTooLarge: self = .server
             }
         case let error as AppError:
             switch error {

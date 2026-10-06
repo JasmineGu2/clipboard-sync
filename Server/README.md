@@ -20,9 +20,40 @@ swift run ClipRelay --host 127.0.0.1 --port 8787 --db ./relay.sqlite3
 | `--port` | `CLIP_RELAY_PORT` | `8787` |
 | `--db` | `CLIP_RELAY_DB` | `./relay.sqlite3` |
 | `--token-sha256` | `CLIP_RELAY_TOKEN_SHA256` | none (trust on first use) |
+| `--allow-non-tailnet` | `CLIP_RELAY_ALLOW_NON_TAILNET=1` | off |
+| `--blob-max-age-days` | `CLIP_RELAY_BLOB_MAX_AGE_DAYS` | `7` |
 
-On the VM, bind the Tailscale IP (`tailscale ip -4`). Never bind `0.0.0.0` on the host. The relay has no TLS
-and relies on the tailnet to keep strangers out.
+On the VM, bind the Tailscale IP (`tailscale ip -4`). The relay has no TLS and relies on the tailnet to keep
+strangers out.
+
+### Where it may listen (N10)
+
+The relay refuses to start (exit status 2, before it opens the database) when `--host` is outside loopback and
+the tailnet:
+
+| Allowed | Ranges |
+| --- | --- |
+| Loopback | `127.0.0.0/8`, `::1`, `localhost` |
+| Tailscale | `100.64.0.0/10`, `fd7a:115c:a1e0::/48` (and IPv4-mapped forms of both) |
+
+Everything else is refused: `0.0.0.0`, `::`, a LAN or public address, and any host name other than `localhost`
+(a name can resolve to anything). `--allow-non-tailnet` (or `CLIP_RELAY_ALLOW_NON_TAILNET=1`) lifts the check
+for the one case that needs it, a container on bridge networking whose published port is pinned to the
+Tailscale IP. It still logs a warning, and `0.0.0.0` keeps its "listening on every interface" warning.
+`--allow-non-tailnet=0` turns the opt-in back off over the environment.
+
+### Stale blob uploads
+
+At startup and then every hour, the relay deletes image and file uploads that never finished: blobs with fewer
+chunks than their count and no new chunk for `--blob-max-age-days` (default 7). A device that comes back later
+gets 404 from the resume query and uploads the whole blob again. Complete blobs are never purged by age, since the
+relay can't tell whether an item still uses one; devices delete those when their item is deleted (design §6).
+Chunk rows without a blob row (no current code makes them) go in the same pass. Each purge is logged with the
+number of blobs and bytes.
+
+The 20 GiB cap on all chunks is checked against a running total stored in `meta` (`blob_bytes_stored`), updated in
+the same transaction as every upload, delete, purge and revoke, so an upload doesn't sum every chunk. A database
+from an older relay gets the total (and the `touched_at` column the purge uses) the first time it's opened.
 
 Linux needs the SQLite headers: `sudo apt-get install libsqlite3-dev`.
 
@@ -60,7 +91,7 @@ All bodies are JSON and `Data` fields are base64. The types live in `Sources/Cli
 | `GET /v1/ops?after=&limit=&wait=` | yes | returns `PullResponse { envelopes, latestSeq, hasMore, epoch }` with `seq > after`, ascending. `limit` defaults to 500 and is capped at 500. With nothing new and `wait > 0` (max 30), it holds the request until a push lands or the wait runs out. If `after` is past the newest seq, returns 409 with `CursorAheadResponse { latestSeq }` (see below). |
 | `PUT /v1/pairing/{id}` | yes | body `PairingBlob`, returns 204. `id` is 32 lowercase hex chars. Body capped at 100 KiB before decoding, blob at 64 KiB (413). Expires after 10 minutes. Never overwrites: an ID that's already live gets 409. At most 100 live blobs (expired ones are purged first); beyond that, 429. |
 | `GET /v1/pairing/{id}` | no | returns the `PairingBlob` once, then deletes it. 404 if missing or expired. No token, because the new device doesn't have one yet; the unguessable ID is the capability. |
-| `PUT /v1/blobs/{id}/chunks/{index}?count=n` | yes | Raw bytes (`application/octet-stream`): one sealed chunk of an image or file, opaque to the relay. 204, also when that chunk is already stored (the first copy is kept). `id` is a UUID, `index` 0...511, `count` 1...512 and fixed by the blob's first chunk (409 if it differs; 400 if `index >= count`). Body capped at 1 MiB + 28 bytes before reading (413), at least 28 bytes (400). 507 when all stored chunks would pass 20 GiB (`RelayConfig.maxBlobStorageBytes`). |
+| `PUT /v1/blobs/{id}/chunks/{index}?count=n` | yes | Raw bytes (`application/octet-stream`): one sealed chunk of an image or file, opaque to the relay. 204, also when that chunk is already stored (the first copy is kept). `id` is a UUID, `index` 0...511, `count` 1...512 and fixed by the blob's first chunk (409 if it differs; 400 if `index >= count`). Body capped at 1 MiB + 28 bytes before reading (413), at least 28 bytes (400). 507 when all stored chunks would pass 20 GiB (`RelayConfig.maxBlobStorageBytes`). Each new chunk restarts the blob's stale-upload clock (see Stale blob uploads). |
 | `GET /v1/blobs/{id}` | yes | `BlobStatus { blobID, chunkCount, received }`: which chunks are stored. Uploads resume by sending the rest. 404 when none are. |
 | `GET /v1/blobs/{id}/chunks/{index}` | yes | The chunk's bytes, or 404 when it isn't uploaded (yet). |
 | `DELETE /v1/blobs/{id}` | yes | Removes the blob and its chunks; 204 even when there was nothing. Devices call it for blobs of deleted items. Every blob route re-checks the token in the same storage call, so one authorized just before a revoke gets 401 rather than touching blobs after it. |
@@ -172,24 +203,62 @@ curl http://100.64.0.10:8787/healthz
 
 If the relay starts before Tailscale has its IP, the bind fails and systemd retries it (`Restart=on-failure`).
 
-### Option 2: Docker
+### Option 2: Docker (recommended: `scripts/deploy-relay.sh`)
 
-Build from the repo root, because the relay depends on the root package by path:
+Tailscale runs on the VM itself, and the container uses host networking, so the relay binds the VM's Tailscale IP
+directly and passes the N10 check with no opt-in. One command does the whole deploy from a Mac or Linux machine
+with this repo checked out:
+
+```sh
+scripts/deploy-relay.sh root@<vm> --token-sha256 <Relay pin from clipctl status>
+# --port 8787 (default), --dry-run to print the commands without running them
+```
+
+It checks that Docker works and Tailscale has an IPv4 address on the VM, copies the current commit
+(`git archive HEAD`, so commit first), builds the image there, replaces the `clip-relay` container, then checks
+`/healthz` on the Tailscale IP and that nothing listens on the port on any other address.
+
+**One-time VM setup** (Hetzner, Ubuntu 24.04):
+
+1. Create the server with your SSH key. In Hetzner's Cloud Firewall, allow inbound SSH (22/tcp) only. The relay
+   port never needs to be open: tailnet traffic arrives over Tailscale's own tunnel. (Optionally allow 41641/udp
+   so Tailscale connects directly rather than through a relay server.)
+2. `curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up`, then approve the machine in the
+   Tailscale admin console. Turn off key expiry for it there, or the relay drops off the tailnet in 180 days.
+3. `curl -fsSL https://get.docker.com | sh`, and `sudo usermod -aG docker <user>` if you deploy as a non-root user.
+4. Run `scripts/deploy-relay.sh`. Point each device at `http://<vm tailscale name>:8787`.
+
+What the script runs on the VM, if you'd rather do it by hand (from a copy of the repo):
 
 ```sh
 docker build -f Server/Dockerfile -t clip-relay .
-docker run -d --name clip-relay --restart unless-stopped \
-  -p 100.64.0.10:8787:8787 -v clip-relay-data:/data clip-relay
+docker run -d --name clip-relay --restart unless-stopped --network host \
+  -v clip-relay-data:/data \
+  -e CLIP_RELAY_HOST="$(tailscale ip -4)" -e CLIP_RELAY_PORT=8787 \
+  -e CLIP_RELAY_TOKEN_SHA256=<pin> clip-relay
+curl "http://$(tailscale ip -4):8787/healthz"
 ```
 
-Inside the container the relay listens on `0.0.0.0` so the published port can reach it. The `-p` flag is what
-keeps it on the tailnet, so always put the Tailscale IP in front of the port.
+- **The pin.** After a revoke, `clipctl status` shows a new Relay pin. The relay keeps the rotated hash across
+  restarts, so nothing breaks, but rerun the script with the new pin before you next change it (see Auth).
+- **Boot order.** If Docker starts the container before Tailscale has its IP, the bind fails, the relay exits,
+  and `--restart unless-stopped` retries it until the IP is up.
+- **Data.** The log lives in the `clip-relay-data` volume, so redeploys keep it. Back it up with
+  `docker run --rm -v clip-relay-data:/data -v "$PWD":/out ubuntu tar -czf /out/relay-backup.tgz /data` (stop
+  the container first, or copy all three of `relay.sqlite3`, `-wal` and `-shm` together).
+- **Bridge networking instead.** Inside a bridged container the relay has to listen on `0.0.0.0`, which N10
+  refuses, so it needs the explicit opt-in, and the published port must carry the Tailscale IP:
+  `docker run -p 100.x.y.z:8787:8787 -e CLIP_RELAY_HOST=0.0.0.0 -e CLIP_RELAY_ALLOW_NON_TAILNET=1 ...`.
+  Without the IP in front of the port, Docker publishes on every interface and bypasses the host firewall.
+- **Tailscale inside the container** (a `tailscale/tailscale` sidecar sharing its network namespace) also works
+  and gives the relay its own tailnet name, but it needs `NET_ADMIN` and `/dev/net/tun` or userspace networking,
+  and a second auth key to manage. Host networking is simpler on a VM that runs nothing else.
 
 ## Layout
 
 - `Sources/RelayCore`: storage (`RelayStorage` protocol, `SQLiteRelayStorage` actor), `PushNotifier`
-  (long-poll wakeups), `TokenAuthenticator` (actor: pinned hash, trust on first use, cache, rotation), and
-  `buildRelayRouter` (routes and per-route body caps)
+  (long-poll wakeups), `TokenAuthenticator` (actor: pinned hash, trust on first use, cache, rotation),
+  `buildRelayRouter` (routes and per-route body caps), `BlobPurger` (stale uploads) and `BindPolicy` (N10)
 - `Sources/ClipRelay`: `main.swift`, flags and startup
 - `Sources/RelaySQLite`: module map for the system SQLite library
 - `Tests/RelayTests`: route and storage tests using HummingbirdTesting

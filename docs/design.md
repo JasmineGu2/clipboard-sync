@@ -203,8 +203,9 @@ so a large file never holds up text. It asks the relay which chunks it already h
 the resume (N5). Until the upload finishes, a download stops at the first missing chunk with "not uploaded yet",
 keeping what it has.
 
-**Download.** `fetchBlob` opens (or resumes) `<blob>.partial`. Each new chunk is opened (GCM checks it) before
-it's written and fsynced, and only then is the chunk count written to `<blob>.progress`. A resume cuts the
+**Download.** `fetchBlob` opens (or resumes) `<blob>.partial`. Each new chunk is read with a cap at its exact sealed size (a
+longer body is cut off while it's read, so a hostile relay can't make a device buffer more), opened (GCM checks
+it) before it's written and fsynced, and only then is the chunk count written to `<blob>.progress`. A resume cuts the
 partial file back to that count (or its length, if shorter) and re-hashes it, one chunk at a time. The length
 alone isn't enough: in the end-to-end run, a process killed mid-write left the file one chunk longer with that
 chunk all zeros. When all chunks are in, the size and SHA-256 must match the op; only then is the file renamed into place
@@ -224,7 +225,7 @@ deletes each dead blob once (`blob_relay_gc` remembers). The rule is deliberatel
 device knows are deleted. The tempting alternative, deleting every relay blob that no visible item uses, also
 deletes blobs of items a device hasn't pulled yet. The harness shows it: `--blob-gc deadItemsOnly` converges
 500/500, `--blob-gc unreferencedOnRelay` fails 487/500 with "visible item's blob was garbage-collected".
-If an item is deleted while its upload is still running, the uploader deletes what it just sent.
+If an item is deleted while its upload is still running, the uploader deletes what it just sent. The relay also purges uploads that never finished: a blob with chunks missing and none uploaded for 7 days goes, at startup and hourly. It never purges complete blobs by age, for the same reason as above: it can't tell which ones a visible item still uses.
 
 **Relay reset.** The relay's blobs go with its log. `markAllOutbound` also queues every visible item's blob for
 upload, and any device that holds a copy puts it back. A device without one drops the job.

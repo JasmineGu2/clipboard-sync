@@ -27,6 +27,8 @@ jobs:
       - run: swift run -c release ConvergenceHarness --seeds 2000
       - run: swift run -c release ConvergenceHarness --seeds 2000 --expiry deleteOps
       - run: swift run -c release ConvergenceHarness --seeds 2000 --revoke repushAll
+      - run: swift run -c release ConvergenceHarness --seeds 2000 --blob-gc deadItemsOnly
+      - run: swift run -c release ConvergenceHarness --seeds 2000 --revoke repushAll --blob-gc deadItemsOnly
 
   windows:
     runs-on: windows-latest

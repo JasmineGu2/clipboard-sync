@@ -2,7 +2,13 @@
 
 **Now:** Test receiving between the Mac and the PC. The Mac app is set up against the local relay (127.0.0.1:8788, shared on the tailnet as `http://macbook-air.tailc07d02.ts.net:8788`; restart it with `cd Server && nohup ./.build/debug/ClipRelay --port 8788 --db ../.relay/relay.sqlite3 > ../.relay/relay.log 2>&1 &`). On the PC: `git pull`, pair clipctl with a code from the Mac menu's Pair new device, run `clipctl watch`, then copy on one and paste on the other. Then the iPhone (apps/Apple/README.md).
 
-## Where things stand (2026-10-01)
+## Where things stand (2026-10-05, branch t29-blobs)
+- M4 images and files (F11, F12) are on t29-blobs, with master merged in (revoke F13, expiry UI, crash test). Not merged into master yet.
+- Revoke and blobs work together: a revoke wipes relay blobs with the log, and the remaining devices upload the files they hold again under the new key. A file only the lost device had keeps its thumbnail and can't be downloaded. Decision in docs/decisions.md.
+- Check on the Mac: 288 package tests and 62 relay tests pass; harness 500/500 plain, `--revoke repushAll`, `--blob-gc deadItemsOnly`, and both together (`--revoke-blobs reuploadHeld`); the broken variants are caught. `scripts/e2e-blobs.sh` and `scripts/e2e-revoke-blobs.sh` (three clipctl clients) pass. ClipSyncMac, ClipSynciOS and ClipShare build.
+- Not tried yet: images, files or revoke on real devices or in the Apple apps.
+
+## Where things stood (2026-10-01)
 - M1 works end to end: `scripts/e2e.ps1` (relay in WSL + two clipctl devices) passes; A→B p50 ≈ 100 ms on localhost.
 - 173 tests pass on Windows, 36 relay tests pass on Linux, the harness passes 500/500 seeds, the clipctl smoke test passes 20/20.
 - The shared package now builds on the Mac too: `swift build` is clean and 174 tests pass on macOS 14.6 with Swift 6.0.3. The sync core is fine on Apple platforms, so anything that breaks from here is in the thin app layer.

@@ -82,7 +82,7 @@ Only swift-crypto primitives (same API as CryptoKit).
   `DeviceRecord` on the relay: the public key in the clear, the name sealed with AES-256-GCM under
   HKDF(vault, info "clip.device.v1"), AAD `"clip.device.v1|<deviceID>|<hex public key>"`. To revoke, a device
   syncs, makes a new vault key, and sends `POST /v1/auth/revoke` with the old token. One relay transaction swaps
-  in the new key's token, deletes the log and pairing blobs, starts a new epoch, rewrites the device list (names
+  in the new key's token, deletes the log, pairing blobs and image/file chunks, starts a new epoch, rewrites the device list (names
   re-sealed under the new key), and stores a handoff per remaining device, this one included:
   `RekeyHandoff` = HPKE (RFC 9180) PSK mode, DHKEM(X25519, HKDF-SHA256) + HKDF-SHA256 + AES-256-GCM, to the
   device's public key, PSK = HKDF(old vault, info "clip.rekey.psk.v1"), PSK ID "clip.rekey.v1",
@@ -130,6 +130,7 @@ Only swift-crypto primitives (same API as CryptoKit).
 - `SyncTransport` (F13): `putDevice`, `listDevices`, `revoke`, `handoffs(deviceID:)`
 - `HTTPTransport(baseURL:token:)` (URLSession/FoundationNetworking), `InMemoryRelay` (tests; `client(token:)`
   gives a per-device view that carries a token, and `pin(tokenSHA256:)` turns auth on)
+- `InMemoryRelayClient` also implements `BlobTransport` with its token; a revoke on `InMemoryRelay` wipes blobs.
 - `SyncEngine(..., membership:)`: with a `Membership` (device key, a transport factory, a key saver) the engine
   registers its device record once per vault key, recovers a new key on 401, and offers `devices()`,
   `revoke(_ ids:)` and `currentVaultKey`. Without one (tests, the share extension) it behaves as before.
@@ -227,6 +228,16 @@ If an item is deleted while its upload is still running, the uploader deletes wh
 
 **Relay reset.** The relay's blobs go with its log. `markAllOutbound` also queues every visible item's blob for
 upload, and any device that holds a copy puts it back. A device without one drops the job.
+
+**Revoke (F13).** A revoke is a relay reset with a new vault key, so blobs follow the same path. The revoke
+transaction deletes every chunk (they're sealed under the old key, and a chunk is never overwritten, so leaving
+them would block the re-uploads). Adopting the new key swaps the engine's `BlobTransferer` (its chunk keys and
+token come from the vault key), and the new epoch's `markAllOutbound` queues every visible blob, so each remaining
+device re-uploads what it holds under the new key. Blob IDs don't change, so ops need no rewrite. A file only the
+lost device had stays thumbnail-only. Blob routes re-check the request's token inside storage, so an upload
+authorized just before the revoke can't land after it. `fetchBlob` treats a 401 as "maybe a new key": it syncs,
+then resumes once (the `.partial` file is plaintext, so it carries over). Harness: `--revoke-blobs`, see
+docs/decisions.md.
 
 **Capture.** The Mac watcher hands whole clips to the history: copied files win over text (Finder also puts the
 file name as text), and text wins over an image (Office puts a picture of copied cells next to the text). Images

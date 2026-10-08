@@ -294,3 +294,9 @@
 - **Why:** Jazz wants files sent from the Mac to be in Downloads on the PC without opening the history. Screenshots stay clipboard-only, so Downloads doesn't fill with every screenshot.
 - **Trade-offs:** Every file from another device becomes a second copy on the PC's disk (the cache keeps its own), and deleting the item in the history doesn't delete the saved copy. "Already seen" is kept in memory, so a file that arrives while the app isn't running is saved at the next launch only if it syncs after the start.
 - **Alternatives:** Save images too (clutters Downloads); a "Save to Downloads" item in the right-click menu (nothing automatic); do it on the Mac too (the sandboxed app would need the Downloads entitlement).
+
+## 2026-10-08: Images on the Windows clipboard carry CF_DIB, decoded with GDI+
+- **Decision:** When an image goes on the Windows clipboard (received from another device, or copied from the history), it carries a CF_DIB bitmap and, for PNGs, the "PNG" format, both ahead of the CF_HDROP file. `WindowsImage` decodes the file with GDI+'s flat C API, loaded from gdiplus.dll at run time.
+- **Why:** A screenshot from the Mac reached the PC clipboard but wouldn't paste into Figma. Figma (Chromium), Paint and OneNote read CF_DIB, the format a native Windows screenshot carries, and ignore a file or the "PNG" format alone.
+- **Trade-offs:** Decoding runs on the main thread when the image goes on the clipboard (tens of milliseconds for a screenshot); images over 256 MB of pixels skip CF_DIB. Transparency is flattened onto white in CF_DIB; the PNG format keeps it.
+- **Alternatives:** WIC (more capable, but a COM interface that's awkward to call from Swift); CF_BITMAP and let Windows convert (depends on handle ownership rules that are easy to get wrong); putting only the PNG and DIB on the clipboard without the file (pasting into Explorer and some chat apps would stop working).

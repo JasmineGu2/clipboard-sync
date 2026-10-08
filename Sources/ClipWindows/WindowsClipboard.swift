@@ -87,14 +87,26 @@ public enum WindowsClipboard {
     }
 
     /// Puts a file on the clipboard as CF_HDROP, like copying it in Explorer, so pasting into Explorer or a chat
-    /// app pastes the file. With `png` (the file's bytes, for a PNG image), the image goes on as "PNG" too, so
-    /// pasting into a document or an image editor pastes the picture. Marked the same way as text.
-    public static func write(fileAt url: URL, png: Data? = nil) throws {
+    /// app pastes the file. For an image, `dib` (from `WindowsImage`) and `png` (a PNG file's bytes) go on first,
+    /// like a native screenshot, so pasting into Figma, a browser, Office or Paint pastes the picture. Marked the
+    /// same way as text.
+    public static func write(fileAt url: URL, png: Data? = nil, dib: Data? = nil) throws {
         let path = url.withUnsafeFileSystemRepresentation { $0.map { String(cString: $0) } } ?? url.path
         // DROPFILES, then the path list: each path NUL-terminated, the list ended by one more NUL.
         let units = Array(path.replacingOccurrences(of: "/", with: "\\").utf16) + [0, 0]
         let header = MemoryLayout<DROPFILES>.size
         try replaceContents {
+            // Image formats first: apps that take the first format they know should take the picture.
+            if let png, !png.isEmpty, pngFormat != 0 {
+                try set(pngFormat, bytes: png.count) { destination in
+                    png.withUnsafeBytes { source in destination.copyMemory(from: source.baseAddress!, byteCount: source.count) }
+                }
+            }
+            if let dib, !dib.isEmpty {
+                try set(UINT(CF_DIB), bytes: dib.count) { destination in
+                    dib.withUnsafeBytes { source in destination.copyMemory(from: source.baseAddress!, byteCount: source.count) }
+                }
+            }
             try set(UINT(CF_HDROP), bytes: header + units.count * 2) { destination in
                 var drop = DROPFILES()
                 drop.pFiles = DWORD(header)
@@ -102,11 +114,6 @@ public enum WindowsClipboard {
                 destination.storeBytes(of: drop, as: DROPFILES.self)
                 units.withUnsafeBytes { source in
                     destination.advanced(by: header).copyMemory(from: source.baseAddress!, byteCount: source.count)
-                }
-            }
-            if let png, !png.isEmpty, pngFormat != 0 {
-                try set(pngFormat, bytes: png.count) { destination in
-                    png.withUnsafeBytes { source in destination.copyMemory(from: source.baseAddress!, byteCount: source.count) }
                 }
             }
         }

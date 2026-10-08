@@ -10,6 +10,33 @@ Apple's Universal Clipboard covers iPhone to Mac but not Windows, and emailing t
 - Everything is end-to-end encrypted. The relay in the middle only ever sees ciphertext, and when it's down, devices sync with each other directly over Tailscale.
 - A randomized convergence harness crashes devices, moves their clocks and drops requests, then checks every device agrees. It found a real bug.
 
+## Try it
+
+You don't need my devices or a server for this. On a Mac with Xcode 16 (or Swift 6 on Linux):
+
+```sh
+git clone https://github.com/JasmineGu2/clipboard-sync.git
+cd clipboard-sync
+
+# The bug below, with the old clock behavior: 0 of 1 seeds converge
+swift run ConvergenceHarness --start 488 --seeds 1 --clock-recovery fresh --no-clock-check --verbose
+
+# The same seed with the fix: 1 of 1
+swift run ConvergenceHarness --start 488 --seeds 1
+
+# Break a merge rule on purpose and watch the harness catch it: 0 of 500
+swift run ConvergenceHarness --seeds 500 --mutation lwwReversed
+
+# A real relay and three clients on this machine. Stops the relay midway,
+# checks the clients sync directly, then checks the relay catches up
+bash scripts/e2e-direct.sh
+
+# All the tests
+swift test
+```
+
+On my MacBook Air (M3), from a fresh clone, the harness builds in about 10 seconds and 500 seeds run in about 4. The end-to-end script takes about a minute and `swift test` (346 tests) a little under one. The apps themselves need Xcode signing, two devices and Tailscale, so the demo above shows them instead.
+
 ## The bug the harness caught
 
 The harness runs random schedules of devices editing, going offline, crashing, restarting with their wall clock moved back, and losing or duplicating requests. Then it checks every device ends up with the same history. Seed 488 didn't:

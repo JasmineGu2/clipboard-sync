@@ -25,7 +25,7 @@ RELAY="$ROOT/Server/.build/debug/ClipRelay"
 
 "$RELAY" --host 127.0.0.1 --port "$PORT" --db "$WORK/relay.sqlite3" >"$WORK/relay.log" 2>&1 &
 RELAY_PID=$!
-trap 'kill $RELAY_PID 2>/dev/null || true' EXIT
+trap 'disown -a 2>/dev/null; kill $RELAY_PID 2>/dev/null || true' EXIT
 for _ in $(seq 100); do curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null && break; sleep 0.1; done
 
 # --insecure-file-key prints a warning on every run; it's expected here, so it's filtered out. Chunk progress too.

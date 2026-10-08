@@ -28,6 +28,7 @@ PIDS=()
 # for their long-polls), and force-stops whatever is left after 3 s.
 cleanup() {
   local i
+  disown -a 2>/dev/null || true  # no "Terminated" job notices for processes we stop on purpose
   for ((i = ${#PIDS[@]} - 1; i >= 0; i--)); do kill "${PIDS[$i]}" 2>/dev/null || true; done
   for _ in $(seq 30); do
     local alive=0

@@ -10,3 +10,7 @@ DerivedData/
 
 # Blob end-to-end runs (scripts/e2e-blobs.sh)
 .e2e/
+
+# Personal working notes, kept local
+NEXT.md
+context/

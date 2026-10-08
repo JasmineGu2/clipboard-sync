@@ -6,7 +6,7 @@ I copy things on my PC that I need on my iPhone, and the other way round. Apple'
 
 ## Who it's for
 
-One person with an iPhone, a MacBook and a Windows PC, all on one Tailscale tailnet, with a cheap cloud VM that's always on. That's me. A second audience is an engineering manager on an Apple syncing and data persistence team, who will read the repo and design docs to judge how I think about sync, storage, performance and security.
+One person with an iPhone, a MacBook and a Windows PC, all on one Tailscale tailnet, with a cheap cloud VM that's always on. That's me. The repo and design docs are also written for engineers who want to see how I think about sync, storage, performance and security.
 
 ## What it does
 
@@ -14,7 +14,7 @@ The app keeps one encrypted clipboard history across all three devices. New copi
 
 ## Functional requirements
 
-P0 items ship in v1. P1 items ship if time allows before the outreach. P2 items are stretch.
+P0 items ship in v1. P1 items ship if time allows. P2 items are stretch.
 
 | ID | Requirement | Priority |
 | --- | --- | --- |
@@ -81,7 +81,7 @@ The project succeeds if I use it every day and the repo holds up to a sync engin
 - **Convergence:** the randomized harness passes every seed in CI, and a long nightly run finds nothing new for a week.
 - **Targets met:** N1 to N6 measured and reported in the README, including any I missed and why.
 - **Readable design:** the README, design doc, threat model and decision records explain every non-obvious choice.
-- **Outreach:** the cold message links a repo where a reader can find, within a minute, one real bug the harness caught and how it was fixed.
+- **Findable bug:** a reader of the repo can find, within a minute, one real bug the harness caught and how it was fixed.
 
 ## Risks
 
@@ -91,8 +91,8 @@ The project succeeds if I use it every day and the repo holds up to a sync engin
 | Swift on Windows tooling | Windows app slips | Build it last; a command-line client is the fallback |
 | Free provisioning expires every 7 days | iPhone app stops launching weekly | Re-sign weekly during development; pay for the developer account before the demo |
 | I roll my own crypto wrong | Security claims are false | Use only CryptoKit or swift-crypto primitives, follow 1Password's published design, test against known vectors, and ask for review |
-| Scope creep | Nothing ships before applications close | P0 list only until v1 runs on all three devices |
-| Agent-written code I can't explain | Interview goes badly | I write the sync core and crypto myself (see Build plan) |
+| Scope creep | Nothing ships | P0 list only until v1 runs on all three devices |
+| Agent-written code I can't explain | I can't defend the design | Every decision and its reasoning go in docs/decisions.md and docs/design.md, and a crypto-review agent audits crypto changes. (The first plan was to write the core by hand; see docs/decisions.md.) |
 
 ## Out of scope
 

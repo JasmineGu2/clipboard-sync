@@ -8,17 +8,17 @@ From the requirements in [prd.md](prd.md). All three Apple targets (Mac, iPhone,
 
 | ID | Requirement | Status | Notes |
 | --- | --- | --- | --- |
-| F1 | Auto-capture on Mac and PC | Partly | Mac app: works (copied text shows up in the menu). Windows: `clipctl watch`, smoke-tested; tray app builds, not run. |
+| F1 | Auto-capture on Mac and PC | Partly | Mac app and Windows tray app both capture, and sync with each other (filmed 2026-10-08, docs/demo). `clipctl watch` smoke-tested. |
 | F2 | iPhone send: paste button, share sheet, Shortcut | Partly | Builds, not run |
-| F3 | Click an item to put it on the clipboard | Partly | `clipctl copy` works. Mac: click an item, or the ⌃⌘V quick picker. The newest copy from another device also goes on the clipboard by itself (unit and app tests; not yet tried between real devices). iPhone builds, not run. |
+| F3 | Click an item to put it on the clipboard | Partly | `clipctl copy` works. Mac: click an item, or the ⌃⌘V quick picker. The newest copy from another device also goes on the clipboard by itself (unit and app tests; works between the Mac and the PC, filmed 2026-10-08). iPhone builds, not run. |
 | F4 | Newest first, with preview, device and time | Partly | `clipctl list` and the Mac menu work. iPhone builds, not run. |
 | F5 | Full-text search on every device | Partly | SQLite FTS5 in the shared store; works in clipctl. Apple builds, not run. |
 | F6 | Pin, rename, tag, delete; edits sync | Partly | Works end to end between two clipctl clients. Apple builds, not run. |
 | F7 | Offline works; merges on reconnect | Done | Harness and sync engine tests |
 | F8 | End-to-end encrypted | Done | |
 | F9 | Skip concealed content | Partly | Windows done and smoke-tested. Mac builds, not checked by hand. iPhone has no background capture. |
-| F10 | Pair with a code | Done | Tested end to end with clipctl. The Mac app creates a vault. Pairing between real devices not run yet. |
-| F11 | Images | Partly | Thumbnails ride in the encrypted item; full image on demand. `clipctl send-file`, Mac capture, iPhone paste button and share sheet. Apple code builds; not tried on devices. |
+| F10 | Pair with a code | Done | Tested end to end with clipctl. The Mac app creates a vault. The Mac and the Windows tray app paired on 2026-10-08. |
+| F11 | Images | Partly | Thumbnails ride in the encrypted item; full image on demand. `clipctl send-file`, Mac capture, iPhone paste button and share sheet. A Mac screenshot pasted on the PC on 2026-10-08 (docs/demo). Not tried on the iPhone. |
 | F12 | Files | Partly | Downloaded on demand, resumable, SHA-256 checked. End to end with clipctl on the Mac (`scripts/e2e-blobs.sh`). Apple code builds; not tried on devices. |
 | F13 | Revoke a lost device | Partly | `clipctl devices` / `clipctl revoke`, and Devices in the Mac menu and iPhone app. A revoke swaps in a new vault key, wipes the relay, and hands the key to the other devices with HPKE. Tested end to end with three clipctl clients, also with files (`scripts/e2e-revoke-blobs.sh`): the relay drops old-key file chunks and the remaining devices upload theirs again. The Apple screens are built but not clicked through. |
 | F14 | Unpinned items expire | Partly | Synced deletes, harness-checked. `clipctl expire` and `watch --expire-days`. Mac and iPhone setting builds, not run. |

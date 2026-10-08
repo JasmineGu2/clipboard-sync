@@ -2,7 +2,14 @@
 
 One encrypted clipboard history shared by my iPhone, Mac and Windows PC. Copy on one device and the newest copy lands on the others' clipboards, so a normal paste works anywhere, and older items stay in a searchable history.
 
-<!-- Demo GIF goes here: copy on the Mac, paste on the PC. -->
+Demo on my MacBook Air and Windows PC, filmed on my phone. The previews are sped up a little:
+
+<p>
+  <a href="docs/demo/copy-paste.mp4"><img src="docs/demo/copy-paste.gif" width="320" alt="Text copied in Figma on the Mac is pasted in Figma on the PC, text from the PC is pasted on the Mac, then a Mac screenshot is pasted on the PC"></a>
+  <a href="docs/demo/history-and-devices.mp4"><img src="docs/demo/history-and-devices.gif" width="320" alt="The same history in the PC's history window and the Mac menu, then the Devices screen listing the MacBook Air and the Desk PC"></a>
+</p>
+
+Left: copy on one, paste on the other, both ways, then a screenshot. Right: the same history on both machines, and the paired devices. Click either one for the video with sound.
 
 Apple's Universal Clipboard covers iPhone to Mac but not Windows, and emailing text to yourself keeps no history. So I built my own, in Swift:
 
@@ -87,7 +94,7 @@ More detail is in [docs/design.md](docs/design.md) and [docs/threat-model.md](do
 
 ## Status
 
-All of F1 to F16 from the [PRD](docs/prd.md) are built: text, images and files, search, pin/tag/rename/delete, pairing, revoking a lost device, expiry, pause, and direct sync. The Mac app runs. The iPhone app and the Windows tray app build but haven't been run on real devices yet, and most end-to-end testing so far uses the `clipctl` command-line client. The full table, row by row, is in [docs/status.md](docs/status.md).
+All of F1 to F16 from the [PRD](docs/prd.md) are built: text, images and files, search, pin/tag/rename/delete, pairing, revoking a lost device, expiry, pause, and direct sync. The Mac app and the Windows tray app run and sync with each other (the demo above): text both ways, a screenshot from the Mac to the PC, pairing, and the shared history. The iPhone app builds but hasn't run on a phone yet. The full table, row by row, is in [docs/status.md](docs/status.md).
 
 Some numbers so far:
 

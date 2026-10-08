@@ -1,14 +1,10 @@
 # Clipboard Sync
 
-One encrypted clipboard history shared by my iPhone, Mac and Windows PC. Copy on one device and the newest copy lands on the others' clipboards, so a normal paste works anywhere, and older items stay in a searchable history.
+I copy something on my Mac and want to paste it on my Windows PC, or the other way round. This app makes that work, and it keeps a searchable history of everything I've copied.
 
 <!-- Demo GIF goes here: copy on the Mac, paste on the PC. -->
 
-Apple's Universal Clipboard covers iPhone to Mac but not Windows, and emailing text to yourself keeps no history. So I built my own, in Swift:
-
-- Every device keeps a full copy in SQLite, works offline, and merges when it reconnects. The merge rules give the same result in any order, with duplicates.
-- Everything is end-to-end encrypted. The relay in the middle only ever sees ciphertext, and when it's down, devices sync with each other directly over Tailscale.
-- A randomized convergence harness crashes devices, moves their clocks and drops requests, then checks every device agrees. It found a real bug.
+It's written in Swift, everything is end-to-end encrypted, and each device keeps working offline.
 
 ## Why I built it
 
@@ -16,6 +12,50 @@ Apple's Universal Clipboard covers iPhone to Mac but not Windows, and emailing t
 - I run Claude sessions on both machines at once, some on the Mac and some on the PC. I'm always moving things between them: a prompt that worked, an error from one session that the other needs to see, a plan or summary so the second session has the same context as the first.
 - My other common case lately is job hunting. A Claude bot sends job updates to my phone over Telegram, and I watch Instagram notifications from Zero2Sudo, a popular page for job postings. When a posting comes in, I want the link on my PC right away so I can apply.
 - Getting it there means messaging it to myself. I want to copy it on the phone and paste it on the PC.
+
+## What it does
+
+- Copy on one device and paste on another. The newest copy lands on the other devices' clipboards on its own.
+- Screenshots work the same way. Files sync too, and on the PC they land in Downloads.
+- Everything you copy goes into a history you can search, pin, rename and delete from any device.
+- Each device works offline and catches up when it reconnects.
+- The server only ever sees encrypted data. If it's down, the devices sync with each other directly.
+
+## How it works
+
+Each device keeps its own full copy of the history. When you copy something, the device writes a small record of the change, encrypts it, and sends it to a relay, a little server that stores it and passes it on. The other devices pick up new records and apply them.
+
+The hard part is making sure every device ends up with the same history, even when changes arrive late, twice, or out of order. So every change is built to give the same result no matter what order it's applied in. A test harness checks this by running hundreds of random scenarios with crashes, lost messages and clocks that jump around.
+
+The details are in [docs/development.md](docs/development.md), the full design in [docs/design.md](docs/design.md), and the security side in [docs/threat-model.md](docs/threat-model.md).
+
+## Trade-offs
+
+Every choice here gave something up. The reasoning for each is in [docs/decisions.md](docs/decisions.md).
+
+**A server in the middle.** A device that was off all week catches up from one place. The cost is a server to run. It only ever sees encrypted data, and the devices talk to each other directly when it's down.
+
+**Simple merge rules.** Copied text never changes after you copy it, so there's nothing inside it to merge. Edits like renames go to whichever one is newest, which means two renames at the same moment keep only one.
+
+**Download everything up front.** Every device downloads every image and file as soon as it shows up, so pasting never waits. It costs storage and data on every device. I started with download-on-click and switched after testing on my own devices, where a screenshot showed up right away but took a click and a wait to paste.
+
+**Plain data on the device.** The app doesn't encrypt the history stored on each device, so search stays fast. A lost device is only as safe as its login and disk encryption, and you can remove it from any of your other devices.
+
+**One tap on the iPhone.** iOS doesn't let apps read the clipboard in the background, so on the iPhone you send things with a paste button, the share sheet or a Shortcut.
+
+## The bug the harness caught
+
+The harness runs random schedules where devices edit, go offline, crash, restart with their clock set back, and lose or repeat requests. Then it checks that every device ends up with the same history. Seed 488 didn't.
+
+A device tagged an item "blue", crashed, and came back with its clock behind. Its next edit removed the tag, and it got the exact same timestamp as the first edit. With two edits tied, each device kept whichever one reached it last, so they never agreed.
+
+The fix: each device saves the highest timestamp it has used, and the clock can't start without it. With the old behavior 385 of 500 seeds fail. With the fix all 500 pass. The first two commands in Try it show both. The fix is commit `3a92f4c`, and the reasoning is in [docs/decisions.md](docs/decisions.md#2026-10-01-the-clock-must-resume-from-a-persisted-high-water-harness-found-bug).
+
+## Where it's at
+
+The Mac and Windows apps run and sync with each other over Tailscale. The iPhone app builds, but I haven't run it on my phone yet. Every feature in the [PRD](docs/prd.md) is built, and [docs/status.md](docs/status.md) has the details and what's been measured so far.
+
+CI builds and tests everything on Linux, Windows and macOS. How it's tested is in [docs/testing.md](docs/testing.md).
 
 ## Try it
 
@@ -25,7 +65,7 @@ You don't need my devices or a server for this. On a Mac with Xcode 16 (or Swift
 git clone https://github.com/JasmineGu2/clipboard-sync.git
 cd clipboard-sync
 
-# The bug below, with the old clock behavior: 0 of 1 seeds converge
+# The bug above, with the old clock behavior: 0 of 1 seeds converge
 swift run ConvergenceHarness --start 488 --seeds 1 --clock-recovery fresh --no-clock-check --verbose
 
 # The same seed with the fix: 1 of 1
@@ -42,125 +82,14 @@ bash scripts/e2e-direct.sh
 swift test
 ```
 
-On my MacBook Air (M3), from a fresh clone, the harness builds in about 10 seconds and 500 seeds run in about 4. The end-to-end script takes about a minute and `swift test` (346 tests) a little under one. The apps themselves need Xcode signing, two devices and Tailscale, so the demo above shows them instead.
-
-## The bug the harness caught
-
-The harness runs random schedules of devices editing, going offline, crashing, restarting with their wall clock moved back, and losing or duplicating requests. Then it checks every device ends up with the same history. Seed 488 didn't:
-
-```
-swift run ConvergenceHarness --start 488 --seeds 1 --clock-recovery fresh --no-clock-check --verbose
-```
-
-```
-d0 differs from the reference replica: i24: d0={... tags=[blue=true@(195,2,d0)]}
-                                    reference={... tags=[blue=false@(195,2,d0)]}
-ops on i24:
-  o68 create 't318' i24 @(195,1,d0)
-  o70 tag +blue i24 @(195,2,d0)   <-- timestamp reused
-  o121 tag -blue i24 @(195,2,d0)   <-- timestamp reused
-```
-
-Device d0 tagged an item "blue", crashed, and came back with a fresh hybrid logical clock and a wall clock that was behind. Its next edit, removing the tag, got the exact same timestamp `(195, 2, d0)` as the first one. Last-writer-wins can't break a tie between two equal timestamps, so the winner depended on arrival order, and the devices disagreed for good.
-
-The fix is that the clock can't be created without the highest timestamp the device issued or saw before it stopped. `HybridClock(device:resumingAfter:)` makes that a required argument, and the sync engine stores the high water in the database (`hlc_high_water`). Rebuilding it from stored ops at launch doesn't work, because deletes and overwritten edits keep no timestamp. The same change caps how far a peer can drag the clock forward (now + 1 hour), since a peer at the maximum wall time could crash every device through counter overflow.
-
-With fresh clocks, 385 of 500 seeds fail the harness's strict-tick check. With the fix, 500 of 500 converge. The fix is commit `3a92f4c`, with regression tests `testResumingAfterKeepsTicksAboveStoredHighWater` and `testClockDoesNotGoBackwardsAcrossRestart`, and the reasoning is in [docs/decisions.md](docs/decisions.md#2026-10-01-the-clock-must-resume-from-a-persisted-high-water-harness-found-bug).
-
-## How it works
-
-```
- iPhone app ─────┐
- Mac app ────────┼── encrypted ops over HTTP, tailnet only ──► Relay (Linux VM)
- Windows tray ───┘   push new ops, pull after a cursor          append-only log
- app / clipctl
-        └──── direct device-to-device sync when the relay is down ────┘
-```
-
-An item is never edited in place. Every change is an op for one item (`create`, `setPinned`, `setTitle`, `setTag` or `delete`), and an item's state is the fold of its ops. Pinned, title and each tag are last-writer-wins registers keyed by a hybrid logical clock timestamp `(wallMillis, counter, device)`. Content is set once by the earliest create, and delete is sticky, so it beats concurrent edits. Every rule is a max or an OR, which is why order and duplicates don't matter.
-
-The relay just stores and forwards. It gives each envelope a sequence number, dedupes by op ID, and long-polls everything after a device's cursor. All merging happens on devices. It also keeps a random epoch ID, so devices can tell when it lost its log and push everything again.
-
-For crypto I only use swift-crypto primitives (the CryptoKit API). The first device makes a 256-bit vault key, and HKDF-SHA256 derives the data key and the relay's bearer token from it. Each op is sealed with AES-256-GCM, with `clip.op.v1|itemID|opID` as authenticated data, so the relay can't move a payload to another item. A new device joins with a one-time pairing code. Keys live in the Keychain on Apple devices and behind DPAPI on Windows.
-
-More detail is in [docs/design.md](docs/design.md) and [docs/threat-model.md](docs/threat-model.md).
-
-## Trade-offs
-
-Each of these was a choice, and each one gives something up. The reasoning is in [docs/decisions.md](docs/decisions.md).
-
-**A relay in the middle instead of pure peer to peer.** Devices push to and pull from one log on an always-on server, so a device that was off all week catches up from one place. The cost is a server to run, which is why the relay only ever sees ciphertext and why direct sync (F16) takes over when it's down.
-
-**Last-writer-wins per field instead of merging text.** A clipboard item's content never changes after it's created, so there's no text to merge. Pin, title and tags are last-writer-wins registers, and delete is sticky. That keeps every rule a max or an OR, which the harness checks under drops, duplicates and reordering. The cost: two devices renaming the same item at once keep one name, not both.
-
-**Download every payload up front instead of on demand.** Images and files sync as an item with a small thumbnail first, then every device downloads the full payload in the background. A screenshot copied on the Mac goes on the PC clipboard by itself, like text, and opening a big file never waits on the network. The cost is storage and bandwidth on every device, the iPhone too. I started with on demand and changed it after the first real Mac-to-PC run, where a screenshot showed up in the history at once but took a click and a wait to paste.
-
-**Plaintext on the device.** The local history and file cache aren't encrypted by the app, so search stays fast and simple. On a lost device they're only as safe as the OS login and disk encryption. The threat model says so, and revoking the device (F13) stops it reading anything new.
-
-**One tap on the iPhone instead of automatic capture.** iOS doesn't let apps read the clipboard in the background, so the iPhone sends with a paste button, the share sheet or a Shortcut.
-
-## Status
-
-All of F1 to F16 from the [PRD](docs/prd.md) are built: text, images and files, search, pin/tag/rename/delete, pairing, revoking a lost device, expiry, pause, and direct sync. The Mac app and the Windows tray app run and sync with each other over Tailscale: text both ways, and screenshots from the Mac to the PC (the PC captures text only). The iPhone app builds but hasn't been run on a real device yet, and most end-to-end testing so far uses the `clipctl` command-line client. The full table, row by row, is in [docs/status.md](docs/status.md).
-
-Some numbers so far:
-
-| What | Target | Measured |
-| --- | --- | --- |
-| Copy to arrival (N1) | p50 under 1 s | about 100 ms p50, two clients on one PC over localhost |
-| Search 10,000 items (N2) | under 50 ms | 2.0 ms median on the Mac (release), about 14 ms on Windows (debug) |
-| Resume a killed transfer (N5) | from the last good chunk | 50 MB and 200 MB files resumed at the next chunk, SHA-256 matched |
-| Memory for a large file (N6) | a few chunks | transfer buffers peak at 2 MiB for a 200 MB file |
-| Convergence harness | every seed | 500 of 500 seeds in about 5 s |
-
-Not measured yet: N1 across real devices, iPhone launch time (N3) and Mac idle energy (N4).
-
-## Testing
-
-- Crypto has known-answer vectors for HKDF (RFC 5869) and AES-GCM (Test Case 16 from the GCM paper), plus tamper tests for swapped IDs and moved payloads.
-- The convergence harness is deterministic per seed. Its mutation mode swaps in 4 broken merge rules to prove it notices them. Last-writer-wins keeping the older write fails 500 of 500 seeds, last-arrival-wins 496, ignoring deletes 500, and edits undoing deletes 500.
-- The store has a crash test. A helper process writes to a real database file and gets killed at random points (500 kills). After each one the test runs SQLite's integrity check and checks every committed transaction is there and the half-done one is all or nothing.
-- The relay has its own 76 route and storage tests. Shell and PowerShell scripts drive the real binaries end to end.
-- CI builds and tests on Linux, Windows and macOS, runs the relay tests and 2,000 harness seeds, and is green. A nightly job runs 20,000 new seeds.
-
-Besides seed 488, tests and reviews caught a 1 ms date drift that broke convergence intermittently (dates now go over the wire as integer milliseconds), a clock counter that a corrupt peer could overflow, a relay that buffered about 175 MB before checking size, and a Windows socket flag that let two listeners share a port. Each one is in [docs/decisions.md](docs/decisions.md).
+On my MacBook Air (M3), from a fresh clone, the harness builds in about 10 seconds and 500 seeds run in about 4. The end-to-end script takes about a minute and `swift test` a little under one. The apps themselves need Xcode signing, two devices and Tailscale, so the demo above shows them instead.
 
 ## How it was built
 
 AI agents wrote the code, the sync core and crypto included, from my requirements. A separate crypto-review agent audited every crypto change. Every real decision is logged with why and what else was considered in [docs/decisions.md](docs/decisions.md).
 
-## Run it
+## More
 
-You need Swift 6. The shared package builds on macOS, Linux and Windows.
-
-```sh
-swift build
-swift test                                  # about 350 tests
-swift run ConvergenceHarness --seeds 500
-swift run ConvergenceHarness --seeds 500 --mutation lwwReversed   # should fail
-```
-
-The other mutations are `lastArrivalWins`, `ignoreTombstones` and `editRevivesDeleted`. A failing run prints a `repro:` line.
-
-- Mac and iPhone apps: [apps/Apple/README.md](apps/Apple/README.md). They use XcodeGen and a `CLIPSYNC_TEAM_ID` environment variable for signing, and build on Xcode 16.2.
-- Relay: `cd Server && swift test`, then `swift run ClipRelay --host <tailscale-ip> --port 8787 --db ./relay.sqlite3 --token-sha256 <hex>`. It runs on Linux or macOS. [Server/README.md](Server/README.md) covers the API, auth and deploying with systemd or Docker.
-- Windows tray app: [apps/Windows/README.md](apps/Windows/README.md). On Windows, run `. scripts/swiftenv.sh` in Git Bash first to set up Swift.
-- Command-line client: [content/clipctl.md](content/clipctl.md).
-- End to end: `scripts/e2e.ps1` (Windows with the relay in WSL), and `scripts/e2e-blobs.sh`, `scripts/e2e-direct.sh` and `scripts/e2e-revoke-blobs.sh` on macOS.
-
-## Repo map
-
-| Path | What's there |
-| --- | --- |
-| `Sources/ClipCore` | Ops, hybrid logical clock, merge rules |
-| `Sources/ClipCrypto` | Vault key, op cipher, pairing code |
-| `Sources/ClipStore` | SQLite (bundled as source in `CSQLite`), FTS5 search, outbox, cursor |
-| `Sources/ClipSync` | Sync engine, HTTP transport, in-memory relay for tests |
-| `Sources/ClipWire` | Wire types and size limits shared with the relay |
-| `Sources/ClipAppCore` | App model shared by the Mac, iPhone and Windows apps |
-| `Sources/ClipHarness`, `Sources/ConvergenceHarness` | The convergence harness and its command line |
-| `Sources/ClipPeerSocket` | Sockets for direct device-to-device sync |
-| `Sources/ClipWindows`, `Sources/clipctl` | Windows platform code and the command-line client |
-| `Server/` | The relay (Hummingbird), its own SwiftPM package |
-| `apps/Apple/`, `apps/Windows/` | The SwiftUI apps and the Windows tray app |
-| `docs/` | PRD, design, threat model, decisions, status |
+- Build and run the apps and the relay, and a map of the code: [docs/development.md](docs/development.md)
+- How it's tested: [docs/testing.md](docs/testing.md)
+- Every decision and why: [docs/decisions.md](docs/decisions.md)

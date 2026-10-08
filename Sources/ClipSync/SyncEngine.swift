@@ -492,7 +492,7 @@ public actor SyncEngine {
     /// How long the prefetch waits before asking again for a payload that's still uploading: 1 s doubling to the
     /// idle minute. A screenshot lands about a second after its upload ends; a sender that went offline mid-upload
     /// costs one request a minute.
-    static func prefetchRetry(misses: Int) -> Duration {
+    public static func prefetchRetry(misses: Int) -> Duration {
         .seconds(min(60, 1 << min(6, max(0, misses - 1))))
     }
 

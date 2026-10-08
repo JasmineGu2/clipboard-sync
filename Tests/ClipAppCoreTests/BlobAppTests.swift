@@ -194,6 +194,49 @@ final class BlobAppTests: XCTestCase {
         XCTAssertTrue(pc.pasteboard.written.isEmpty)
     }
 
+    func testNewFilesFromAnotherDeviceAreSavedToTheFolder() async throws {
+        let relay = InMemoryRelay()
+        let mac = try makeFixture(relay, name: "Mac")
+        let pc = try makeFixture(relay, name: "PC")
+        let downloads = pc.home.appendingPathComponent("Downloads")
+        pc.model.receivedFilesDirectory = downloads
+        var saved: [URL] = []
+        pc.model.onFileSaved = { saved.append($0) }
+
+        // Already in the history before the app starts: left alone.
+        _ = await mac.model.sendFile(try file("old.pdf", bytes: Data(repeating: 1, count: 50), in: mac.home))
+        try await mac.engine.uploadPendingBlobs()
+        try await pc.engine.syncOnce()
+        pc.model.start()
+        defer { pc.model.stop() }
+        try await Task.sleep(for: .milliseconds(100))
+
+        _ = await mac.model.capture(.image(PasteboardImage(data: Data(repeating: 2, count: 50), contentType: "image/png")))
+        _ = await mac.model.sendFile(try file("resume.pdf", bytes: Data(repeating: 3, count: 80), in: mac.home))
+        try await pc.engine.syncOnce()  // the items first; the uploads after
+        try await mac.engine.uploadPendingBlobs()
+        try await eventually { !saved.isEmpty }
+
+        XCTAssertEqual(saved.map(\.lastPathComponent), ["resume.pdf"], "images go on the clipboard, not to the folder")
+        XCTAssertEqual(try Data(contentsOf: downloads.appendingPathComponent("resume.pdf")), Data(repeating: 3, count: 80))
+        let names = try FileManager.default.contentsOfDirectory(atPath: downloads.path)
+        XCTAssertEqual(names, ["resume.pdf"], "no leftover temporary file, and nothing from before the start")
+    }
+
+    func testSavingNeverReplacesAFile() throws {
+        let home = try makeHome()
+        let cached = try file("blob", bytes: Data("new".utf8), in: home)
+        let folder = home.appendingPathComponent("Downloads")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("mine".utf8).write(to: folder.appendingPathComponent("notes.pdf"))
+
+        let first = try HistoryModel.save(cached, named: "notes.pdf", fallback: "x", in: folder)
+        let second = try HistoryModel.save(cached, named: "notes.pdf", fallback: "x", in: folder)
+        XCTAssertEqual(first.lastPathComponent, "notes (1).pdf")
+        XCTAssertEqual(second.lastPathComponent, "notes (2).pdf")
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("notes.pdf")), Data("mine".utf8))
+    }
+
     func testCopyBeforeTheUploadShowsAMessage() async throws {
         let relay = InMemoryRelay()
         let mac = try makeFixture(relay, name: "Mac")

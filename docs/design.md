@@ -263,8 +263,10 @@ create that carries a blob wakes it. The sender pushes the op before its upload 
 gets "not uploaded yet"; the loop asks again after 1 s, doubling to a minute. `LatestClipFollower` delivers images
 as well as text: when another device's image becomes the newest item, the app waits for its payload (asking every
 second for up to 2 minutes) and puts it on the clipboard, unless something newer arrived or was copied here in the
-meantime. Other files never take over the clipboard; they're prefetched and wait to be picked. `clipctl watch`
-prefetches but still delivers text only. See docs/decisions.md (2026-10-08).
+meantime. Other files never take over the clipboard; they're prefetched and wait to be picked. On Windows the tray
+app also saves each new file from another device to Downloads (`HistoryModel.receivedFilesDirectory`), as
+`name (1).pdf` and so on when the name is taken, never replacing a file. Files already in the history at launch
+aren't saved again. `clipctl watch` prefetches but still delivers text only. See docs/decisions.md (2026-10-08).
 
 
 ## 7. Direct sync when the relay is unreachable (F16)

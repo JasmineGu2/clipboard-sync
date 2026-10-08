@@ -29,6 +29,7 @@ public enum WinStrings {
     public static let hotkeyTaken = "Another app already uses Ctrl+Shift+V, so the history shortcut is off. Open the history from the tray icon."
     public static let launchAtLoginFailed = "Couldn't change the sign-in setting (Windows error {code})."
     public static let copyFailed = "Couldn't put that on the clipboard. Another app may be holding it; try again."
+    public static let fileSaved = "Saved {name} to Downloads."
     public static let windowsOnly = "ClipSyncWin runs on Windows only. On this computer, use the Mac app or clipctl."
 
     /// Every key and value, for the content/windows.md sync test.
@@ -41,6 +42,7 @@ public enum WinStrings {
         "rowFormat": rowFormat, "actionRenameMenu": actionRenameMenu,
         "setupDone": setupDone,
         "hotkeyTaken": hotkeyTaken, "launchAtLoginFailed": launchAtLoginFailed, "copyFailed": copyFailed,
+        "fileSaved": fileSaved,
         "windowsOnly": windowsOnly,
     ]
 }

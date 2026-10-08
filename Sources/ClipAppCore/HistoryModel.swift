@@ -136,6 +136,15 @@ public final class HistoryModel {
     private var copiedResetTask: Task<Void, Never>?
     /// The newest image from another device, downloading on its way to the clipboard.
     private var imageDelivery: Task<Void, Never>?
+    /// Where files (not images) from other devices are saved once they download; nil keeps them in the history
+    /// only. The Windows tray app sets its Downloads folder (docs/decisions.md, 2026-10-08).
+    public var receivedFilesDirectory: URL?
+    /// Called with each file saved to `receivedFilesDirectory`.
+    public var onFileSaved: ((URL) -> Void)?
+    /// Image and file items already handled; nil until the baseline at start, so nothing already in the history
+    /// is saved again.
+    private var seenBlobItems: Set<ItemID>?
+    private var fileSaves: [ItemID: Task<Void, Never>] = [:]
     private var follower: LatestClipFollower
     private let thumbnails: any ThumbnailMaker
     /// Copies of downloaded files named like their items, for the clipboard (the cache names files by blob ID).
@@ -172,10 +181,12 @@ public final class HistoryModel {
         changesTask = Task { [weak self] in
             // The baseline comes first, so what is already in the history never overwrites the clipboard.
             await self?.receiveLatest()
+            await self?.saveNewFiles()
             for await _ in changes {
                 guard let self else { return }
                 await self.refresh()
                 await self.receiveLatest()
+                await self.saveNewFiles()
             }
         }
         Task { await refresh() }
@@ -187,6 +198,7 @@ public final class HistoryModel {
         searchTask?.cancel()
         copiedResetTask?.cancel()
         imageDelivery?.cancel()
+        fileSaves.values.forEach { $0.cancel() }
         statusTask?.cancel()
         statusTask = nil
     }
@@ -501,6 +513,89 @@ public final class HistoryModel {
                 return
             }
         }
+    }
+
+    // MARK: Files from other devices
+
+    /// How many times `saveFile` asks again for a file the sender is still uploading (1 s doubling to a minute,
+    /// about 25 minutes in all: a large file's upload can take a while).
+    nonisolated static let fileWaitAttempts = 30
+
+    /// Saves each file (not image) that another device added since the app started to `receivedFilesDirectory`,
+    /// once its payload downloads. The first call only records what's already there.
+    private func saveNewFiles() async {
+        let db = self.db
+        let limit = seenBlobItems == nil ? Int(Int32.max) : 200
+        let pairs = await Task.detached { (try? db.blobItems(limit: limit)) ?? [] }.value
+        guard var seen = seenBlobItems else {
+            seenBlobItems = Set(pairs.map(\.item))
+            return
+        }
+        let fresh = pairs.map(\.item).filter { !seen.contains($0) }
+        seen.formUnion(fresh)
+        seenBlobItems = seen
+        guard let folder = receivedFilesDirectory else { return }
+        for id in fresh {
+            guard let state = await Self.state(db: db, id), let content = state.content, content.kind == .file,
+                  content.sourceDevice != engine.device else { continue }
+            fileSaves[id] = Task { [weak self] in
+                await self?.saveFile(id, to: folder)
+                self?.fileSaves[id] = nil
+            }
+        }
+    }
+
+    /// Waits for the payload (prefetched, or still uploading on the sender), then saves a copy named like the item.
+    /// Failures are quiet: the file stays in the history, where copying it shows why.
+    func saveFile(_ id: ItemID, to folder: URL) async {
+        var misses = 0
+        while !Task.isCancelled {
+            do {
+                let cached = try await engine.fetchBlob(for: id)
+                guard !Task.isCancelled, let item = await Self.item(db: db, id) else { return }
+                let saved = try Self.save(cached, named: item.text, fallback: id.description, in: folder)
+                onFileSaved?(saved)
+                return
+            } catch BlobTransferError.notUploadedYet {
+                misses += 1
+                guard misses < Self.fileWaitAttempts else { return }
+                try? await Task.sleep(for: SyncEngine.prefetchRetry(misses: misses))
+            } catch {
+                return
+            }
+        }
+    }
+
+    /// Copies `cached` into `folder` as `name`, or `name (1)`, `name (2)`… if taken, never replacing a file. The copy
+    /// goes to a hidden temporary name first and is renamed into place, so a half-written file never shows.
+    nonisolated static func save(_ cached: URL, named name: String, fallback: String, in folder: URL) throws -> URL {
+        let files = FileManager.default
+        try files.createDirectory(at: folder, withIntermediateDirectories: true)
+        let safe = FileTypes.safeFileName(name, fallback: fallback)
+        let base = (safe as NSString).deletingPathExtension
+        let ext = (safe as NSString).pathExtension
+        let temp = folder.appendingPathComponent(".\(UUID().uuidString).clipsync-tmp")
+        try files.copyItem(at: cached, to: temp)
+        for number in 0..<1000 {
+            let candidate = number == 0 ? safe : "\(base) (\(number))" + (ext.isEmpty ? "" : ".\(ext)")
+            let destination = folder.appendingPathComponent(candidate)
+            if files.fileExists(atPath: destination.path) { continue }
+            do {
+                try files.moveItem(at: temp, to: destination)
+                return destination
+            } catch where files.fileExists(atPath: destination.path) {
+                continue  // taken between the check and the move
+            } catch {
+                try? files.removeItem(at: temp)
+                throw error
+            }
+        }
+        try? files.removeItem(at: temp)
+        throw CocoaError(.fileWriteFileExists)
+    }
+
+    nonisolated private static func state(db: ClipDatabase, _ id: ItemID) async -> ItemState? {
+        (try? db.item(id)).flatMap { $0 }
     }
 
     nonisolated private static func item(db: ClipDatabase, _ id: ItemID) async -> ClipItem? {

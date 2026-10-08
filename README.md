@@ -1,14 +1,18 @@
 # Clipboard Sync
 
-One end-to-end encrypted clipboard history shared by an iPhone, a Mac and a Windows PC over Tailscale. Apple's Universal Clipboard covers iPhone to Mac but not Windows, and emailing text to yourself keeps no history. Every device keeps a full local copy in SQLite, works offline, and merges when it reconnects. A small relay on a Linux VM passes encrypted ops between devices and never sees plaintext or keys.
+One encrypted clipboard history shared by my iPhone, Mac and Windows PC. Copy on one device and the newest copy lands on the others' clipboards, so a normal paste works anywhere, and older items stay in a searchable history.
 
-Copy on one device and the newest copy lands on the other devices' clipboards, so a normal paste works anywhere. Older items are in the history, with search.
+<!-- Demo GIF goes here: copy on the Mac, paste on the PC. -->
 
-It's written in Swift. The shared code builds and tests on Windows, Linux and macOS, and the relay on Linux and macOS. The Mac app runs. The iPhone app and the Windows tray app build but haven't been run on real devices yet. The [status table](#status) says exactly what works.
+Apple's Universal Clipboard covers iPhone to Mac but not Windows, and emailing text to yourself keeps no history. So I built my own, in Swift:
+
+- Every device keeps a full copy in SQLite, works offline, and merges when it reconnects. The merge rules give the same result in any order, with duplicates.
+- Everything is end-to-end encrypted. The relay in the middle only ever sees ciphertext, and when it's down, devices sync with each other directly over Tailscale.
+- A randomized convergence harness crashes devices, moves their clocks and drops requests, then checks every device agrees. It found a real bug.
 
 ## The bug the harness caught
 
-The convergence harness runs random schedules of devices editing, going offline, crashing, restarting with their wall clock moved back, and losing or duplicating requests. Then it checks every device ends up with the same history. Seed 488 didn't:
+The harness runs random schedules of devices editing, going offline, crashing, restarting with their wall clock moved back, and losing or duplicating requests. Then it checks every device ends up with the same history. Seed 488 didn't:
 
 ```
 swift run ConvergenceHarness --start 488 --seeds 1 --clock-recovery fresh --no-clock-check --verbose
@@ -25,176 +29,90 @@ ops on i24:
 
 Device d0 tagged an item "blue", crashed, and came back with a fresh hybrid logical clock and a wall clock that was behind. Its next edit, removing the tag, got the exact same timestamp `(195, 2, d0)` as the first one. Last-writer-wins can't break a tie between two equal timestamps, so the winner depended on arrival order, and the devices disagreed for good.
 
-The fix: the clock can't be created without the highest timestamp the device issued or saw before it stopped. `HybridClock(device:resumingAfter:)` makes that a required argument, and the sync engine stores the high water in the database (`hlc_high_water`). The same change caps how far a peer can drag the clock forward (now + 1 hour), because a peer at the maximum wall time could crash every device through counter overflow. Rebuilding the high water from stored ops at launch doesn't work, since deletes and overwritten edits keep no timestamp.
+The fix is that the clock can't be created without the highest timestamp the device issued or saw before it stopped. `HybridClock(device:resumingAfter:)` makes that a required argument, and the sync engine stores the high water in the database (`hlc_high_water`). Rebuilding it from stored ops at launch doesn't work, because deletes and overwritten edits keep no timestamp. The same change caps how far a peer can drag the clock forward (now + 1 hour), since a peer at the maximum wall time could crash every device through counter overflow.
 
-- Decision and reasoning: [docs/decisions.md](docs/decisions.md#2026-10-01-the-clock-must-resume-from-a-persisted-high-water-harness-found-bug)
-- Fix: commit `3a92f4c` (`Sources/ClipCore/Merge.swift`, `Sources/ClipSync/SyncEngine.swift`), with regression tests `testResumingAfterKeepsTicksAboveStoredHighWater` and `testClockDoesNotGoBackwardsAcrossRestart`
-- With fresh clocks, 385 of 500 seeds fail the harness's strict-tick check. With the fix, 500 of 500 converge.
+With fresh clocks, 385 of 500 seeds fail the harness's strict-tick check. With the fix, 500 of 500 converge. The fix is commit `3a92f4c`, with regression tests `testResumingAfterKeepsTicksAboveStoredHighWater` and `testClockDoesNotGoBackwardsAcrossRestart`, and the reasoning is in [docs/decisions.md](docs/decisions.md#2026-10-01-the-clock-must-resume-from-a-persisted-high-water-harness-found-bug).
 
-[Other bugs](#decisions-testing-and-ci) the tests and reviews found are in the decisions log too.
-
-## Architecture in brief
+## How it works
 
 ```
- iPhone app ──┐
- Mac app ─────┼── encrypted ops over HTTP, tailnet only ──► Relay (Linux VM)
- clipctl ─────┘   push new ops, pull after a cursor          append-only log, seq numbers
- (Windows)
+ iPhone app ─────┐
+ Mac app ────────┼── encrypted ops over HTTP, tailnet only ──► Relay (Linux VM)
+ Windows tray ───┘   push new ops, pull after a cursor          append-only log
+ app / clipctl
+        └──── direct device-to-device sync when the relay is down ────┘
 ```
 
-**Data model.** An item is never edited in place. Every change is an op for one item: `create`, `setPinned`, `setTitle`, `setTag` or `delete`, and an item's state is the fold of its ops. Content is set once by the earliest create. Pinned, title and each tag are last-writer-wins registers keyed by a hybrid logical clock timestamp `(wallMillis, counter, device)`. Delete is a sticky flag, so it beats concurrent edits. Every rule is a max or an OR, so applying the same set of ops in any order, with duplicates, gives the same state.
+An item is never edited in place. Every change is an op for one item (`create`, `setPinned`, `setTitle`, `setTag` or `delete`), and an item's state is the fold of its ops. Pinned, title and each tag are last-writer-wins registers keyed by a hybrid logical clock timestamp `(wallMillis, counter, device)`. Content is set once by the earliest create, and delete is sticky, so it beats concurrent edits. Every rule is a max or an OR, which is why order and duplicates don't matter.
 
-**The relay** is a blind mailbox. It gives each envelope a sequence number, dedupes by op ID, and serves everything after a device's cursor, with long-polling. All merging happens on devices. It stores a random epoch ID when its database is created, so a device can tell when the relay lost its log and re-push everything it holds.
+The relay just stores and forwards. It gives each envelope a sequence number, dedupes by op ID, and long-polls everything after a device's cursor. All merging happens on devices. It also keeps a random epoch ID, so devices can tell when it lost its log and push everything again.
 
-**Crypto.** Only swift-crypto primitives (the CryptoKit API). The first device makes a 256-bit vault key. HKDF-SHA256 derives a data key and the relay's bearer token from it. Each op is sealed with AES-256-GCM, and the authenticated data is `clip.op.v1|itemID|opID`, so the relay can't move a payload to another item or op. A new device joins with a one-time pairing code (160 random bits) that wraps the vault key for a 10-minute handoff through the relay. Keys at rest live in the Keychain on Apple and behind DPAPI on Windows.
+For crypto I only use swift-crypto primitives (the CryptoKit API). The first device makes a 256-bit vault key, and HKDF-SHA256 derives the data key and the relay's bearer token from it. Each op is sealed with AES-256-GCM, with `clip.op.v1|itemID|opID` as authenticated data, so the relay can't move a payload to another item. A new device joins with a one-time pairing code. Keys live in the Keychain on Apple devices and behind DPAPI on Windows.
 
-More in [docs/design.md](docs/design.md) and [docs/threat-model.md](docs/threat-model.md).
+More detail is in [docs/design.md](docs/design.md) and [docs/threat-model.md](docs/threat-model.md).
 
 ## Status
 
-From the requirements in [docs/prd.md](docs/prd.md). All three Apple targets (Mac, iPhone, share extension) and the Windows tray app build. "Builds, not run" means the code compiles but nobody has used it on a real device yet. The app logic lives in `ClipAppCore`, which is tested on Windows, Linux and macOS.
+All of F1 to F16 from the [PRD](docs/prd.md) are built: text, images and files, search, pin/tag/rename/delete, pairing, revoking a lost device, expiry, pause, and direct sync. The Mac app runs. The iPhone app and the Windows tray app build but haven't been run on real devices yet, and most end-to-end testing so far uses the `clipctl` command-line client. The full table, row by row, is in [docs/status.md](docs/status.md).
 
-| ID | Requirement | Status | Notes |
-| --- | --- | --- | --- |
-| F1 | Auto-capture on Mac and PC | Partly | Mac app: works (copied text shows up in the menu). Windows: `clipctl watch`, smoke-tested; tray app builds, not run. |
-| F2 | iPhone send: paste button, share sheet, Shortcut | Partly | Builds, not run |
-| F3 | Click an item to put it on the clipboard | Partly | `clipctl copy` works. Mac: click an item, or the ⌃⌘V quick picker. The newest copy from another device also goes on the clipboard by itself (unit and app tests; not yet tried between real devices). iPhone builds, not run. |
-| F4 | Newest first, with preview, device and time | Partly | `clipctl list` and the Mac menu work. iPhone builds, not run. |
-| F5 | Full-text search on every device | Partly | SQLite FTS5 in the shared store; works in clipctl. Apple builds, not run. |
-| F6 | Pin, rename, tag, delete; edits sync | Partly | Works end to end between two clipctl clients. Apple builds, not run. |
-| F7 | Offline works; merges on reconnect | Done | Harness and sync engine tests |
-| F8 | End-to-end encrypted | Done | |
-| F9 | Skip concealed content | Partly | Windows done and smoke-tested. Mac builds, not checked by hand. iPhone has no background capture. |
-| F10 | Pair with a code | Done | Tested end to end with clipctl. The Mac app creates a vault. Pairing between real devices not run yet. |
-| F11 | Images | Partly | Thumbnails ride in the encrypted item; full image on demand. `clipctl send-file`, Mac capture, iPhone paste button and share sheet. Apple code builds; not tried on devices. |
-| F12 | Files | Partly | Downloaded on demand, resumable, SHA-256 checked. End to end with clipctl on the Mac (`scripts/e2e-blobs.sh`). Apple code builds; not tried on devices. |
-| F13 | Revoke a lost device | Partly | `clipctl devices` / `clipctl revoke`, and Devices in the Mac menu and iPhone app. A revoke swaps in a new vault key, wipes the relay, and hands the key to the other devices with HPKE. Tested end to end with three clipctl clients, also with files (`scripts/e2e-revoke-blobs.sh`): the relay drops old-key file chunks and the remaining devices upload theirs again. The Apple screens are built but not clicked through. |
-| F14 | Unpinned items expire | Partly | Synced deletes, harness-checked. `clipctl expire` and `watch --expire-days`. Mac and iPhone setting builds, not run. |
-| F15 | Pause capture | Partly | clipctl (a `paused` file), smoke-tested. Mac menu builds, not checked by hand. |
-| F16 | Direct device-to-device sync | Partly | When the relay is down, devices sync with each other over the tailnet. Each listening device serves its own op log like a small relay, with HPKE between device keys. Tested end to end with clipctl on the Mac (`scripts/e2e-direct.sh`) and in the harness. Not run between real devices. |
-| F17 | Apple Watch | Dropped | P2, cut on 2026-10-06 |
-| N1 | Sync latency | Partly | Measured on one PC over localhost only. See below. |
-| N2 | 10k search under 50 ms | Partly | Measured on Windows and Mac. Not on iPhone yet. |
-| N3 | iPhone launch under 500 ms | Not yet | Not measured |
-| N4 | Mac idle energy "Low" | Not yet | Not measured |
-| N5 | Resumable transfers | Done | Upload and download killed with `kill -9` midway, both resume at the next chunk. See below. |
-| N6 | Bounded memory for large files | Done | Two chunks of transfer buffers; process memory flat from 20 MB to 400 MB files. See below. |
-| N7 | Server stores only ciphertext | Done | |
-| N8 | AES-256-GCM bound to item and op IDs | Done | Tamper tests cover swapped IDs and moved payloads |
-| N9 | Keys in Keychain or DPAPI | Partly | DPAPI done. The Mac app saves its key in the Keychain. iPhone builds, not run. clipctl on macOS and Linux has an opt-in plain-file key for testing. |
-| N10 | Relay only inside the tailnet | Partly | The relay refuses to start on an address outside loopback and Tailscale's ranges (100.64.0.0/10, fd7a:115c:a1e0::/48) unless given `--allow-non-tailnet`; tested against the real binary. `scripts/deploy-relay.sh` deploys it in Docker on the VM's Tailscale IP. Not deployed to the VM yet. |
-| N11 | Convergence under any order, duplicates, drops | Done | Harness, 500 of 500 seeds |
-| N12 | A crash never corrupts data | Partly | WAL, one transaction per mutation, `synchronous=FULL`. A crash test kills a writer process mid-write and checks the file each time (500 kills, no failures). Payload files: a second crash test kills a blob cache writer mid-download and mid-import (80 kills, 50 mid-blob, no corrupt file ever marked complete, every good partial resumed). The relay's blob byte total is updated in the same transaction as the chunks. Power loss isn't tested. |
-| N13 | Applying an op twice does nothing | Done | A replica ignores an op it has seen, and the relay dedupes by op ID. Tested, and exercised by the harness. |
+Some numbers so far:
 
-## Measured numbers
+| What | Target | Measured |
+| --- | --- | --- |
+| Copy to arrival (N1) | p50 under 1 s | about 100 ms p50, two clients on one PC over localhost |
+| Search 10,000 items (N2) | under 50 ms | 2.0 ms median on the Mac (release), about 14 ms on Windows (debug) |
+| Resume a killed transfer (N5) | from the last good chunk | 50 MB and 200 MB files resumed at the next chunk, SHA-256 matched |
+| Memory for a large file (N6) | a few chunks | transfer buffers peak at 2 MiB for a 200 MB file |
+| Convergence harness | every seed | 500 of 500 seeds in about 5 s |
 
-All measured on Windows 11 with WSL Ubuntu 24.04, debug builds unless noted. Mac numbers are from a MacBook Air (M3, macOS 14.6, Swift 6.0.3).
+Not measured yet: N1 across real devices, iPhone launch time (N3) and Mac idle energy (N4).
 
-| ID | Target | Measured | How | Missing |
-| --- | --- | --- | --- | --- |
-| N1 | p50 under 1 s, p95 under 3 s | p50 about 100 ms, max about 175 ms, over 5 items | `scripts/e2e.ps1`: relay in WSL, two clipctl clients on one PC over localhost. The time includes starting a clipctl process for each poll. | Not over Tailscale yet, and not across real devices. No p95 from 5 samples. |
-| N2 | under 50 ms | Windows: median about 14 ms over 20 queries, 10,000 items. Mac: median 4.2 ms (debug) and 2.0 ms (release), max 6.7 ms | `testSearchPerformanceOn10kItems` in ClipStoreTests (it asserts the median is under 50 ms). On the Mac, 3 runs each; release with `swift test -c release -Xswiftc -enable-testing`. | iPhone. A Windows release build. |
-| N3 | under 500 ms | not measured | | Needs the iPhone app run on a phone |
-| N4 | Energy Impact "Low" | not measured | | The Mac app runs; not measured yet |
-| N5 | resume from last verified chunk | 50 MB file (50 chunks): upload killed after chunk 27 resumed at chunk 28; download killed after chunk 37 resumed at 37; SHA-256 matched. Same at 200 MB (resumed at 101 and 150). | `scripts/e2e-blobs.sh` on macOS 14.6: relay on a spare port, two clipctl clients over localhost, debug builds | Not over Tailscale, not on an iPhone |
-| N6 | memory bounded by a few chunks | Transfer buffers peak at 2.00 MiB (one plaintext and one sealed chunk) for a 200 MB file. clipctl peak footprint: download 11 to 16 MiB, upload 26 to 30 MiB, for files from 20 MB to 200 MB (baseline 4 MiB); live heap mid-upload 6.9 MB. | `BlobTransferTests.testTwoHundredMegabytesStayWithinAFewChunks` (also samples process footprint); `/usr/bin/time -l` and `heap` on clipctl | iPhone |
+## Testing
 
-Other numbers from the same runs:
+- Crypto has known-answer vectors for HKDF (RFC 5869) and AES-GCM (Test Case 16 from the GCM paper), plus tamper tests for swapped IDs and moved payloads.
+- The convergence harness is deterministic per seed. Its mutation mode swaps in 4 broken merge rules to prove it notices them. Last-writer-wins keeping the older write fails 500 of 500 seeds, last-arrival-wins 496, ignoring deletes 500, and edits undoing deletes 500.
+- The store has a crash test. A helper process writes to a real database file and gets killed at random points (500 kills). After each one the test runs SQLite's integrity check and checks every committed transaction is there and the half-done one is all or nothing.
+- The relay has its own 76 route and storage tests. Shell and PowerShell scripts drive the real binaries end to end.
+- CI builds and tests on Linux, Windows and macOS, runs the relay tests and 2,000 harness seeds, and is green. A nightly job runs 20,000 new seeds.
 
-- Convergence harness, `--seeds 500`: 500/500 converged (79,988 ops, 31,522 pushes, 14,457 drops, 10,575 duplicate pushes, 6,008 restarts), in about 5 s.
-- Inserting 10,000 items in batches of 500: about 2 to 4 s.
-- `synchronous=FULL` costs about 0.3 ms per single-clip insert (0.58 to 0.87 ms).
-- An unreachable relay fails a request in 5.0 s (it was 30 s before a per-request timeout).
+Besides seed 488, tests and reviews caught a 1 ms date drift that broke convergence intermittently (dates now go over the wire as integer milliseconds), a clock counter that a corrupt peer could overflow, a relay that buffered about 175 MB before checking size, and a Windows socket flag that let two listeners share a port. Each one is in [docs/decisions.md](docs/decisions.md).
+
+## How it was built
+
+AI agents wrote the code, the sync core and crypto included, from my requirements. A separate crypto-review agent audited every crypto change. Every real decision is logged with why and what else was considered in [docs/decisions.md](docs/decisions.md).
 
 ## Run it
 
-### Windows
-
-Needs the Swift toolchain for Windows. In Git Bash, from the repo root:
+You need Swift 6. The shared package builds on macOS, Linux and Windows.
 
 ```sh
-. scripts/swiftenv.sh            # puts Swift on PATH and sets SDKROOT
 swift build
-swift test                       # about 350 tests
+swift test                                  # about 350 tests
 swift run ConvergenceHarness --seeds 500
 swift run ConvergenceHarness --seeds 500 --mutation lwwReversed   # should fail
 ```
 
 The other mutations are `lastArrivalWins`, `ignoreTombstones` and `editRevivesDeleted`. A failing run prints a `repro:` line.
 
-clipctl is the Windows client for now. Usage is in [content/clipctl.md](content/clipctl.md):
-
-```sh
-swift run clipctl init --server http://<relay>:8787 --name "Desk PC"
-swift run clipctl pair start      # on an existing device
-swift run clipctl watch
-```
-
-Smoke test (20 checks, uses an unreachable relay and a throwaway home folder):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\clipctl-smoke.ps1
-```
-
-### Relay
-
-The relay is its own package in `Server/` because SwiftNIO doesn't build on Windows. Build and test it on Linux or macOS, or in WSL Ubuntu 24.04 set up with `scripts/wsl-setup.sh`. [Server/README.md](Server/README.md) covers flags, the API, auth, and deploying to the VM with systemd or Docker.
-
-```sh
-cd Server
-swift test                        # 76 tests
-swift run ClipRelay --host <tailscale-ip> --port 8787 --db ./relay.sqlite3 --token-sha256 <hex>
-```
-
-### End to end
-
-`scripts/e2e.ps1` starts the real relay in WSL and two clipctl devices on Windows. It pairs them, syncs live in both directions, checks pin, tag, rename and delete, and compares the two histories. It needs `swift build --product clipctl` on Windows and a release build of the relay at `/root/clip/Server` in WSL.
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\e2e.ps1
-```
-
-### Mac and iPhone
-
-See [apps/Apple/README.md](apps/Apple/README.md). It uses XcodeGen and a `CLIPSYNC_TEAM_ID` environment variable for signing. All three targets build on Xcode 16.2, and the Mac app runs.
-
-### Windows tray app
-
-See [apps/Windows/README.md](apps/Windows/README.md). `swift run ClipSyncWin` starts it. It builds on Windows and in CI but hasn't been run on the PC yet.
+- Mac and iPhone apps: [apps/Apple/README.md](apps/Apple/README.md). They use XcodeGen and a `CLIPSYNC_TEAM_ID` environment variable for signing, and build on Xcode 16.2.
+- Relay: `cd Server && swift test`, then `swift run ClipRelay --host <tailscale-ip> --port 8787 --db ./relay.sqlite3 --token-sha256 <hex>`. It runs on Linux or macOS. [Server/README.md](Server/README.md) covers the API, auth and deploying with systemd or Docker.
+- Windows tray app: [apps/Windows/README.md](apps/Windows/README.md). On Windows, run `. scripts/swiftenv.sh` in Git Bash first to set up Swift.
+- Command-line client: [content/clipctl.md](content/clipctl.md).
+- End to end: `scripts/e2e.ps1` (Windows with the relay in WSL), and `scripts/e2e-blobs.sh`, `scripts/e2e-direct.sh` and `scripts/e2e-revoke-blobs.sh` on macOS.
 
 ## Repo map
 
 | Path | What's there |
 | --- | --- |
-| `Sources/ClipCore` | Ops, hybrid logical clock, merge rules, shared date coding |
+| `Sources/ClipCore` | Ops, hybrid logical clock, merge rules |
 | `Sources/ClipCrypto` | Vault key, op cipher, pairing code |
 | `Sources/ClipStore` | SQLite (bundled as source in `CSQLite`), FTS5 search, outbox, cursor |
 | `Sources/ClipSync` | Sync engine, HTTP transport, in-memory relay for tests |
 | `Sources/ClipWire` | Wire types and size limits shared with the relay |
-| `Sources/ClipAppCore` | App model shared by the Apple apps, tested on Windows |
-| `Sources/ClipHarness`, `Sources/ConvergenceHarness` | Convergence harness and its command line |
-| `Sources/clipctl` | Command-line client, DPAPI key store, Windows clipboard watcher |
-| `Sources/ClipWindows` | Windows platform code shared by clipctl and the tray app: DPAPI, the Win32 clipboard |
-| `Sources/ClipPeerSocket` | Sockets for direct device-to-device sync (BSD sockets and Winsock) |
-| `Tests/` | One test target per module |
+| `Sources/ClipAppCore` | App model shared by the Mac, iPhone and Windows apps |
+| `Sources/ClipHarness`, `Sources/ConvergenceHarness` | The convergence harness and its command line |
+| `Sources/ClipPeerSocket` | Sockets for direct device-to-device sync |
+| `Sources/ClipWindows`, `Sources/clipctl` | Windows platform code and the command-line client |
 | `Server/` | The relay (Hummingbird), its own SwiftPM package |
-| `apps/Apple/` | SwiftUI apps for iPhone and Mac, share extension, Shortcuts action |
-| `apps/Windows/` | The Windows tray app (Win32 through `WinSDK`, no UI framework) |
-| `scripts/` | Windows Swift setup, WSL setup, clipctl smoke test, end-to-end test |
-| `content/` | User-facing copy as markdown |
-| `docs/` | PRD, vision, design, threat model, decisions, board |
-| `.github/workflows/` | CI and the nightly harness |
-
-## Decisions, testing and CI
-
-[docs/decisions.md](docs/decisions.md) records each real decision with why and what else was considered. One entry to know up front: agents wrote the code, the sync core and crypto included, with a separate crypto-review agent auditing crypto changes. Besides the clock bug, these were found by tests or review and fixed:
-
-- **1 ms date drift.** Dates encoded as ISO text with fractional seconds went through a `Double`, so re-encoding a decoded date could move it by 1 ms. A device that stored a synced op once and one that stored it twice ended with different `createdAt` values, which broke convergence. It showed up as an intermittent test failure. Dates are now integer milliseconds in one shared encoder, and a 5,000-date round-trip test pins it.
-- **Counter overflow (T02 review).** `observe()` copies a peer's counter, so a corrupt peer could make `+= 1` trap and crash the app. `tick()` now moves to the next millisecond and resets the counter when it's at its max.
-- **Relay hardening (review).** The relay buffered push bodies up to about 175 MB before checking size, and anyone who knew a pairing ID could replace its blob. Bodies are now capped before decoding (4 MiB for pushes), pairing uploads need the token and never overwrite, and the token can be pinned and rotated. Details are in the [threat model](docs/threat-model.md#crypto-review-findings).
-- **Relay reset.** A relay that lost its log could leave ops stranded. Devices now re-push everything they hold when the relay's epoch changes.
-
-Testing has four layers. Unit tests use known-answer vectors for HKDF (RFC 5869), AES-GCM (Test Case 16 from the GCM paper) and the derived keys, plus tamper tests. The convergence harness is deterministic per seed. It drops requests and responses, makes clients retry pushes the relay already has, takes devices offline, crashes them and moves their clocks. Its mutation mode swaps in 4 broken merge rules to prove it notices: last-writer-wins keeping the older write fails 500 of 500 seeds, last-arrival-wins 496 of 500, ignoring deletes 500 of 500, and edits undoing deletes 500 of 500. The relay has route and storage tests on Linux. The smoke test and end-to-end script drive the real clipctl binary. The store has a crash test: a helper process writes to a real database file and gets killed at random points. After each kill the test reopens the file and runs SQLite's integrity check and the search index's own check. It also checks that every transaction the helper reported as committed is there, and that the one it was in the middle of is either all there or not there at all. `CLIPSTORE_CRASH_ITERATIONS=500 swift test --filter CrashInjectionTests` runs a long one.
-
-CI is in `.github/workflows`. `ci.yml` builds and tests on Linux, Windows and macOS, runs the relay tests, and runs the harness for 2,000 seeds in release. It's green on all four jobs. The first Windows test run found a real bug: on Windows, `SO_REUSEADDR` let two listeners share the direct-sync port ([decisions](docs/decisions.md)). `nightly.yml` runs 20,000 new seeds a night and uploads the log.
+| `apps/Apple/`, `apps/Windows/` | The SwiftUI apps and the Windows tray app |
+| `docs/` | PRD, design, threat model, decisions, status |

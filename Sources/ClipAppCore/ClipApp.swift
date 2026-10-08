@@ -48,6 +48,14 @@ public final class ClipApp {
     public private(set) var receivesLatest = true
     /// F14, persisted in the config. nil keeps items forever.
     public private(set) var expiryDays: Int?
+    /// Where files from other devices are saved (`HistoryModel.receivedFilesDirectory`); a platform choice, not
+    /// config. Carried into each history model this app makes.
+    public var receivedFilesDirectory: URL? {
+        didSet { history?.receivedFilesDirectory = receivedFilesDirectory }
+    }
+    public var onFileSaved: ((URL) -> Void)? {
+        didSet { history?.onFileSaved = onFileSaved }
+    }
     /// F13: the vault's devices, as of the last `loadDevices()`. This device comes first.
     public private(set) var devices: [VaultDevice] = []
 
@@ -464,6 +472,8 @@ public final class ClipApp {
             engine: engine, db: db, pasteboard: pasteboard, thumbnails: thumbnails,
             exportsDirectory: home.appendingPathComponent(Self.exportsFolderName))
         history.receivesLatest = config.receivesLatest
+        history.receivedFilesDirectory = receivedFilesDirectory
+        history.onFileSaved = onFileSaved
         self.history = history
         history.start()
         if autoSync {

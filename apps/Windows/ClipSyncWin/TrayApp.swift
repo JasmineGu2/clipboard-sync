@@ -84,6 +84,12 @@ final class TrayApp: Win32Window {
         }
         guard let trayApp = TrayApp(app: app) else { return 1 }
         pasteboard.onFailure = { [weak trayApp] in trayApp?.tray.notify(WinStrings.copyFailed) }
+        // Files (not images) from other devices land in Downloads (docs/decisions.md, 2026-10-08).
+        app.receivedFilesDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? environment["USERPROFILE"].map { URL(fileURLWithPath: $0).appendingPathComponent("Downloads") }
+        app.onFileSaved = { [weak trayApp] url in
+            trayApp?.tray.notify(Strings.format(WinStrings.fileSaved, ["name": url.lastPathComponent]))
+        }
         current = trayApp
         trayApp.start()
         return MainQueuePump.runMessageLoop()

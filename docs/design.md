@@ -178,8 +178,9 @@ It binds to the Tailscale address only (N10).
 **The shape.** An image or file item is an ordinary item whose create op carries a `BlobRef`: blob ID, size,
 SHA-256 of the plaintext, chunk size and MIME type, plus an optional thumbnail. The bytes themselves never enter
 the op log. They live in a local blob cache (one file per blob) and, encrypted in 1 MiB chunks, on the relay's
-blob routes. The item shows up everywhere as soon as its op syncs; the full payload downloads only when someone
-copies it.
+blob routes. The item shows up everywhere as soon as its op syncs, with its thumbnail. Every device then
+downloads the full payload in the background (the prefetch), so copying it from the history doesn't wait on the
+network.
 
 ```
  create op (encrypted, in the log)          relay blob routes (outside the log)
@@ -252,9 +253,20 @@ docs/decisions.md.
 **Capture.** The Mac watcher hands whole clips to the history: copied files win over text (Finder also puts the
 file name as text), and text wins over an image (Office puts a picture of copied cells next to the text). Images
 over 50 MB and files over 100 MB are skipped by the watcher; `clipctl send-file` takes up to 512 MB on purpose.
-Copying an image or file item downloads it first, then puts a copy named like the item on the clipboard: the file
-URL for Finder plus, for images, the image data. Another device's newest image doesn't land on the clipboard by
-itself (`LatestClipFollower` is text-only), because that would mean downloading every image on every device.
+Copying an image or file item downloads it first (usually already done by the prefetch), then puts a copy named
+like the item on the clipboard: the file URL for Finder plus, for images, the image data. On Windows that's
+CF_HDROP plus the registered "PNG" format for PNGs.
+
+**Prefetch and receiving images.** The engine's background blob loop uploads, then downloads every visible item's
+payload this device doesn't hold yet (newest first, `SyncEngine.prefetchBlobs`), then collects garbage. A pulled
+create that carries a blob wakes it. The sender pushes the op before its upload ends, so the first try usually
+gets "not uploaded yet"; the loop asks again after 1 s, doubling to a minute. `LatestClipFollower` delivers images
+as well as text: when another device's image becomes the newest item, the app waits for its payload (asking every
+second for up to 2 minutes) and puts it on the clipboard, unless something newer arrived or was copied here in the
+meantime. Other files never take over the clipboard; they're prefetched and wait to be picked. On Windows the tray
+app also saves each new file from another device to Downloads (`HistoryModel.receivedFilesDirectory`), as
+`name (1).pdf` and so on when the name is taken, never replacing a file. Files already in the history at launch
+aren't saved again. `clipctl watch` prefetches but still delivers text only. See docs/decisions.md (2026-10-08).
 
 
 ## 7. Direct sync when the relay is unreachable (F16)

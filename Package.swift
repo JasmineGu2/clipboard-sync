@@ -71,6 +71,7 @@ let package = Package(
         .testTarget(name: "ClipStoreTests", dependencies: ["ClipStore"]),
         .testTarget(name: "ClipSyncTests", dependencies: ["ClipSync"]),
         .testTarget(name: "ClipHarnessTests", dependencies: ["ClipHarness", "ClipCore"]),
+        .testTarget(name: "ClipWindowsTests", dependencies: ["ClipWindows"]),
         // Shared app model for the Apple apps (apps/Apple). No UI frameworks, so it builds and tests on Windows.
         .target(name: "ClipAppCore", dependencies: ["ClipSync", "ClipStore", "ClipCrypto", "ClipCore"]),
         // M3 Windows tray app (apps/Windows). Win32 through the WinSDK module; on other OSes main.swift only

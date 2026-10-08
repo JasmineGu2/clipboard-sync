@@ -116,7 +116,7 @@ final class BlobAppTests: XCTestCase {
         await phone.model.syncNow()
         let row = try XCTUnwrap(phone.model.recent.first)
         XCTAssertTrue(row.isFile)
-        XCTAssertTrue(phone.pasteboard.writtenFiles.isEmpty, "a remote image doesn't land on the clipboard by itself")
+        XCTAssertTrue(phone.pasteboard.writtenFiles.isEmpty, "nothing is received before start()")
         await phone.model.copyFile(row)
         let written = try XCTUnwrap(phone.pasteboard.writtenFiles.last)
         XCTAssertEqual(written.url.lastPathComponent, "Clipboard image.png")
@@ -125,6 +125,119 @@ final class BlobAppTests: XCTestCase {
         XCTAssertEqual(phone.model.lastCopied, row.id)
         XCTAssertTrue(phone.model.downloading.isEmpty)
         XCTAssertNil(phone.model.message)
+    }
+
+    /// Waits up to `seconds` for `condition`.
+    func eventually(_ seconds: Double = 5, _ condition: @escaping () -> Bool) async throws {
+        // `@escaping`: Swift 6.0 (Xcode 16.2, CI's Mac) rejects calling a non-escaping closure parameter from an
+        // async loop ("escaping local function captures non-escaping value"), wherever the call sits.
+        for _ in 0..<Int(seconds * 50) {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    func testARemoteScreenshotLandsOnTheClipboardOnceItsUploadEnds() async throws {
+        let relay = InMemoryRelay()
+        let mac = try makeFixture(relay, name: "Mac")
+        let pc = try makeFixture(relay, name: "PC")
+        pc.model.start()
+        defer { pc.model.stop() }
+        try await Task.sleep(for: .milliseconds(100))  // the follower's baseline
+
+        let bytes = Data((0..<200_000).map { UInt8(truncatingIfNeeded: $0 &* 13) })
+        _ = await mac.model.capture(.image(PasteboardImage(data: bytes, contentType: "image/png")))
+        try await mac.engine.syncOnce()  // the item first; the upload comes after, as in the apps
+        try await pc.engine.syncOnce()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(pc.pasteboard.writtenFiles.isEmpty, "nothing to write before the upload")
+
+        try await mac.engine.uploadPendingBlobs()
+        try await eventually { !pc.pasteboard.writtenFiles.isEmpty }
+        let written = try XCTUnwrap(pc.pasteboard.writtenFiles.last)
+        XCTAssertEqual(written.contentType, "image/png")
+        XCTAssertEqual(try Data(contentsOf: written.url), bytes)
+        XCTAssertTrue(pc.pasteboard.written.isEmpty)
+    }
+
+    func testANewerCopyWinsOverAScreenshotStillDownloading() async throws {
+        let relay = InMemoryRelay()
+        let mac = try makeFixture(relay, name: "Mac")
+        let pc = try makeFixture(relay, name: "PC")
+        pc.model.start()
+        defer { pc.model.stop() }
+        try await Task.sleep(for: .milliseconds(100))
+
+        _ = await mac.model.capture(.image(PasteboardImage(data: Data(repeating: 5, count: 1_000), contentType: "image/png")))
+        try await mac.engine.syncOnce()
+        try await pc.engine.syncOnce()
+        try await Task.sleep(for: .milliseconds(200))
+        await pc.model.capture("copied on the PC meanwhile")  // newest now; already on this clipboard
+        try await Task.sleep(for: .milliseconds(200))
+
+        try await mac.engine.uploadPendingBlobs()
+        try await Task.sleep(for: HistoryModel.imageRetryInterval * 2)
+        XCTAssertTrue(pc.pasteboard.writtenFiles.isEmpty, "the image no longer replaces what's on the clipboard")
+    }
+
+    func testFilesFromAnotherDeviceWaitToBePicked() async throws {
+        let relay = InMemoryRelay()
+        let mac = try makeFixture(relay, name: "Mac")
+        let pc = try makeFixture(relay, name: "PC")
+        pc.model.start()
+        defer { pc.model.stop() }
+        try await Task.sleep(for: .milliseconds(100))
+
+        let url = try file("notes.pdf", bytes: Data(repeating: 1, count: 100), in: mac.home)
+        _ = await mac.model.sendFile(url)
+        try await mac.engine.uploadPendingBlobs()
+        try await pc.engine.syncOnce()
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(pc.pasteboard.writtenFiles.isEmpty)
+        XCTAssertTrue(pc.pasteboard.written.isEmpty)
+    }
+
+    func testNewFilesFromAnotherDeviceAreSavedToTheFolder() async throws {
+        let relay = InMemoryRelay()
+        let mac = try makeFixture(relay, name: "Mac")
+        let pc = try makeFixture(relay, name: "PC")
+        let downloads = pc.home.appendingPathComponent("Downloads")
+        pc.model.receivedFilesDirectory = downloads
+        var saved: [URL] = []
+        pc.model.onFileSaved = { saved.append($0) }
+
+        // Already in the history before the app starts: left alone.
+        _ = await mac.model.sendFile(try file("old.pdf", bytes: Data(repeating: 1, count: 50), in: mac.home))
+        try await mac.engine.uploadPendingBlobs()
+        try await pc.engine.syncOnce()
+        pc.model.start()
+        defer { pc.model.stop() }
+        try await Task.sleep(for: .milliseconds(100))
+
+        _ = await mac.model.capture(.image(PasteboardImage(data: Data(repeating: 2, count: 50), contentType: "image/png")))
+        _ = await mac.model.sendFile(try file("resume.pdf", bytes: Data(repeating: 3, count: 80), in: mac.home))
+        try await pc.engine.syncOnce()  // the items first; the uploads after
+        try await mac.engine.uploadPendingBlobs()
+        try await eventually { !saved.isEmpty }
+
+        XCTAssertEqual(saved.map(\.lastPathComponent), ["resume.pdf"], "images go on the clipboard, not to the folder")
+        XCTAssertEqual(try Data(contentsOf: downloads.appendingPathComponent("resume.pdf")), Data(repeating: 3, count: 80))
+        let names = try FileManager.default.contentsOfDirectory(atPath: downloads.path)
+        XCTAssertEqual(names, ["resume.pdf"], "no leftover temporary file, and nothing from before the start")
+    }
+
+    func testSavingNeverReplacesAFile() throws {
+        let home = try makeHome()
+        let cached = try file("blob", bytes: Data("new".utf8), in: home)
+        let folder = home.appendingPathComponent("Downloads")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("mine".utf8).write(to: folder.appendingPathComponent("notes.pdf"))
+
+        let first = try HistoryModel.save(cached, named: "notes.pdf", fallback: "x", in: folder)
+        let second = try HistoryModel.save(cached, named: "notes.pdf", fallback: "x", in: folder)
+        XCTAssertEqual(first.lastPathComponent, "notes (1).pdf")
+        XCTAssertEqual(second.lastPathComponent, "notes (2).pdf")
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("notes.pdf")), Data("mine".utf8))
     }
 
     func testCopyBeforeTheUploadShowsAMessage() async throws {

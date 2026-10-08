@@ -90,7 +90,7 @@ struct Watch: AsyncParsableCommand {
                     let verb = item.content?.sourceDevice == client.device ? "captured" : "synced  "
                     say("\(verb) \(itemLine(item))")
                 }
-                if receives, let text = follower.update(newest: try? client.db.items(limit: 1).first) {
+                if receives, let text = follower.update(newest: try? client.db.items(limit: 1).first)?.text {
                     inbox.put(text)
                 }
             }

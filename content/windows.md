@@ -35,4 +35,5 @@ The code reads these from the `WinStrings` enum in `Sources/ClipAppCore/WindowsS
 - `hotkeyTaken`: Another app already uses Ctrl+Shift+V, so the history shortcut is off. Open the history from the tray icon.
 - `launchAtLoginFailed`: Couldn't change the sign-in setting (Windows error {code}).
 - `copyFailed`: Couldn't put that on the clipboard. Another app may be holding it; try again.
+- `fileSaved`: Saved {name} to Downloads.
 - `windowsOnly`: ClipSyncWin runs on Windows only. On this computer, use the Mac app or clipctl.

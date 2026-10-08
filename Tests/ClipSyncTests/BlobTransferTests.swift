@@ -413,6 +413,73 @@ final class BlobTransferTests: XCTestCase {
         XCTAssertEqual(status?.isComplete, true)
     }
 
+    // MARK: Prefetch
+
+    func testPrefetchWaitsForAnUploadThenDownloadsIt() async throws {
+        let relay = InMemoryRelay()
+        let a = try makePeer("A", transport: relay)
+        let b = try makePeer("B", transport: relay)
+        let item = try await a.engine.addFile(at: try makeFile(bytes: 100), kind: .image, contentType: "image/png")
+        try await a.engine.syncOnce()  // the item goes out before its payload, as in the apps
+        try await b.engine.syncOnce()
+        let blob = try XCTUnwrap(try b.db.item(item)?.content?.blob).id
+
+        let waiting = try await b.engine.prefetchBlobs()
+        XCTAssertTrue(waiting, "the sender hasn't uploaded yet")
+        XCTAssertFalse(b.cache.contains(blob))
+
+        try await a.engine.uploadPendingBlobs()
+        let stillWaiting = try await b.engine.prefetchBlobs()
+        XCTAssertFalse(stillWaiting)
+        XCTAssertTrue(b.cache.contains(blob), "downloaded without anyone asking for it")
+        let local = try await b.engine.localFile(for: item)
+        XCTAssertNotNil(local)
+    }
+
+    func testRunLoopPrefetchesWhatAnotherDeviceSent() async throws {
+        let relay = InMemoryRelay()
+        let a = try makePeer("A", transport: relay)
+        let b = try makePeer("B", transport: relay)
+        let running = Task { await b.engine.run() }
+        defer { running.cancel() }
+        let item = try await a.engine.addFile(at: try makeFile(bytes: 1_500_000), kind: .file)
+        try await a.engine.syncOnce()
+        try await a.engine.uploadPendingBlobs()
+        for _ in 0..<500 {
+            if try await b.engine.localFile(for: item) != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let local = try await b.engine.localFile(for: item)
+        XCTAssertNotNil(local)
+    }
+
+    func testFollowerDeliversImagesButNotFiles() async throws {
+        let relay = InMemoryRelay()
+        let a = try makePeer("A", transport: relay)
+        let b = try makePeer("B", transport: relay)
+        var follower = LatestClipFollower(device: b.engine.device)
+        _ = follower.update(newest: try b.db.items(limit: 1).first)
+
+        let image = try await a.engine.addFile(at: try makeFile(bytes: 100, seed: 1), kind: .image, contentType: "image/png")
+        try await a.engine.syncOnce()
+        try await b.engine.syncOnce()
+        XCTAssertEqual(follower.update(newest: try b.db.items(limit: 1).first), .image(image))
+        XCTAssertTrue(follower.isNewest(image))
+
+        _ = try await a.engine.addFile(at: try makeFile(bytes: 100, seed: 2), kind: .file)
+        try await a.engine.syncOnce()
+        try await b.engine.syncOnce()
+        XCTAssertNil(follower.update(newest: try b.db.items(limit: 1).first), "files wait to be picked")
+        XCTAssertFalse(follower.isNewest(image), "a newer item supersedes an image still downloading")
+    }
+
+    func testPrefetchRetryBacksOffToAMinute() {
+        XCTAssertEqual(SyncEngine.prefetchRetry(misses: 1), .seconds(1))
+        XCTAssertEqual(SyncEngine.prefetchRetry(misses: 3), .seconds(4))
+        XCTAssertEqual(SyncEngine.prefetchRetry(misses: 7), .seconds(60))
+        XCTAssertEqual(SyncEngine.prefetchRetry(misses: 100), .seconds(60))
+    }
+
     // MARK: Bounded memory (N6)
 
     /// Streams a 200 MB file up and back down. The transfer never holds more than a couple of chunks

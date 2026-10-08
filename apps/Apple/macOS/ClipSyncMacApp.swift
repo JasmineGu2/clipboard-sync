@@ -1,6 +1,7 @@
 import AppKit
 import ClipAppCore
 import ClipCrypto
+import ServiceManagement
 import SwiftUI
 
 @main
@@ -26,6 +27,10 @@ final class MacAppController {
     @ObservationIgnored private var hotKey: GlobalHotKey?
     /// False when another app holds ⌃⌘V; the menu says so and still opens the picker.
     private(set) var hotKeyAvailable = true
+    /// Open at login. macOS keeps this setting (System Settings > General > Login Items), so it's read from there.
+    private(set) var launchesAtLogin = SMAppService.mainApp.status == .enabled
+    /// Set when turning Open at login on or off fails; the menu shows it in an alert.
+    var launchAtLoginError: String?
 
     init() {
         let pasteboard = MacPasteboard()
@@ -76,6 +81,20 @@ final class MacAppController {
         }
         watcher.start()
         self.watcher = watcher
+    }
+
+    /// Registers the app as a login item at its current path, so run it from /Applications.
+    func setLaunchesAtLogin(_ on: Bool) {
+        do {
+            if on {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            launchAtLoginError = Strings.format(Strings.openAtLoginFailed, ["error": error.localizedDescription])
+        }
+        launchesAtLogin = SMAppService.mainApp.status == .enabled
     }
 
     /// F15.

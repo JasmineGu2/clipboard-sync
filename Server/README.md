@@ -14,6 +14,9 @@ cd Server
 swift run ClipRelay --host 127.0.0.1 --port 8787 --db ./relay.sqlite3
 ```
 
+To run it on a Mac at login instead (handy until the VM exists), `bash scripts/install-mac-relay.sh --port 8788` installs a
+LaunchAgent that starts it at login and restarts it if it exits. See the comments at the top of the script.
+
 | Flag | Env | Default |
 | --- | --- | --- |
 | `--host` | `CLIP_RELAY_HOST` | `127.0.0.1` |

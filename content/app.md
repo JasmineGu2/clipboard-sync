@@ -70,6 +70,8 @@ Shown in the Mac menu. When the relay (the server) can't be reached, devices on 
 - `menuResumeCapture`: Resume capture
 - `capturePaused`: Capture is paused
 - `menuReceiveLatest`: Use copies from other devices
+- `menuOpenAtLogin`: Open at login
+- `openAtLoginFailed`: Couldn't change Open at login: {error}
 - `menuPairDevice`: Pair new device…
 - `menuQuit`: Quit ClipSync
 

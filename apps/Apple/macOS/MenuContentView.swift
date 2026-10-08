@@ -130,6 +130,11 @@ struct MacHistoryView: View {
             }
             Button(Strings.cancel, role: .cancel) {}
         }
+        .alert(Strings.appName, isPresented: launchAtLoginErrorShown, presenting: controller.launchAtLoginError) { _ in
+            Button(Strings.ok) {}
+        } message: { text in
+            Text(text)
+        }
         .alert(Strings.appName, isPresented: messageShown, presenting: history.message) { _ in
             Button(Strings.ok) {}
         } message: { message in
@@ -158,6 +163,10 @@ struct MacHistoryView: View {
                 Toggle(Strings.menuReceiveLatest, isOn: Binding(
                     get: { controller.app.receivesLatest },
                     set: { controller.app.setReceivesLatest($0) }
+                ))
+                Toggle(Strings.menuOpenAtLogin, isOn: Binding(
+                    get: { controller.launchesAtLogin },
+                    set: { controller.setLaunchesAtLogin($0) }
                 ))
                 // F14: a submenu with a checkmark on the current choice.
                 Picker(Strings.expiryTitle, selection: Binding(
@@ -229,6 +238,10 @@ struct MacHistoryView: View {
 
     private var messageShown: Binding<Bool> {
         Binding(get: { history.message != nil }, set: { if !$0 { history.message = nil } })
+    }
+
+    private var launchAtLoginErrorShown: Binding<Bool> {
+        Binding(get: { controller.launchAtLoginError != nil }, set: { if !$0 { controller.launchAtLoginError = nil } })
     }
 
     private func isPresented(_ item: Binding<ClipItem?>) -> Binding<Bool> {

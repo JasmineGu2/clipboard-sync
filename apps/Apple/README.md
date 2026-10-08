@@ -72,6 +72,11 @@ Shortcuts action then can't see its database and say "finish setup first". Paste
 
 Pause capture and Pair new device are in the `...` menu at the bottom.
 
+To start ClipSync when you log in, build the Release configuration, copy `ClipSync.app` into `/Applications`, open it
+from there, and tick **Open at login** in the `...` menu. It uses `SMAppService.mainApp`, which registers the app at
+the path it's running from, so turning it on in a copy launched from Xcode's build folder points the login item there.
+The setting lives in System Settings > General > Login Items.
+
 ### Quick picker (⌃⌘V)
 
 Press ⌃⌘V anywhere for a small floating list of recent items near the pointer (or choose Quick picker in the `...`

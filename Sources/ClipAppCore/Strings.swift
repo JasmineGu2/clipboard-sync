@@ -61,6 +61,8 @@ public enum Strings {
     public static let menuResumeCapture = "Resume capture"
     public static let capturePaused = "Capture is paused"
     public static let menuReceiveLatest = "Use copies from other devices"
+    public static let menuOpenAtLogin = "Open at login"
+    public static let openAtLoginFailed = "Couldn't change Open at login: {error}"
     public static let menuPairDevice = "Pair new device…"
     public static let menuQuit = "Quit ClipSync"
 
@@ -176,6 +178,7 @@ public enum Strings {
         "statusSynced": statusSynced, "statusSyncing": statusSyncing, "statusOffline": statusOffline,
         "menuPauseCapture": menuPauseCapture, "menuResumeCapture": menuResumeCapture,
         "capturePaused": capturePaused, "menuReceiveLatest": menuReceiveLatest,
+        "menuOpenAtLogin": menuOpenAtLogin, "openAtLoginFailed": openAtLoginFailed,
         "menuPairDevice": menuPairDevice, "menuQuit": menuQuit,
         "settingsTitle": settingsTitle, "expiryTitle": expiryTitle, "expiryHint": expiryHint,
         "expiryOff": expiryOff, "expiryOneDay": expiryOneDay, "expiryDays": expiryDays,

@@ -277,3 +277,8 @@
 - **Decision:** `ClipPeerSocket` sets SO_REUSEADDR on macOS and Linux only.
 - **Why:** On Windows the flag lets a second socket bind a port another socket is actively listening on, so the tray app and `clipctl watch` could both take 8790 and split incoming peers between them. `testATakenPortFailsAtBind` failed on the first Windows run. Windows' default bind already allows rebinding while old connections sit in TIME_WAIT, which is the only reason the flag is set elsewhere.
 - **Alternatives:** SO_EXCLUSIVEADDRUSE (also blocks other users' sockets, but can refuse a restart while connections linger in TIME_WAIT).
+
+## 2026-10-08: Until the VM exists, the Mac runs the relay as a LaunchAgent and the app opens at login
+- **Decision:** `scripts/install-mac-relay.sh` installs a release ClipRelay as a LaunchAgent (`dev.jazz.clipsync.relay`, run at load, kept alive), with its binary and database in `~/Library/Application Support/ClipRelay`. The Mac app has an Open at login switch (`SMAppService.mainApp`), off until the user ticks it, and the app is installed in `/Applications`.
+- **Why:** Jazz wants the Mac to sync after a restart without starting anything by hand. macOS privacy protection stops a background service from reading `~/Desktop` or `~/Documents`, so the relay can't use the repo's `.relay/` folder. `SMAppService` registers the app at the path it runs from, so a copy in Xcode's build folder would leave a login item pointing at a folder Xcode cleans.
+- **Alternatives:** Start the relay by hand after each restart (what broke before); give the relay Full Disk Access (far more access than it needs); move straight to the VM (not set up yet).

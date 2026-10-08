@@ -32,7 +32,7 @@ It's written in Swift, everything is end-to-end encrypted, and each device keeps
 
 Each device keeps its own full copy of the history. When you copy something, the device writes a small record of the change, encrypts it, and sends it to a relay, a little server that stores it and passes it on. The other devices pick up new records and apply them.
 
-The hard part is making sure every device ends up with the same history, even when changes arrive late, twice, or out of order. So every change is built to give the same result no matter what order it's applied in. A test harness checks this by running hundreds of random scenarios with crashes, lost messages and clocks that jump around.
+The hard part is making sure every device ends up with the same history, even when changes arrive late, twice, or out of order. So every change is built to give the same result no matter what order it's applied in. A test harness checks this by running hundreds of random scenarios with crashes, lost messages and clocks that jump around. It already caught one real bug: a device that came back from a crash with its clock behind could stamp two changes with the same time, and then two devices would disagree for good. Each device now saves the latest time it has used, so a crash can't make it reuse one. The write-up is in [docs/decisions.md](docs/decisions.md#2026-10-01-the-clock-must-resume-from-a-persisted-high-water-harness-found-bug).
 
 The details are in [docs/development.md](docs/development.md), the full design in [docs/design.md](docs/design.md), and the security side in [docs/threat-model.md](docs/threat-model.md).
 
@@ -50,14 +50,6 @@ Every choice here gave something up. The reasoning for each is in [docs/decision
 
 **One tap on the iPhone.** iOS doesn't let apps read the clipboard in the background, so on the iPhone you send things with a paste button, the share sheet or a Shortcut.
 
-## The bug the harness caught
-
-The harness runs random schedules where devices edit, go offline, crash, restart with their clock set back, and lose or repeat requests. Then it checks that every device ends up with the same history. Seed 488 didn't.
-
-A device tagged an item "blue", crashed, and came back with its clock behind. Its next edit removed the tag, and it got the exact same timestamp as the first edit. With two edits tied, each device kept whichever one reached it last, so they never agreed.
-
-The fix: each device saves the highest timestamp it has used, and the clock can't start without it. With the old behavior 385 of 500 seeds fail. With the fix all 500 pass. The first two commands in Try it show both. The fix is commit `3a92f4c`, and the reasoning is in [docs/decisions.md](docs/decisions.md#2026-10-01-the-clock-must-resume-from-a-persisted-high-water-harness-found-bug).
-
 ## Where it's at
 
 The Mac and Windows apps run and sync with each other over Tailscale. The iPhone app builds, but I haven't run it on my phone yet. Every feature in the [PRD](docs/prd.md) is built, and [docs/status.md](docs/status.md) has the details and what's been measured so far.
@@ -72,13 +64,10 @@ You don't need my devices or a server for this. On a Mac with Xcode 16 (or Swift
 git clone https://github.com/JasmineGu2/clipboard-sync.git
 cd clipboard-sync
 
-# The bug above, with the old clock behavior: 0 of 1 seeds converge
-swift run ConvergenceHarness --start 488 --seeds 1 --clock-recovery fresh --no-clock-check --verbose
+# Run the harness: 500 random scenarios, every device should agree
+swift run ConvergenceHarness --seeds 500
 
-# The same seed with the fix: 1 of 1
-swift run ConvergenceHarness --start 488 --seeds 1
-
-# Break a merge rule on purpose and watch the harness catch it: 0 of 500
+# Break a merge rule on purpose and watch the harness catch it
 swift run ConvergenceHarness --seeds 500 --mutation lwwReversed
 
 # A real relay and three clients on this machine. Stops the relay midway,
@@ -89,7 +78,7 @@ bash scripts/e2e-direct.sh
 swift test
 ```
 
-On my MacBook Air (M3), from a fresh clone, the harness builds in about 10 seconds and 500 seeds run in about 4. The end-to-end script takes about a minute and `swift test` a little under one. The apps themselves need Xcode signing, two devices and Tailscale, so the demo above shows them instead.
+On my MacBook Air (M3), from a fresh clone, the harness builds in about 10 seconds and 500 scenarios run in about 4. The end-to-end script takes about a minute and `swift test` a little under one. The apps themselves need Xcode signing, two devices and Tailscale, so the demo above shows them instead.
 
 ## How it was built
 

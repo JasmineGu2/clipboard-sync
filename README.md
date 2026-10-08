@@ -10,6 +10,12 @@ Apple's Universal Clipboard covers iPhone to Mac but not Windows, and emailing t
 - Everything is end-to-end encrypted. The relay in the middle only ever sees ciphertext, and when it's down, devices sync with each other directly over Tailscale.
 - A randomized convergence harness crashes devices, moves their clocks and drops requests, then checks every device agrees. It found a real bug.
 
+## Why I built it
+
+- I'm a big Apple fan and live in the ecosystem, but my PC at home has an RTX 3070 Ti and runs faster than my MacBook Air. So I do my coding and run Claude on the PC, often over SSH, and a lot of my work spans both machines.
+- My most common case lately is job hunting. A Claude bot sends job updates to my phone over Telegram, and I watch Instagram notifications from Zero2Sudo, a popular page for job postings. When a posting comes in, I want the link on my PC right away so I can apply.
+- Getting it there means messaging it to myself. I want to copy it on the phone and paste it on the PC.
+
 ## Try it
 
 You don't need my devices or a server for this. On a Mac with Xcode 16 (or Swift 6 on Linux):

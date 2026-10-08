@@ -16,7 +16,7 @@ It's written in Swift, everything is end-to-end encrypted, and each device keeps
 ## What it does
 
 - Copy on one device and paste on another. The newest copy lands on the other devices' clipboards on its own.
-- Screenshots work the same way. Files sync too, and on the PC they land in Downloads.
+- Screenshots work the same way, and on the PC they paste straight into Figma. Files sync too, and on the PC they land in Downloads.
 - Everything you copy goes into a history you can search, pin, rename and delete from any device.
 - Each device works offline and catches up when it reconnects.
 - The server only ever sees encrypted data. If it's down, the devices sync with each other directly.

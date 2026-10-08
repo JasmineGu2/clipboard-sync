@@ -16,7 +16,7 @@ final class LatestClipFollowerTests: XCTestCase {
         /// What the follower would put on the clipboard after this device syncs.
         mutating func sync() async throws -> String? {
             try await engine.syncOnce()
-            return follower.update(newest: try db.items(limit: 1).first)
+            return follower.update(newest: try db.items(limit: 1).first)?.text
         }
     }
 

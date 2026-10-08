@@ -134,6 +134,8 @@ public final class HistoryModel {
     private var statusTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var copiedResetTask: Task<Void, Never>?
+    /// The newest image from another device, downloading on its way to the clipboard.
+    private var imageDelivery: Task<Void, Never>?
     private var follower: LatestClipFollower
     private let thumbnails: any ThumbnailMaker
     /// Copies of downloaded files named like their items, for the clipboard (the cache names files by blob ID).
@@ -184,6 +186,7 @@ public final class HistoryModel {
         changesTask?.cancel()
         searchTask?.cancel()
         copiedResetTask?.cancel()
+        imageDelivery?.cancel()
         statusTask?.cancel()
         statusTask = nil
     }
@@ -461,8 +464,47 @@ public final class HistoryModel {
     /// an old item.
     private func receiveLatest() async {
         guard case .success(let newest) = await Self.newest(db: db) else { return }
-        guard let text = follower.update(newest: newest), receivesLatest else { return }
-        pasteboard.write(text: text)
+        guard let delivery = follower.update(newest: newest), receivesLatest else { return }
+        imageDelivery?.cancel()
+        switch delivery {
+        case .text(let text):
+            pasteboard.write(text: text)
+        case .image(let id):
+            // In its own task, so a download never holds up the history refreshing.
+            imageDelivery = Task { [weak self] in await self?.receiveImage(id) }
+        }
+    }
+
+    /// How often, and how many times, `receiveImage` asks again for an image the sender is still uploading:
+    /// the item syncs before its payload, so the first ask usually comes early.
+    nonisolated static let imageRetryInterval: Duration = .seconds(1)
+    nonisolated static let imageRetryLimit = 120
+
+    /// The image half of `receiveLatest`: waits for the payload (usually already prefetched, or arriving a moment
+    /// after the item), then puts it on the clipboard like a copy from the history, unless something newer came
+    /// first or receiving was turned off. Failures are quiet: picking the item from the history shows why.
+    func receiveImage(_ id: ItemID) async {
+        var attempts = 0
+        while !Task.isCancelled {
+            do {
+                let cached = try await engine.fetchBlob(for: id)
+                guard !Task.isCancelled, follower.isNewest(id), receivesLatest,
+                      let item = await Self.item(db: db, id) else { return }
+                let exported = try Self.export(cached, as: item, to: exportsDirectory)
+                pasteboard.write(fileAt: exported, contentType: item.contentType)
+                return
+            } catch BlobTransferError.notUploadedYet {
+                attempts += 1
+                guard attempts < Self.imageRetryLimit else { return }
+                try? await Task.sleep(for: Self.imageRetryInterval)
+            } catch {
+                return
+            }
+        }
+    }
+
+    nonisolated private static func item(db: ClipDatabase, _ id: ItemID) async -> ClipItem? {
+        (try? db.item(id)).flatMap { $0 }.flatMap(ClipItem.init)
     }
 
     /// The newest visible item, read off the main actor.

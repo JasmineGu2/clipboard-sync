@@ -116,7 +116,7 @@ final class BlobAppTests: XCTestCase {
         await phone.model.syncNow()
         let row = try XCTUnwrap(phone.model.recent.first)
         XCTAssertTrue(row.isFile)
-        XCTAssertTrue(phone.pasteboard.writtenFiles.isEmpty, "a remote image doesn't land on the clipboard by itself")
+        XCTAssertTrue(phone.pasteboard.writtenFiles.isEmpty, "nothing is received before start()")
         await phone.model.copyFile(row)
         let written = try XCTUnwrap(phone.pasteboard.writtenFiles.last)
         XCTAssertEqual(written.url.lastPathComponent, "Clipboard image.png")
@@ -125,6 +125,73 @@ final class BlobAppTests: XCTestCase {
         XCTAssertEqual(phone.model.lastCopied, row.id)
         XCTAssertTrue(phone.model.downloading.isEmpty)
         XCTAssertNil(phone.model.message)
+    }
+
+    /// Waits up to `seconds` for `condition`.
+    func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async throws {
+        for _ in 0..<Int(seconds * 50) where !condition() {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    func testARemoteScreenshotLandsOnTheClipboardOnceItsUploadEnds() async throws {
+        let relay = InMemoryRelay()
+        let mac = try makeFixture(relay, name: "Mac")
+        let pc = try makeFixture(relay, name: "PC")
+        pc.model.start()
+        defer { pc.model.stop() }
+        try await Task.sleep(for: .milliseconds(100))  // the follower's baseline
+
+        let bytes = Data((0..<200_000).map { UInt8(truncatingIfNeeded: $0 &* 13) })
+        _ = await mac.model.capture(.image(PasteboardImage(data: bytes, contentType: "image/png")))
+        try await mac.engine.syncOnce()  // the item first; the upload comes after, as in the apps
+        try await pc.engine.syncOnce()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(pc.pasteboard.writtenFiles.isEmpty, "nothing to write before the upload")
+
+        try await mac.engine.uploadPendingBlobs()
+        try await eventually { !pc.pasteboard.writtenFiles.isEmpty }
+        let written = try XCTUnwrap(pc.pasteboard.writtenFiles.last)
+        XCTAssertEqual(written.contentType, "image/png")
+        XCTAssertEqual(try Data(contentsOf: written.url), bytes)
+        XCTAssertTrue(pc.pasteboard.written.isEmpty)
+    }
+
+    func testANewerCopyWinsOverAScreenshotStillDownloading() async throws {
+        let relay = InMemoryRelay()
+        let mac = try makeFixture(relay, name: "Mac")
+        let pc = try makeFixture(relay, name: "PC")
+        pc.model.start()
+        defer { pc.model.stop() }
+        try await Task.sleep(for: .milliseconds(100))
+
+        _ = await mac.model.capture(.image(PasteboardImage(data: Data(repeating: 5, count: 1_000), contentType: "image/png")))
+        try await mac.engine.syncOnce()
+        try await pc.engine.syncOnce()
+        try await Task.sleep(for: .milliseconds(200))
+        await pc.model.capture("copied on the PC meanwhile")  // newest now; already on this clipboard
+        try await Task.sleep(for: .milliseconds(200))
+
+        try await mac.engine.uploadPendingBlobs()
+        try await Task.sleep(for: HistoryModel.imageRetryInterval * 2)
+        XCTAssertTrue(pc.pasteboard.writtenFiles.isEmpty, "the image no longer replaces what's on the clipboard")
+    }
+
+    func testFilesFromAnotherDeviceWaitToBePicked() async throws {
+        let relay = InMemoryRelay()
+        let mac = try makeFixture(relay, name: "Mac")
+        let pc = try makeFixture(relay, name: "PC")
+        pc.model.start()
+        defer { pc.model.stop() }
+        try await Task.sleep(for: .milliseconds(100))
+
+        let url = try file("notes.pdf", bytes: Data(repeating: 1, count: 100), in: mac.home)
+        _ = await mac.model.sendFile(url)
+        try await mac.engine.uploadPendingBlobs()
+        try await pc.engine.syncOnce()
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(pc.pasteboard.writtenFiles.isEmpty)
+        XCTAssertTrue(pc.pasteboard.written.isEmpty)
     }
 
     func testCopyBeforeTheUploadShowsAMessage() async throws {

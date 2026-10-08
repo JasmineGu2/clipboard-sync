@@ -15,6 +15,8 @@ public enum WindowsClipboard {
     /// DWORD 0 means "keep out of clipboard history / cloud clipboard".
     static let historyFormat = register("CanIncludeInClipboardHistory")
     static let cloudFormat = register("CanUploadToCloudClipboard")
+    /// The registered "PNG" format, which browsers, Office, chat apps and Paint read as an image.
+    static let pngFormat = register("PNG")
 
     public enum Capture: Sendable {
         case text(String)
@@ -85,8 +87,9 @@ public enum WindowsClipboard {
     }
 
     /// Puts a file on the clipboard as CF_HDROP, like copying it in Explorer, so pasting into Explorer or a chat
-    /// app pastes the file. Marked the same way as text.
-    public static func write(fileAt url: URL) throws {
+    /// app pastes the file. With `png` (the file's bytes, for a PNG image), the image goes on as "PNG" too, so
+    /// pasting into a document or an image editor pastes the picture. Marked the same way as text.
+    public static func write(fileAt url: URL, png: Data? = nil) throws {
         let path = url.withUnsafeFileSystemRepresentation { $0.map { String(cString: $0) } } ?? url.path
         // DROPFILES, then the path list: each path NUL-terminated, the list ended by one more NUL.
         let units = Array(path.replacingOccurrences(of: "/", with: "\\").utf16) + [0, 0]
@@ -99,6 +102,11 @@ public enum WindowsClipboard {
                 destination.storeBytes(of: drop, as: DROPFILES.self)
                 units.withUnsafeBytes { source in
                     destination.advanced(by: header).copyMemory(from: source.baseAddress!, byteCount: source.count)
+                }
+            }
+            if let png, !png.isEmpty, pngFormat != 0 {
+                try set(pngFormat, bytes: png.count) { destination in
+                    png.withUnsafeBytes { source in destination.copyMemory(from: source.baseAddress!, byteCount: source.count) }
                 }
             }
         }

@@ -21,7 +21,9 @@ final class WindowsPasteboard: PasteboardWriter {
 
     func write(fileAt url: URL, contentType: String?) {
         do {
-            try WindowsClipboard.write(fileAt: url)
+            // Screenshots and other PNGs also go on as image data (docs/decisions.md, 2026-10-08).
+            let png = contentType == "image/png" ? try? Data(contentsOf: url) : nil
+            try WindowsClipboard.write(fileAt: url, png: png)
         } catch {
             onFailure?()
         }

@@ -222,6 +222,27 @@ public final class ClipDatabase: @unchecked Sendable {
         try locked { try run("DELETE FROM blob_uploads WHERE blob_id = ?", [.text(blob.description)]) }
     }
 
+    /// Visible items that carry a blob, newest first: what `SyncEngine` prefetches.
+    public func blobItems(limit: Int = 500) throws -> [(item: ItemID, blob: BlobID)] {
+        try locked {
+            var pairs: [(item: ItemID, blob: BlobID)] = []
+            try query(
+                """
+                SELECT item_id, blob_id FROM items WHERE visible = 1 AND blob_id IS NOT NULL
+                ORDER BY created_wall DESC, created_counter DESC, created_device DESC
+                LIMIT ?
+                """,
+                [.int(Int64(limit))]
+            ) { stmt in
+                if let item = columnText(stmt, 0).flatMap(UUID.init(uuidString:)),
+                   let blob = columnText(stmt, 1).flatMap(UUID.init(uuidString:)) {
+                    pairs.append((ItemID(item), BlobID(blob)))
+                }
+            }
+            return pairs
+        }
+    }
+
     /// Blobs that some visible item points at. Everything else in the blob cache may be collected.
     public func liveBlobIDs() throws -> Set<BlobID> {
         try locked {

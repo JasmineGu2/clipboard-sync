@@ -85,9 +85,23 @@ For crypto I only use swift-crypto primitives (the CryptoKit API). The first dev
 
 More detail is in [docs/design.md](docs/design.md) and [docs/threat-model.md](docs/threat-model.md).
 
+## Trade-offs
+
+Each of these was a choice, and each one gives something up. The reasoning is in [docs/decisions.md](docs/decisions.md).
+
+**A relay in the middle instead of pure peer to peer.** Devices push to and pull from one log on an always-on server, so a device that was off all week catches up from one place. The cost is a server to run, which is why the relay only ever sees ciphertext and why direct sync (F16) takes over when it's down.
+
+**Last-writer-wins per field instead of merging text.** A clipboard item's content never changes after it's created, so there's no text to merge. Pin, title and tags are last-writer-wins registers, and delete is sticky. That keeps every rule a max or an OR, which the harness checks under drops, duplicates and reordering. The cost: two devices renaming the same item at once keep one name, not both.
+
+**Download every payload up front instead of on demand.** Images and files sync as an item with a small thumbnail first, then every device downloads the full payload in the background. A screenshot copied on the Mac goes on the PC clipboard by itself, like text, and opening a big file never waits on the network. The cost is storage and bandwidth on every device, the iPhone too. I started with on demand and changed it after the first real Mac-to-PC run, where a screenshot showed up in the history at once but took a click and a wait to paste.
+
+**Plaintext on the device.** The local history and file cache aren't encrypted by the app, so search stays fast and simple. On a lost device they're only as safe as the OS login and disk encryption. The threat model says so, and revoking the device (F13) stops it reading anything new.
+
+**One tap on the iPhone instead of automatic capture.** iOS doesn't let apps read the clipboard in the background, so the iPhone sends with a paste button, the share sheet or a Shortcut.
+
 ## Status
 
-All of F1 to F16 from the [PRD](docs/prd.md) are built: text, images and files, search, pin/tag/rename/delete, pairing, revoking a lost device, expiry, pause, and direct sync. The Mac app runs. The iPhone app and the Windows tray app build but haven't been run on real devices yet, and most end-to-end testing so far uses the `clipctl` command-line client. The full table, row by row, is in [docs/status.md](docs/status.md).
+All of F1 to F16 from the [PRD](docs/prd.md) are built: text, images and files, search, pin/tag/rename/delete, pairing, revoking a lost device, expiry, pause, and direct sync. The Mac app and the Windows tray app run and sync with each other over Tailscale: text both ways, and screenshots from the Mac to the PC (the PC captures text only). The iPhone app builds but hasn't been run on a real device yet, and most end-to-end testing so far uses the `clipctl` command-line client. The full table, row by row, is in [docs/status.md](docs/status.md).
 
 Some numbers so far:
 

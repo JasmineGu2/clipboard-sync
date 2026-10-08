@@ -11,9 +11,25 @@ import ClipCore
 /// - Edits (pin, rename, tag) don't change which item is newest, so they never write.
 /// - Deleting (or expiring) the newest item doesn't restore the one before it: only an item created after
 ///   the newest one seen so far counts, by the same create timestamp the history is sorted by.
+/// - Text and images are delivered (a screenshot behaves like text). Other files are not: they download in
+///   the background and go on the clipboard when picked from the history (docs/decisions.md, 2026-10-08).
 public struct LatestClipFollower: Sendable {
+    /// What to put on the clipboard.
+    public enum Delivery: Equatable, Sendable {
+        case text(String)
+        /// An image item: its payload downloads first (`SyncEngine.fetchBlob`), then goes on as a file. Write it
+        /// only if `isNewest` still holds once the download ends.
+        case image(ItemID)
+
+        public var text: String? {
+            if case .text(let text) = self { return text }
+            return nil
+        }
+    }
+
     public let device: DeviceID
     private var newest: HLCTimestamp?
+    private var newestItem: ItemID?
     private var hasBaseline = false
 
     public init(device: DeviceID) {
@@ -21,19 +37,28 @@ public struct LatestClipFollower: Sendable {
     }
 
     /// Call after each sync change with the newest visible item (`ClipDatabase.items(limit: 1).first`).
-    /// Returns the text to put on the clipboard, or nil to leave it alone.
-    public mutating func update(newest item: ItemState?) -> String? {
+    /// Returns what to put on the clipboard, or nil to leave it alone.
+    public mutating func update(newest item: ItemState?) -> Delivery? {
         guard hasBaseline else {
             hasBaseline = true
             newest = item?.createdBy
+            newestItem = item?.id
             return nil
         }
         guard let item, let created = item.createdBy else { return nil }
         if let newest, created <= newest { return nil }
         newest = created
-        guard let content = item.content, content.kind == .text, content.sourceDevice != device else {
-            return nil
+        newestItem = item.id
+        guard let content = item.content, content.sourceDevice != device else { return nil }
+        switch content.kind {
+        case .text: return .text(content.text)
+        case .image: return content.blob == nil ? nil : .image(item.id)
+        case .file: return nil
         }
-        return content.text
+    }
+
+    /// True while `item` is still the newest item seen: nothing newer, here or elsewhere, came during its download.
+    public func isNewest(_ item: ItemID) -> Bool {
+        newestItem == item
     }
 }

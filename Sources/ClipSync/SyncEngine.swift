@@ -82,6 +82,9 @@ public actor SyncEngine {
     private var uploadTask: Task<Int, Error>?
     private var blobWaiter: CheckedContinuation<Void, Never>?
     private var blobWorkPending = false
+    /// Blobs whose prefetch failed for a reason retrying won't fix (corrupt, refused reference). Clicking the item
+    /// still tries, and shows why. Cleared on restart.
+    private var prefetchSkipped: Set<BlobID> = []
 
     var syncTask: Task<Void, Error>?
 
@@ -439,23 +442,58 @@ public actor SyncEngine {
         return result
     }
 
-    /// Background blob work for `run()`: uploads, then garbage collection, then waits for new work or a minute.
+    /// Background blob work for `run()`: uploads, then prefetch, then garbage collection, then waits for new work,
+    /// or a minute, or less while another device is still uploading something this one wants.
     private func runBlobWork() async {
         var failures = 0
+        var misses = 0
         while !Task.isCancelled {
             do {
                 try await uploadPendingBlobs()
+                let waiting = try await prefetchBlobs()
                 await collectGarbage()
                 failures = 0
-                await waitForBlobWork(timeout: .seconds(60))
+                misses = waiting ? misses + 1 : 0
+                await waitForBlobWork(timeout: waiting ? Self.prefetchRetry(misses: misses) : .seconds(60))
             } catch {
                 if Task.isCancelled { return }
                 failures += 1
                 let delay = Self.backoff(failures: failures)
-                log("blob upload failed (attempt \(failures)), retrying in \(String(format: "%.1f", delay)) s: \(error)")
+                log("blob transfer failed (attempt \(failures)), retrying in \(String(format: "%.1f", delay)) s: \(error)")
                 try? await Task.sleep(for: .seconds(delay))
             }
         }
+    }
+
+    /// Downloads every visible item's payload this device doesn't hold yet, newest first, so copying an image or
+    /// file from the history never waits on the network (docs/decisions.md, 2026-10-08). Returns true if some
+    /// payload isn't on the relay yet: the item syncs before its upload finishes, so the receiver usually asks
+    /// early. Network errors are thrown for the caller's backoff; anything else skips that blob.
+    func prefetchBlobs() async throws -> Bool {
+        guard let blobCache, transferer != nil else { return false }
+        var waiting = false
+        for (item, blob) in try db.blobItems() where !blobCache.contains(blob) && !prefetchSkipped.contains(blob) {
+            if Task.isCancelled { break }
+            do {
+                _ = try await fetchBlob(for: item)
+            } catch BlobTransferError.notUploadedYet {
+                waiting = true
+            } catch {
+                if Self.meansRelayUnreachable(error) || error is CancellationError { throw error }
+                if case SyncError.deviceRevoked = error { throw error }
+                if case TransportError.unauthorized = error { throw error }
+                prefetchSkipped.insert(blob)
+                log("not prefetching blob \(blob): \(error)")
+            }
+        }
+        return waiting
+    }
+
+    /// How long the prefetch waits before asking again for a payload that's still uploading: 1 s doubling to the
+    /// idle minute. A screenshot lands about a second after its upload ends; a sender that went offline mid-upload
+    /// costs one request a minute.
+    static func prefetchRetry(misses: Int) -> Duration {
+        .seconds(min(60, 1 << min(6, max(0, misses - 1))))
     }
 
     func wakeBlobs() {
@@ -618,7 +656,7 @@ public actor SyncEngine {
         let cursor = max(try db.syncCursor(), lastSeq)
         let inserted = try db.insertRemote(ops, newCursor: cursor)
         if !inserted.isEmpty { changesContinuation.yield() }
-        if inserted.contains(where: { $0.kind == .delete }) { wakeBlobs() }
+        if inserted.contains(where: { $0.kind == .delete || $0.carriesBlob }) { wakeBlobs() }
     }
 
     // MARK: Relay reset
@@ -793,7 +831,7 @@ public actor SyncEngine {
         }
         let inserted = try db.insertFromPeer(ops, meta: meta)
         if !inserted.isEmpty { changesContinuation.yield() }
-        if inserted.contains(where: { $0.kind == .delete }) { wakeBlobs() }
+        if inserted.contains(where: { $0.kind == .delete || $0.carriesBlob }) { wakeBlobs() }
         return inserted
     }
 
@@ -813,5 +851,13 @@ public actor SyncEngine {
 
     static func millis(_ date: Date) -> UInt64 {
         UInt64(max(0, date.timeIntervalSince1970 * 1000))
+    }
+}
+
+extension Op {
+    /// A create whose content is an image or file: pulling one wakes the prefetch.
+    var carriesBlob: Bool {
+        if case .create(let content) = kind { return content.blob != nil }
+        return false
     }
 }

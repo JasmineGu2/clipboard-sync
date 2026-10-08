@@ -2,7 +2,9 @@
 
 One end-to-end encrypted clipboard history shared by an iPhone, a Mac and a Windows PC over Tailscale. Apple's Universal Clipboard covers iPhone to Mac but not Windows, and emailing text to yourself keeps no history. Every device keeps a full local copy in SQLite, works offline, and merges when it reconnects. A small relay on a Linux VM passes encrypted ops between devices and never sees plaintext or keys.
 
-It's written in Swift. The shared code builds and tests on Windows, Linux and macOS. The relay is tested on Linux. The Apple apps are written but haven't been compiled yet, because there's no Mac on hand. The [status table](#status) says exactly what works.
+Copy on one device and the newest copy lands on the other devices' clipboards, so a normal paste works anywhere. Older items are in the history, with search.
+
+It's written in Swift. The shared code builds and tests on Windows, Linux and macOS, and the relay on Linux and macOS. The Mac app runs. The iPhone app and the Windows tray app build but haven't been run on real devices yet. The [status table](#status) says exactly what works.
 
 ## The bug the harness caught
 
@@ -50,26 +52,26 @@ More in [docs/design.md](docs/design.md) and [docs/threat-model.md](docs/threat-
 
 ## Status
 
-From the requirements in [docs/prd.md](docs/prd.md). "Written, not built" means the Apple app code exists but hasn't been compiled. Its logic lives in `ClipAppCore`, which is tested on Windows.
+From the requirements in [docs/prd.md](docs/prd.md). All three Apple targets (Mac, iPhone, share extension) and the Windows tray app build. "Builds, not run" means the code compiles but nobody has used it on a real device yet. The app logic lives in `ClipAppCore`, which is tested on Windows, Linux and macOS.
 
 | ID | Requirement | Status | Notes |
 | --- | --- | --- | --- |
-| F1 | Auto-capture on Mac and PC | Partly | Windows: `clipctl watch`, smoke-tested. Mac watcher written, not built. |
-| F2 | iPhone send: paste button, share sheet, Shortcut | Partly | Written, not built |
-| F3 | Click an item to put it on the clipboard | Partly | `clipctl copy` works. Apple written, not built. |
-| F4 | Newest first, with preview, device and time | Partly | `clipctl list` works. Apple written, not built. |
-| F5 | Full-text search on every device | Partly | SQLite FTS5 in the shared store; works in clipctl. Apple written, not built. |
-| F6 | Pin, rename, tag, delete; edits sync | Partly | Works end to end between two clipctl clients. Apple written, not built. |
+| F1 | Auto-capture on Mac and PC | Partly | Mac app: works (copied text shows up in the menu). Windows: `clipctl watch`, smoke-tested; tray app builds, not run. |
+| F2 | iPhone send: paste button, share sheet, Shortcut | Partly | Builds, not run |
+| F3 | Click an item to put it on the clipboard | Partly | `clipctl copy` works. Mac: click an item, or the ⌃⌘V quick picker. The newest copy from another device also goes on the clipboard by itself (unit and app tests; not yet tried between real devices). iPhone builds, not run. |
+| F4 | Newest first, with preview, device and time | Partly | `clipctl list` and the Mac menu work. iPhone builds, not run. |
+| F5 | Full-text search on every device | Partly | SQLite FTS5 in the shared store; works in clipctl. Apple builds, not run. |
+| F6 | Pin, rename, tag, delete; edits sync | Partly | Works end to end between two clipctl clients. Apple builds, not run. |
 | F7 | Offline works; merges on reconnect | Done | Harness and sync engine tests |
 | F8 | End-to-end encrypted | Done | |
-| F9 | Skip concealed content | Partly | Windows done and smoke-tested. Mac written, not built. iPhone has no background capture. |
-| F10 | Pair with a code | Done | Tested end to end with clipctl. Apple flow written, not built. |
+| F9 | Skip concealed content | Partly | Windows done and smoke-tested. Mac builds, not checked by hand. iPhone has no background capture. |
+| F10 | Pair with a code | Done | Tested end to end with clipctl. The Mac app creates a vault. Pairing between real devices not run yet. |
 | F11 | Images | Partly | Thumbnails ride in the encrypted item; full image on demand. `clipctl send-file`, Mac capture, iPhone paste button and share sheet. Apple code builds; not tried on devices. |
 | F12 | Files | Partly | Downloaded on demand, resumable, SHA-256 checked. End to end with clipctl on the Mac (`scripts/e2e-blobs.sh`). Apple code builds; not tried on devices. |
 | F13 | Revoke a lost device | Partly | `clipctl devices` / `clipctl revoke`, and Devices in the Mac menu and iPhone app. A revoke swaps in a new vault key, wipes the relay, and hands the key to the other devices with HPKE. Tested end to end with three clipctl clients, also with files (`scripts/e2e-revoke-blobs.sh`): the relay drops old-key file chunks and the remaining devices upload theirs again. The Apple screens are built but not clicked through. |
-| F14 | Unpinned items expire | Partly | Synced deletes, harness-checked. `clipctl expire` and `watch --expire-days`. Apple setting not built. |
-| F15 | Pause capture | Partly | clipctl (a `paused` file), smoke-tested. Mac menu written, not built. |
-| F16 | Direct device-to-device sync | Not yet | P2 |
+| F14 | Unpinned items expire | Partly | Synced deletes, harness-checked. `clipctl expire` and `watch --expire-days`. Mac and iPhone setting builds, not run. |
+| F15 | Pause capture | Partly | clipctl (a `paused` file), smoke-tested. Mac menu builds, not checked by hand. |
+| F16 | Direct device-to-device sync | Partly | When the relay is down, devices sync with each other over the tailnet. Each listening device serves its own op log like a small relay, with HPKE between device keys. Tested end to end with clipctl on the Mac (`scripts/e2e-direct.sh`) and in the harness. Not run between real devices. |
 | F17 | Apple Watch | Dropped | P2, cut on 2026-10-06 |
 | N1 | Sync latency | Partly | Measured on one PC over localhost only. See below. |
 | N2 | 10k search under 50 ms | Partly | Measured on Windows and Mac. Not on iPhone yet. |
@@ -79,7 +81,7 @@ From the requirements in [docs/prd.md](docs/prd.md). "Written, not built" means 
 | N6 | Bounded memory for large files | Done | Two chunks of transfer buffers; process memory flat from 20 MB to 400 MB files. See below. |
 | N7 | Server stores only ciphertext | Done | |
 | N8 | AES-256-GCM bound to item and op IDs | Done | Tamper tests cover swapped IDs and moved payloads |
-| N9 | Keys in Keychain or DPAPI | Partly | DPAPI done. Keychain written, not built. clipctl on macOS and Linux has an opt-in plain-file key for testing. |
+| N9 | Keys in Keychain or DPAPI | Partly | DPAPI done. The Mac app saves its key in the Keychain. iPhone builds, not run. clipctl on macOS and Linux has an opt-in plain-file key for testing. |
 | N10 | Relay only inside the tailnet | Partly | The relay refuses to start on an address outside loopback and Tailscale's ranges (100.64.0.0/10, fd7a:115c:a1e0::/48) unless given `--allow-non-tailnet`; tested against the real binary. `scripts/deploy-relay.sh` deploys it in Docker on the VM's Tailscale IP. Not deployed to the VM yet. |
 | N11 | Convergence under any order, duplicates, drops | Done | Harness, 500 of 500 seeds |
 | N12 | A crash never corrupts data | Partly | WAL, one transaction per mutation, `synchronous=FULL`. A crash test kills a writer process mid-write and checks the file each time (500 kills, no failures). Payload files: a second crash test kills a blob cache writer mid-download and mid-import (80 kills, 50 mid-blob, no corrupt file ever marked complete, every good partial resumed). The relay's blob byte total is updated in the same transaction as the chunks. Power loss isn't tested. |
@@ -93,8 +95,8 @@ All measured on Windows 11 with WSL Ubuntu 24.04, debug builds unless noted. Mac
 | --- | --- | --- | --- | --- |
 | N1 | p50 under 1 s, p95 under 3 s | p50 about 100 ms, max about 175 ms, over 5 items | `scripts/e2e.ps1`: relay in WSL, two clipctl clients on one PC over localhost. The time includes starting a clipctl process for each poll. | Not over Tailscale yet, and not across real devices. No p95 from 5 samples. |
 | N2 | under 50 ms | Windows: median about 14 ms over 20 queries, 10,000 items. Mac: median 4.2 ms (debug) and 2.0 ms (release), max 6.7 ms | `testSearchPerformanceOn10kItems` in ClipStoreTests (it asserts the median is under 50 ms). On the Mac, 3 runs each; release with `swift test -c release -Xswiftc -enable-testing`. | iPhone. A Windows release build. |
-| N3 | under 500 ms | not measured | | Needs the iPhone app built |
-| N4 | Energy Impact "Low" | not measured | | Needs the Mac app built |
+| N3 | under 500 ms | not measured | | Needs the iPhone app run on a phone |
+| N4 | Energy Impact "Low" | not measured | | The Mac app runs; not measured yet |
 | N5 | resume from last verified chunk | 50 MB file (50 chunks): upload killed after chunk 27 resumed at chunk 28; download killed after chunk 37 resumed at 37; SHA-256 matched. Same at 200 MB (resumed at 101 and 150). | `scripts/e2e-blobs.sh` on macOS 14.6: relay on a spare port, two clipctl clients over localhost, debug builds | Not over Tailscale, not on an iPhone |
 | N6 | memory bounded by a few chunks | Transfer buffers peak at 2.00 MiB (one plaintext and one sealed chunk) for a 200 MB file. clipctl peak footprint: download 11 to 16 MiB, upload 26 to 30 MiB, for files from 20 MB to 200 MB (baseline 4 MiB); live heap mid-upload 6.9 MB. | `BlobTransferTests.testTwoHundredMegabytesStayWithinAFewChunks` (also samples process footprint); `/usr/bin/time -l` and `heap` on clipctl | iPhone |
 
@@ -114,7 +116,7 @@ Needs the Swift toolchain for Windows. In Git Bash, from the repo root:
 ```sh
 . scripts/swiftenv.sh            # puts Swift on PATH and sets SDKROOT
 swift build
-swift test                       # 173 tests
+swift test                       # about 350 tests
 swift run ConvergenceHarness --seeds 500
 swift run ConvergenceHarness --seeds 500 --mutation lwwReversed   # should fail
 ```
@@ -137,11 +139,11 @@ powershell -ExecutionPolicy Bypass -File scripts\clipctl-smoke.ps1
 
 ### Relay
 
-The relay is its own package in `Server/` because SwiftNIO doesn't build on Windows. Build and test it on Linux, or in WSL Ubuntu 24.04 set up with `scripts/wsl-setup.sh`. [Server/README.md](Server/README.md) covers flags, the API, auth, and deploying to the VM with systemd or Docker.
+The relay is its own package in `Server/` because SwiftNIO doesn't build on Windows. Build and test it on Linux or macOS, or in WSL Ubuntu 24.04 set up with `scripts/wsl-setup.sh`. [Server/README.md](Server/README.md) covers flags, the API, auth, and deploying to the VM with systemd or Docker.
 
 ```sh
 cd Server
-swift test                        # 36 tests
+swift test                        # 76 tests
 swift run ClipRelay --host <tailscale-ip> --port 8787 --db ./relay.sqlite3 --token-sha256 <hex>
 ```
 
@@ -155,7 +157,11 @@ powershell -ExecutionPolicy Bypass -File scripts\e2e.ps1
 
 ### Mac and iPhone
 
-See [apps/Apple/README.md](apps/Apple/README.md). It uses XcodeGen and a `CLIPSYNC_TEAM_ID` environment variable for signing. None of it has been compiled yet, and that README lists what's most likely to need fixing on the first build.
+See [apps/Apple/README.md](apps/Apple/README.md). It uses XcodeGen and a `CLIPSYNC_TEAM_ID` environment variable for signing. All three targets build on Xcode 16.2, and the Mac app runs.
+
+### Windows tray app
+
+See [apps/Windows/README.md](apps/Windows/README.md). `swift run ClipSyncWin` starts it. It builds on Windows and in CI but hasn't been run on the PC yet.
 
 ## Repo map
 
@@ -169,9 +175,12 @@ See [apps/Apple/README.md](apps/Apple/README.md). It uses XcodeGen and a `CLIPSY
 | `Sources/ClipAppCore` | App model shared by the Apple apps, tested on Windows |
 | `Sources/ClipHarness`, `Sources/ConvergenceHarness` | Convergence harness and its command line |
 | `Sources/clipctl` | Command-line client, DPAPI key store, Windows clipboard watcher |
+| `Sources/ClipWindows` | Windows platform code shared by clipctl and the tray app: DPAPI, the Win32 clipboard |
+| `Sources/ClipPeerSocket` | Sockets for direct device-to-device sync (BSD sockets and Winsock) |
 | `Tests/` | One test target per module |
 | `Server/` | The relay (Hummingbird), its own SwiftPM package |
 | `apps/Apple/` | SwiftUI apps for iPhone and Mac, share extension, Shortcuts action |
+| `apps/Windows/` | The Windows tray app (Win32 through `WinSDK`, no UI framework) |
 | `scripts/` | Windows Swift setup, WSL setup, clipctl smoke test, end-to-end test |
 | `content/` | User-facing copy as markdown |
 | `docs/` | PRD, vision, design, threat model, decisions, board |
@@ -188,4 +197,4 @@ See [apps/Apple/README.md](apps/Apple/README.md). It uses XcodeGen and a `CLIPSY
 
 Testing has four layers. Unit tests use known-answer vectors for HKDF (RFC 5869), AES-GCM (Test Case 16 from the GCM paper) and the derived keys, plus tamper tests. The convergence harness is deterministic per seed. It drops requests and responses, makes clients retry pushes the relay already has, takes devices offline, crashes them and moves their clocks. Its mutation mode swaps in 4 broken merge rules to prove it notices: last-writer-wins keeping the older write fails 500 of 500 seeds, last-arrival-wins 496 of 500, ignoring deletes 500 of 500, and edits undoing deletes 500 of 500. The relay has route and storage tests on Linux. The smoke test and end-to-end script drive the real clipctl binary. The store has a crash test: a helper process writes to a real database file and gets killed at random points. After each kill the test reopens the file and runs SQLite's integrity check and the search index's own check. It also checks that every transaction the helper reported as committed is there, and that the one it was in the middle of is either all there or not there at all. `CLIPSTORE_CRASH_ITERATIONS=500 swift test --filter CrashInjectionTests` runs a long one.
 
-CI is in `.github/workflows`. `ci.yml` builds and tests on Linux, Windows and macOS, runs the relay tests, and runs the harness for 2,000 seeds in release. `nightly.yml` runs 20,000 new seeds a night and uploads the log. **Neither has run yet**, because the repo isn't on GitHub yet.
+CI is in `.github/workflows`. `ci.yml` builds and tests on Linux, Windows and macOS, runs the relay tests, and runs the harness for 2,000 seeds in release. It's green on all four jobs. The first Windows test run found a real bug: on Windows, `SO_REUSEADDR` let two listeners share the direct-sync port ([decisions](docs/decisions.md)). `nightly.yml` runs 20,000 new seeds a night and uploads the log.

@@ -2,7 +2,7 @@
 
 `ClipSyncWin` is the tray app for the PC (milestone M3). It sits in the notification area, saves what you copy, and shows your history in a small window. It talks to Windows directly through Swift's `WinSDK` module, with no UI framework, and the app logic is the same `ClipAppCore` the Mac and iPhone apps use.
 
-It was written on the Mac and has never been compiled on Windows. CI's Windows job is the first compile, and nobody has run it yet. See "Check these first" at the bottom.
+It was written on the Mac. It builds on Windows and in CI, but nobody has run it on the PC yet. See "Check these first" at the bottom.
 
 ## What it does
 

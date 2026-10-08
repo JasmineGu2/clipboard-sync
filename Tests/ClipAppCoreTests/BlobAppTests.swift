@@ -129,7 +129,10 @@ final class BlobAppTests: XCTestCase {
 
     /// Waits up to `seconds` for `condition`.
     func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async throws {
-        for _ in 0..<Int(seconds * 50) where !condition() {
+        // The check sits in the body, not a `where` clause: Swift 6.0 (CI's Mac) rejects a non-escaping closure
+        // called from a `for … where` in an async function.
+        for _ in 0..<Int(seconds * 50) {
+            if condition() { return }
             try await Task.sleep(for: .milliseconds(20))
         }
     }
